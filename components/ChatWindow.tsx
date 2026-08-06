@@ -6,6 +6,8 @@ import { normalizeCustomPanelLines, parseAnsiLine } from "@/lib/ansi";
 import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { MessageView } from "./MessageView";
+import { ChangedFilesCard } from "./ChangedFilesCard";
+import { extractChangedFiles } from "@/lib/changed-files";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -579,7 +581,6 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     modelNames={modelNames}
                     cwd={messageCwd}
                     onOpenFile={onOpenFile}
-                    onOpenChangedFile={onOpenChangedFile}
                     entryId={entryIds[idx]}
                     onFork={sessionBusy || isNew || (idx === 0 && msg.role === "user") ? undefined : handleFork}
                     forking={forkingEntryId === entryIds[idx]}
@@ -604,6 +605,16 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 const msg = messages[idx];
                 if (!isGroupAnchor(msg)) {
                   rendered.push(renderMessage(idx));
+                  if (msg.role === "assistant") {
+                    const changedFiles = extractChangedFiles((msg as AssistantMessage).content ?? []);
+                    if (changedFiles.length > 0) {
+                      rendered.push(
+                        <div key={`changed-${idx}`} style={{ marginBottom: 16 }}>
+                          <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                        </div>,
+                      );
+                    }
+                  }
                   idx += 1;
                   continue;
                 }
@@ -626,6 +637,17 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (isLiveTail) {
                   for (let renderIdx = userIdx; renderIdx < endIdx; renderIdx++) {
                     rendered.push(renderMessage(renderIdx));
+                    const liveMsg = messages[renderIdx];
+                    if (liveMsg?.role === "assistant") {
+                      const liveChanged = extractChangedFiles((liveMsg as AssistantMessage).content ?? []);
+                      if (liveChanged.length > 0) {
+                        rendered.push(
+                          <div key={`changed-live-${renderIdx}`} style={{ marginBottom: 16 }}>
+                            <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                          </div>,
+                        );
+                      }
+                    }
                   }
                   idx = endIdx;
                   continue;
@@ -676,6 +698,22 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (finalAnswerMessage) {
                   rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage }));
                 }
+                // Changed files are gathered from ALL assistant messages in the
+                // group — edit/write tool calls happen in the process messages
+                // (folded into ProcessDetailsGroup), not in the final answer.
+                const groupBlocks: AssistantContentBlock[] = [];
+                for (let gi = userIdx + 1; gi < endIdx; gi++) {
+                  const gm = messages[gi];
+                  if (gm?.role === "assistant") groupBlocks.push(...((gm as AssistantMessage).content ?? []));
+                }
+                const changedFiles = extractChangedFiles(groupBlocks);
+                if (changedFiles.length > 0) {
+                  rendered.push(
+                    <div key={`changed-${userIdx}-${finalAssistantIdx}`} style={{ marginBottom: 16 }}>
+                      <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                    </div>,
+                  );
+                }
                 for (let renderIdx = finalAssistantIdx + 1; renderIdx < endIdx; renderIdx++) {
                   rendered.push(renderMessage(renderIdx));
                 }
@@ -694,7 +732,20 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               );
             })()}
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} onOpenChangedFile={onOpenChangedFile} />
+              <>
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} cwd={messageCwd} onOpenFile={onOpenFile} />
+              {(() => {
+                const sm = streamState.streamingMessage;
+                if (sm?.role !== "assistant") return null;
+                const liveChanged = extractChangedFiles((sm as AssistantMessage).content ?? []);
+                if (liveChanged.length === 0) return null;
+                return (
+                  <div style={{ marginBottom: 16 }}>
+                    <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                  </div>
+                );
+              })()}
+              </>
             )}
 
             {agentRunning && !streamState.streamingMessage && agentPhase && (

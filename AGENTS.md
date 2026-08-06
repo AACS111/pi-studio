@@ -81,6 +81,7 @@ lib/
   tool-presets.ts     PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
+  changed-files.ts    extractChangedFiles() — files edited/written during an assistant turn
   worktree.ts         project/worktree resolution and git worktree operations
 
 components/
@@ -98,6 +99,7 @@ components/
   FileExplorer.tsx    file tree inside sidebar
   FileIcons.tsx       file icon helpers
   FileViewer.tsx      file content in a tab
+  ChangedFilesCard.tsx changed-files summary card under assistant messages
   TabBar.tsx          tab bar (Chat + open file tabs)
 
 hooks/
@@ -111,6 +113,13 @@ hooks/
 ---
 
 ## Key Design Decisions & Traps
+
+### Changed-files card (per-turn change summary)
+- `extractChangedFiles()` (`lib/changed-files.ts`) scans assistant toolCall blocks for `edit`/`write` tools (input field is `path`, not `filePath`) and returns deduplicated `{filePath, kind}` entries.
+- The card is rendered by `ChatWindow`, NOT inside `MessageView`: assistant turns are split into a collapsed `ProcessDetailsGroup` (thinking + tool calls) and a separate final-answer message. The card must sit at the **message footer level** (below the answer text, above the usage stats) or it gets hidden inside the collapsed process group.
+- Changed files are gathered from **all assistant messages in the group** (`userIdx+1..endIdx`), not just the final answer message — edit/write tool calls live in the process messages.
+- Per-file `+N`/`-M` diff stats are fetched lazily from `/api/git/diff` and parsed with `parseUnifiedPatch`. The fetch effect depends on a **stable `filesKey` string**, never the `files` array reference (parent re-creates it every render — depending on it causes a fetch storm that crashes the dev server).
+- The card is also rendered on the streaming tail (`isLiveTail` + `streamingMessage`) so edits appear live while the agent works.
 
 ### AgentSession lifecycle (`lib/rpc-manager.ts`)
 - One `AgentSessionWrapper` per session id, keyed in `globalThis.__piSessions`
@@ -211,5 +220,3 @@ Location: `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
 --accent --user-bg --tool-bg
 --font-mono
 ```
-
-<!-- 变更测试：2026-08-06 通过 edit 工具追加此行，验证 ChangedFilesCard 功能 -->

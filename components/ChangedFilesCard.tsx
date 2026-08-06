@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ChangedFile } from "@/lib/changed-files";
-import { getRelativeFilePath } from "@/lib/file-paths";
+import { getRelativeFilePath, joinFilePath } from "@/lib/file-paths";
+import { parseUnifiedPatch } from "@/lib/patch";
 import { useI18n } from "@/hooks/useI18n";
 
 const MAX_COLLAPSED = 8;
@@ -16,6 +17,25 @@ const KIND_LABEL: Record<ChangedFile["kind"], string> = {
   edit: "M",
   write: "A",
 };
+
+function isAbsolutePath(filePath: string): boolean {
+  return filePath.startsWith("/") || /^[a-zA-Z]:[\/]/.test(filePath);
+}
+
+function countDiffStats(patch: string): { added: number; removed: number } {
+  const files = parseUnifiedPatch(patch);
+  if (!files) return { added: 0, removed: 0 };
+  let added = 0;
+  let removed = 0;
+  for (const file of files) {
+    for (const row of file.rows) {
+      if (row.type !== "line") continue;
+      if (row.right.type === "added") added += 1;
+      if (row.left.type === "removed") removed += 1;
+    }
+  }
+  return { added, removed };
+}
 
 interface Props {
   files: ChangedFile[];
@@ -31,8 +51,43 @@ interface Props {
 export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  const [stats, setStats] = useState<Record<string, { added: number; removed: number }>>({});
   const showToggle = files.length > MAX_COLLAPSED;
   const visible = showToggle && !expanded ? files.slice(0, MAX_COLLAPSED) : files;
+
+  // Stable key so the fetch below only re-runs when the file set actually
+  // changes (the `files` prop reference changes on every parent render).
+  const filesKey = files.map((f) => `${f.kind}:${f.filePath}`).join("\u0000");
+
+  // Lazily fetch per-file git diff stats (+N / -M) for display on each row.
+  useEffect(() => {
+    let cancelled = false;
+    setStats({});
+    if (!cwd) return;
+
+    (async () => {
+      const results: Record<string, { added: number; removed: number }> = {};
+      await Promise.all(files.map(async (file) => {
+        const absPath = isAbsolutePath(file.filePath)
+          ? file.filePath
+          : joinFilePath(cwd, file.filePath);
+        try {
+          const params = new URLSearchParams({ cwd, path: absPath });
+          const response = await fetch(`/api/git/diff?${params.toString()}`);
+          const data = await response.json() as { supported?: boolean; patch?: string };
+          if (data?.supported && typeof data.patch === "string") {
+            results[file.filePath] = countDiffStats(data.patch);
+          }
+        } catch {
+          // No git repo or transient failure — row simply shows no stats.
+        }
+      }));
+      if (!cancelled) setStats(results);
+    })();
+
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd, filesKey]);
 
   return (
     <div
@@ -146,6 +201,28 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
             >
               {getRelativeFilePath(file.filePath, cwd)}
             </span>
+            {(() => {
+              const fileStats = stats[file.filePath];
+              if (!fileStats || (fileStats.added === 0 && fileStats.removed === 0)) return null;
+              return (
+                <span
+                  style={{
+                    flexShrink: 0,
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    fontVariantNumeric: "tabular-nums",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {fileStats.added > 0 && (
+                    <span style={{ color: "#4ade80" }}>+{fileStats.added}</span>
+                  )}
+                  {fileStats.removed > 0 && (
+                    <span style={{ color: "#f87171" }}>{fileStats.added > 0 ? " " : ""}-{fileStats.removed}</span>
+                  )}
+                </span>
+              );
+            })()}
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
               <path d="M5 12h14" />
               <path d="m12 5 7 7-7 7" />

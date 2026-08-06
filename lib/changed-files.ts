@@ -11,8 +11,6 @@ export interface ChangedFile {
   kind: "edit" | "write";
 }
 
-// 变更测试 #2：2026-08-06 通过 edit 工具再改一个文件，验证卡片更新。
-
 const EDIT_TOOL_NAMES = new Set(["edit"]);
 const WRITE_TOOL_NAMES = new Set(["write", "write_file", "create", "create_file"]);
 

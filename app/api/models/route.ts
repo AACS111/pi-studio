@@ -50,6 +50,7 @@ async function loadModels(cwd: string): Promise<ModelsData> {
     id: m.id,
     name: m.name,
     provider: m.provider,
+    supportsImage: m.input?.includes("image") ?? false,
   })).sort(compareModelEntries);
   for (const m of visible) {
     const key = `${m.provider}:${m.id}`;

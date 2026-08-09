@@ -1,4 +1,4 @@
-const CACHE_PREFIX = "pi-web";
+const CACHE_PREFIX = "pi-studio";
 const CACHE_VERSION = new URL(self.location.href).searchParams.get("v") || "dev";
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
 const OFFLINE_URL = "/offline.html";

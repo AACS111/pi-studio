@@ -7,7 +7,12 @@ import { useI18n } from "@/hooks/useI18n";
 export interface Tab {
   id: string;
   label: string;
-  filePath: string;
+  /** "file" = local file opened in the viewer, "web" = web page in the browser panel. */
+  kind: "file" | "web";
+  /** Absolute path — present for kind === "file". */
+  filePath?: string;
+  /** Target URL — present for kind === "web" (null = fresh empty browser tab). */
+  url?: string | null;
   sourceSessionId?: string | null;
   initialDisplayMode?: "source" | "preview" | "diff";
 }
@@ -70,7 +75,15 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
             }}
           >
             <span style={{ flexShrink: 0, opacity: isActive ? 1 : 0.7, display: "flex", alignItems: "center" }}>
-              {getFileIcon(tab.label, 13)}
+              {tab.kind === "web" ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="2" y1="12" x2="22" y2="12" />
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                </svg>
+              ) : (
+                getFileIcon(tab.label, 13)
+              )}
             </span>
             <span
               style={{
@@ -79,7 +92,7 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
                 flex: 1,
                 fontWeight: isActive ? 500 : 400,
               }}
-              title={tab.filePath}
+              title={tab.kind === "web" ? (tab.url ?? tab.label) : tab.filePath}
             >
               {tab.label}
             </span>

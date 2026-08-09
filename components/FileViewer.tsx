@@ -9,6 +9,7 @@ import {
 import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import ReactMarkdown from "react-markdown";
+import dynamic from "next/dynamic";
 import { useTheme } from "@/hooks/useTheme";
 import {
   DOCX_PREVIEW_MAX_BYTES,
@@ -16,6 +17,8 @@ import {
   isAudioPath,
   isDocumentPreviewPath,
   isImagePath,
+  isSpreadsheetPath,
+  isUniverFilePath,
 } from "@/lib/file-types";
 import { encodeFilePathForApi, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import { resolveLocalFileHref } from "@/lib/file-links";
@@ -33,6 +36,8 @@ interface Props {
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   gitRefreshKey?: number;
   initialDisplayMode?: DisplayMode;
+  /** "AI 编辑" handler for spreadsheet files (convert .xlsx → .univer + kick off the sheet-edit skill). */
+  onAiEdit?: (xlsxPath: string) => Promise<void> | void;
 }
 
 interface FileData {
@@ -783,7 +788,18 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode }: Props) {
+// Lazy-loaded: Univer + xlsx (+ ~60KB CSS) only load when a spreadsheet tab is opened.
+const XlsxViewer = dynamic(
+  () => import("./XlsxViewer").then((m) => m.XlsxViewer),
+  { ssr: false },
+);
+
+const UniverFileViewer = dynamic(
+  () => import("./UniverFileViewer").then((m) => m.UniverFileViewer),
+  { ssr: false },
+);
+
+export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode, onAiEdit }: Props) {
   if (isImagePath(filePath)) {
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
@@ -792,6 +808,12 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMenti
   }
   if (isDocumentPreviewPath(filePath)) {
     return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
+  }
+  if (isSpreadsheetPath(filePath)) {
+    return <XlsxViewer filePath={filePath} sourceSessionId={sourceSessionId} onAiEdit={onAiEdit} />;
+  }
+  if (isUniverFilePath(filePath)) {
+    return <UniverFileViewer filePath={filePath} sourceSessionId={sourceSessionId} />;
   }
   return <TextFileViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onOpenFile={onOpenFile} onMentionLines={onMentionLines} gitRefreshKey={gitRefreshKey} initialDisplayMode={initialDisplayMode} />;
 }
@@ -990,7 +1012,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [displayMode, mentionLineRange, onMentionLines]);
 
-  if (loading || (initialDisplayMode === "diff" && gitDiffLoading && !data)) {
+  if (loading || (initialDisplayMode === "diff" && !hasGitDiff && (gitDiffLoading || gitDiff === null))) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
         {t("i18n.loading")}

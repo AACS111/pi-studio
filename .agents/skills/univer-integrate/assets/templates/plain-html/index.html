@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Univer Plain HTML</title>
+  <link rel="stylesheet" href="https://unpkg.com/@univerjs/design@latest/lib/index.css" />
+  <style>
+    html, body, #app { margin: 0; padding: 0; width: 100%; height: 100vh; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "@univerjs/core": "https://unpkg.com/@univerjs/core@latest/dist/es/index.js",
+      "@univerjs/core/facade": "https://unpkg.com/@univerjs/core@latest/dist/es/facade/index.js",
+      "@univerjs/themes": "https://unpkg.com/@univerjs/themes@latest/dist/es/index.js",
+      "@univerjs/engine-render": "https://unpkg.com/@univerjs/engine-render@latest/dist/es/index.js",
+      "@univerjs/engine-formula": "https://unpkg.com/@univerjs/engine-formula@latest/dist/es/index.js",
+      "@univerjs/ui": "https://unpkg.com/@univerjs/ui@latest/dist/es/index.js",
+      "@univerjs/sheets": "https://unpkg.com/@univerjs/sheets@latest/dist/es/index.js",
+      "@univerjs/sheets-ui": "https://unpkg.com/@univerjs/sheets-ui@latest/dist/es/index.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module">
+    import { LocaleType, LogLevel, Univer, UniverInstanceType } from '@univerjs/core';
+    import { FUniver } from '@univerjs/core/facade';
+    import { defaultTheme } from '@univerjs/themes';
+    import { UniverRenderEnginePlugin } from '@univerjs/engine-render';
+    import { UniverFormulaEnginePlugin } from '@univerjs/engine-formula';
+    import { UniverUIPlugin } from '@univerjs/ui';
+    import { UniverSheetsPlugin } from '@univerjs/sheets';
+    import { UniverSheetsUIPlugin } from '@univerjs/sheets-ui';
+
+    const univer = new Univer({
+      theme: defaultTheme,
+      locale: LocaleType.EN_US,
+      logLevel: LogLevel.WARN,
+    });
+
+    // Registration order: engines → UI infra → unit core → unit UI → features.
+    // Some units (e.g. docs) may be registered before the render engine; Univer
+    // will wire them up automatically. Do NOT register UI plugins before engines.
+    univer.registerPlugins([
+      [UniverRenderEnginePlugin],
+      [UniverFormulaEnginePlugin],
+      [UniverUIPlugin, { container: 'app' }],
+      [UniverSheetsPlugin],
+      [UniverSheetsUIPlugin],
+    ]);
+
+    univer.createUnit(UniverInstanceType.UNIVER_SHEET, {
+      id: 'workbook-1',
+      name: 'Demo',
+      sheetOrder: ['sheet-1'],
+      sheets: {
+        'sheet-1': {
+          id: 'sheet-1',
+          name: 'Sheet1',
+          rowCount: 100,
+          columnCount: 20,
+        },
+      },
+    });
+
+    window.univerAPI = FUniver.newAPI(univer);
+  </script>
+</body>
+</html>

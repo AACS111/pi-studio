@@ -174,7 +174,7 @@ function displayCwd(cwd: string, homeDir?: string): string {
 
 /**
  * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
- * segments visible: "…orkspace/pi-web". Shows as much of the path as fits
+ * segments visible: "…orkspace/pi-studio". Shows as much of the path as fits
  * instead of a fixed number of segments. The rtl container moves the ellipsis
  * to the left edge; the inner plaintext bidi isolation keeps the path itself
  * rendered strictly left-to-right (no punctuation reordering).
@@ -345,7 +345,7 @@ function PiWebTitle() {
   const [scrambling, setScrambling] = useState(false);
   const revertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const target = showVersion ? `${process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}p${process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0"}` : "Pi Web";
+  const target = showVersion ? `${process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0"}p${process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0"}` : "Pi Studio";
   const display = useScramble(target, scrambling);
 
   const triggerScramble = useCallback((toVersion: boolean) => {

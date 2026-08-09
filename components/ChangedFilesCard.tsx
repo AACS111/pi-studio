@@ -37,11 +37,40 @@ function countDiffStats(patch: string): { added: number; removed: number } {
   return { added, removed };
 }
 
+async function fetchDiffStats(
+  cacheKey: string,
+  cwd: string,
+  absPath: string,
+): Promise<{ added: number; removed: number } | null> {
+  try {
+    const params = new URLSearchParams({ cwd, path: absPath });
+    const response = await fetch(`/api/git/diff?${params.toString()}`);
+    const data = await response.json() as { supported?: boolean; patch?: string };
+    if (data?.supported && typeof data.patch === "string") {
+      return countDiffStats(data.patch);
+    }
+  } catch {
+    // No git repo or transient failure — row simply shows no stats.
+  } finally {
+    // Keep failed entries cached too so a repeated render doesn't retry
+    // immediately; the TTL below bounds staleness.
+    setTimeout(() => diffStatsCache.delete(cacheKey), 60_000);
+  }
+  return null;
+}
+
 interface Props {
   files: ChangedFile[];
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
 }
+
+const DIFF_STATS_FETCH_DELAY_MS = 250;
+const DIFF_STATS_MAX_CONCURRENCY = 3;
+
+// Module-level cache: the same file often appears in several cards across a
+// session; each diff is expensive (spawns git), so fetch once per (cwd, path).
+const diffStatsCache = new Map<string, Promise<{ added: number; removed: number } | null>>();
 
 /**
  * Compact card shown under an assistant message listing the files the turn
@@ -60,28 +89,39 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
   const filesKey = files.map((f) => `${f.kind}:${f.filePath}`).join("\u0000");
 
   // Lazily fetch per-file git diff stats (+N / -M) for display on each row.
+  // Fetching is delayed (first paint wins), concurrency-capped, and memoised
+  // per (cwd, path) so repeated cards for the same file cost one request.
   useEffect(() => {
     let cancelled = false;
     setStats({});
     if (!cwd) return;
 
+    const entries = files.map((file) => ({
+      file,
+      absPath: isAbsolutePath(file.filePath) ? file.filePath : joinFilePath(cwd, file.filePath),
+      cacheKey: `${cwd}\u0000${file.filePath}`,
+    }));
+
     (async () => {
+      await new Promise((resolve) => setTimeout(resolve, DIFF_STATS_FETCH_DELAY_MS));
+      if (cancelled) return;
+
       const results: Record<string, { added: number; removed: number }> = {};
-      await Promise.all(files.map(async (file) => {
-        const absPath = isAbsolutePath(file.filePath)
-          ? file.filePath
-          : joinFilePath(cwd, file.filePath);
-        try {
-          const params = new URLSearchParams({ cwd, path: absPath });
-          const response = await fetch(`/api/git/diff?${params.toString()}`);
-          const data = await response.json() as { supported?: boolean; patch?: string };
-          if (data?.supported && typeof data.patch === "string") {
-            results[file.filePath] = countDiffStats(data.patch);
-          }
-        } catch {
-          // No git repo or transient failure — row simply shows no stats.
+      let next = 0;
+      const worker = async (): Promise<void> => {
+        while (!cancelled) {
+          const entry = entries[next++];
+          if (!entry) return;
+          const cached = diffStatsCache.get(entry.cacheKey);
+          const stats = cached ?? fetchDiffStats(entry.cacheKey, cwd, entry.absPath);
+          if (!diffStatsCache.has(entry.cacheKey)) diffStatsCache.set(entry.cacheKey, stats);
+          const value = await stats;
+          if (!cancelled && value) results[entry.file.filePath] = value;
         }
-      }));
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(DIFF_STATS_MAX_CONCURRENCY, entries.length) }, worker),
+      );
       if (!cancelled) setStats(results);
     })();
 

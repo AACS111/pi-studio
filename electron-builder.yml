@@ -1,0 +1,75 @@
+# Pi Studio 桌面应用打包配置（electron-builder）
+# 用法：npm run pack            → 生成安装版 + 便携版 .exe（release/ 目录）
+#       npm run pack:dir        → 只生成未打包目录（release/win-unpacked），快速验证
+#       npm run pack:portable   → 只生成单文件便携版 .exe
+#       npm run pack:nsis       → 只生成安装版 .exe
+# 首次运行需要联网下载 nsis/winCodeSign 工具（脚本已配置国内镜像）。
+
+appId: com.agegr.piweb
+productName: Pi Studio
+copyright: Copyright © 2026 agegr
+
+directories:
+  output: release
+
+# 内置服务由 electron/main.cjs 用「本 exe + ELECTRON_RUN_AS_NODE」方式启动，
+# 需要真实文件路径，因此关闭 asar（避免子进程/daemon 读不到打包内文件）。
+asar: false
+
+# 所有原生依赖均为预编译产物（sharp、pi-tui native 等），无需 node-gyp 重编译
+npmRebuild: false
+
+electronVersion: 43.3.0
+
+files:
+  - ".next-pkg/**"
+  - "electron/**"
+  - "bin/**"
+  - "public/**"
+  - "skills/**"
+  - ".agents/**"
+  - "next.config.ts"
+  - "package.json"
+  - "node_modules/**"
+
+  # ---- 排除项 ----
+  - "!node_modules/.pnpm/**"        # 孤儿 pnpm store（约 1.1G），无符号链接引用
+  - "!node_modules/electron/**"     # 打包工具自身，运行时不需要
+  - "!node_modules/electron-builder/**"
+  - "!node_modules/.bin/**"
+  - "!node_modules/.cache/**"
+  - "!node_modules/**/node_modules/.bin/**"
+  - "!**/*.map"                     # sourcemap 缩小体积
+  - "!**/*.tsbuildinfo"
+
+  # 项目目录里的开发/临时内容
+  - "!**/.next/**"
+  - "!**/.next-pkg/cache/**"
+  - "!**/.git/**"
+  - "!**/docs/**"
+  - "!**/screenshots-cf/**"
+  - "!**/pi-web-uploads/**"
+  - "!**/release/**"
+  - "!**/*.xlsx"
+  - "!**/*.univer"
+  - "!**/*.html"
+  - "!**/*.log"
+  - "!**/测试模板*"
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  # 如需自定义图标：放一个 build/icon.ico（至少 256x256）并取消注释下面一行
+  # icon: build/icon.ico
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  artifactName: ${productName}-${version}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}

@@ -6,10 +6,12 @@ import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
+import { WebViewer } from "./WebViewer";
 import { TabBar, type Tab } from "./TabBar";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { PluginsConfig } from "./PluginsConfig";
+import { UploadsManager } from "./UploadsManager";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { BranchNavigator } from "./BranchNavigator";
 import { useTheme } from "@/hooks/useTheme";
@@ -25,6 +27,7 @@ import {
   getDefaultRightPanelWidth,
   getRightPanelMaxWidth,
   getSidebarMaxWidth,
+  RIGHT_PANEL_ABSOLUTE_MAX_WIDTH,
   RIGHT_PANEL_FALLBACK_WIDTH,
   RIGHT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
@@ -46,6 +49,16 @@ type AutoNameStatus =
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 const LANGUAGE_MENU_WIDTH = 176;
+/** 右侧面板点击「打开网站」按钮时默认打开的网址。 */
+const DEFAULT_WEB_URL = "https://bing.com";
+
+function getHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
 
 export function AppShell() {
   const router = useRouter();
@@ -69,12 +82,14 @@ export function AppShell() {
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [skillsConfigOpen, setSkillsConfigOpen] = useState(false);
   const [pluginsConfigOpen, setPluginsConfigOpen] = useState(false);
+  const [uploadsManagerOpen, setUploadsManagerOpen] = useState(false);
   const [projectTrust, setProjectTrust] = useState<ProjectTrustStatus | null>(null);
   const [projectTrustDialogOpen, setProjectTrustDialogOpen] = useState(false);
   const [projectTrustBusy, setProjectTrustBusy] = useState(false);
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   const sidebarWidthRef = useRef(SIDEBAR_DEFAULT_WIDTH);
   const rightPanelWidthRef = useRef(RIGHT_PANEL_FALLBACK_WIDTH);
@@ -122,7 +137,7 @@ export function AppShell() {
     getDefaultWidth: getResponsiveRightPanelWidth,
     getMaxWidth: getResponsiveRightPanelMaxWidth,
     growthDirection: "left",
-    maxWidth: RIGHT_PANEL_MAX_WIDTH,
+    maxWidth: RIGHT_PANEL_ABSOLUTE_MAX_WIDTH,
     minWidth: RIGHT_PANEL_MIN_WIDTH,
     storageKey: "pi-right-panel-width",
     widthRef: rightPanelWidthRef,
@@ -142,6 +157,24 @@ export function AppShell() {
     reclampSidebarWidth();
     reclampRightPanelWidth();
   }, [reclampRightPanelWidth, reclampSidebarWidth, rightPanelOpen]);
+  // Maximize state: resets when the panel closes; Esc restores the split.
+  useEffect(() => {
+    if (!rightPanelOpen) setRightPanelMaximized(false);
+  }, [rightPanelOpen]);
+  useEffect(() => {
+    if (!rightPanelMaximized) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT") return;
+      setRightPanelMaximized(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [rightPanelMaximized]);
+  const handleToggleRightPanelMaximize = useCallback(() => {
+    setRightPanelMaximized((v) => !v);
+  }, []);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
   const topBarRef = useRef<HTMLDivElement>(null);
   const languageBtnRef = useRef<HTMLButtonElement>(null);
@@ -500,6 +533,7 @@ export function AppShell() {
         return [...prev, {
           id: tabId,
           label: fileName,
+          kind: "file",
           filePath,
           sourceSessionId,
           initialDisplayMode: modeHint,
@@ -534,6 +568,38 @@ export function AppShell() {
     });
   }, [handleOpenFile, selectedSession?.id]);
 
+  // "AI 编辑" flow for a plain .xlsx file (button in the spreadsheet viewer):
+  // 1) convert the .xlsx into a .univer via /api/univer/from-xlsx,
+  // 2) open the .univer in the right panel (also updates the open-file marker
+  //    so the sheet-edit skill targets it), and
+  // 3) kick off the agent with a sheet-edit skill prompt.
+  // Rejects with a user-facing message on failure (shown in the viewer).
+  const handleAiEdit = useCallback(async (xlsxPath: string) => {
+    let res: Response;
+    try {
+      res = await fetch("/api/univer/from-xlsx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: xlsxPath }),
+      });
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+    const data = (await res.json().catch(() => ({}))) as { file?: string; error?: string };
+    if (!res.ok || !data.file) {
+      throw new Error(data.error ?? `HTTP ${res.status}`);
+    }
+
+    handleOpenFile(data.file, getFileName(data.file), { sourceSessionId: selectedSession?.id ?? null });
+
+    // Trigger the sheet-edit skill. Auto-send when possible; otherwise drop the
+    // prompt into the input so the user can review and send it.
+    const prompt = translate("chat.aiEditPrompt", { file: data.file });
+    if (!chatInputRef.current?.sendText(prompt)) {
+      chatInputRef.current?.insertIfEmpty(prompt);
+    }
+  }, [handleOpenFile, selectedSession?.id, translate]);
+
   const handleCloseFileTab = useCallback((tabId: string) => {
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
@@ -546,6 +612,51 @@ export function AppShell() {
       return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
     });
   }, [fileTabs]);
+
+  // ---- Web tabs (right-panel browser, Codex-style page preview) ----
+
+  const webTabSeqRef = useRef(0);
+  const lastBrowserMarkerIdRef = useRef<string | null>(null);
+
+  /**
+   * Open (or focus) a web tab in the right panel. url === null always creates
+   * a fresh empty browser tab with a focused address bar.
+   */
+  const openWebTab = useCallback((url: string | null, title?: string | null) => {
+    if (url) {
+      const existing = fileTabs.find((t) => t.kind === "web" && t.url === url);
+      if (existing) {
+        setActiveFileTabId(existing.id);
+        setRightPanelOpen(true);
+        if (isMobile) setSidebarOpen(false);
+        return;
+      }
+    }
+    const label = url ? (title ?? getHostname(url)) : translate("browser.newTab");
+    const id = `web:${++webTabSeqRef.current}`;
+    setFileTabs((prev) => [...prev, { id, label, kind: "web", url: url ?? null }]);
+    setActiveFileTabId(id);
+    setRightPanelOpen(true);
+    if (isMobile) setSidebarOpen(false);
+  }, [fileTabs, isMobile, translate]);
+
+  // 对话里的外部 http(s) 链接：在右侧面板打开网页标签（而不是新浏览器标签）。
+  const handleOpenWebUrl = useCallback((url: string) => {
+    openWebTab(url);
+  }, [openWebTab]);
+
+  /** User navigated inside a web tab — refresh its label, drop any pending agent marker. */
+  const handleWebNavigate = useCallback((tabId: string, url: string | null) => {
+    setFileTabs((prev) => prev.map((t) => {
+      if (t.id !== tabId || !url) return t;
+      const next: Tab = { ...t };
+      next.label = getHostname(url);
+      return next;
+    }));
+    // A stale marker would re-open the page the agent asked for; the user is
+    // now in control of the panel, so clear any pending intent.
+    void fetch("/api/browser", { method: "DELETE" }).catch(() => {});
+  }, []);
 
   const handleViewFullHistory = useCallback(() => {
     if (!selectedSession) return;
@@ -608,9 +719,61 @@ export function AppShell() {
     }
   }, [projectTrustBusy, projectTrustCwd]);
 
-  const activeFileTab = fileTabs.find((t) => t.id === activeFileTabId) ?? null;
+  // Poll the agent-facing browser marker (/api/browser). When a new marker
+  // appears, open the URL in the right panel (agent-driven preview — the agent
+  // POSTs it via curl, e.g. to show a dev server it just started), then clear
+  // the marker so it only applies once. Runs continuously: the read is a tiny
+  // local JSON file, and it lets the CLI agent push pages even when no session
+  // is selected yet.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetch("/api/browser");
+        const data = (await response.json()) as {
+          id?: string | null;
+          url?: string | null;
+          title?: string | null;
+        };
+        if (cancelled || !data.id || !data.url) return;
+        if (data.id === lastBrowserMarkerIdRef.current) return;
+        lastBrowserMarkerIdRef.current = data.id;
+        openWebTab(data.url, data.title ?? null);
+        void fetch("/api/browser", { method: "DELETE" }).catch(() => {});
+      } catch {
+        /* transient — next poll retries */
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [openWebTab]);
+
+  const activeTab = fileTabs.find((t) => t.id === activeFileTabId) ?? null;
+
+  // Report the right-panel active file to pi-studio's open-file marker
+  // (default <project>/pi-web-uploads/.internal/pi-web-open-file.json, see /api/open-file) so the agent can default to the file currently open
+  // when the user asks to edit "my table". Only POST when the path changes;
+  // the sentinel initial value forces one sync on mount so hot reloads / page
+  // loads re-report (or clear) the currently open file.
+  const lastReportedFilePath = useRef<string | null>("__init__");
+  useEffect(() => {
+    // Only file tabs are reported — web tabs carry no file path.
+    const filePath = activeTab?.kind === "file" ? (activeTab.filePath ?? null) : null;
+    if (filePath === lastReportedFilePath.current) return;
+    lastReportedFilePath.current = filePath;
+    void fetch("/api/open-file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filePath }),
+    }).catch(() => {});
+  }, [activeTab?.kind, activeTab?.filePath]);
+
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
-  const windowTitle = activeCwdName ? `${activeCwdName} - Pi Web` : "Pi Web";
+  const windowTitle = activeCwdName ? `${activeCwdName} - Pi Studio` : "Pi Studio";
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -680,6 +843,18 @@ export function AppShell() {
                 <path d="M15 7V2" />
                 <path d="M6 13V8a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v5a6 6 0 0 1-12 0Z" />
                 <path d="M12 19v3" />
+              </svg>
+            ),
+          },
+          {
+             label: translate("uploads.sidebar"),
+            onClick: () => setUploadsManagerOpen(true),
+            disabled: false,
+            icon: (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                <path d="M12 11v6" />
+                <path d="m9 14 3 3 3-3" />
               </svg>
             ),
           },
@@ -1502,6 +1677,7 @@ export function AppShell() {
               onSessionStatsPanelOpen={openSessionStatsPanel}
               onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
+              onOpenWebUrl={handleOpenWebUrl}
               onOpenChangedFile={handleOpenChangedFile}
             />
           ) : initialCwdStatus === "validating" ? (
@@ -1553,7 +1729,7 @@ export function AppShell() {
         className={`right-panel-overlay-backdrop${rightPanelOpen ? " is-open" : ""}`}
         onClick={() => setRightPanelOpen(false)}
       />
-      {rightPanelOpen && (
+      {rightPanelOpen && !rightPanelMaximized && (
         <div
           {...rightPanelResizer.separatorProps}
           aria-controls="file-panel"
@@ -1567,7 +1743,7 @@ export function AppShell() {
       <div
         ref={rightPanelResizer.panelRef}
         id="file-panel"
-        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}`}
+        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}${rightPanelMaximized ? " right-panel-maximized" : ""}`}
         style={{
           "--right-panel-width": `${rightPanelResizer.width}px`,
           display: "flex",
@@ -1586,7 +1762,28 @@ export function AppShell() {
           background: "var(--bg-panel)",
           borderBottom: "1px solid var(--border)",
         }}>
-          <div style={{ flex: 1, overflow: "hidden" }}>
+          <button
+          type="button"
+          onClick={() => openWebTab(DEFAULT_WEB_URL)}
+          title={translate("browser.openButton")}
+          aria-label={translate("browser.openButton")}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 36, height: 36, padding: 0,
+            background: "none", border: "none", borderRight: "1px solid var(--border)",
+            color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
+            transition: "color 0.12s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="2" y1="12" x2="22" y2="12" />
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+          </svg>
+        </button>
+        <div style={{ flex: 1, overflow: "hidden" }}>
             <TabBar
               tabs={fileTabs}
               activeTabId={activeFileTabId ?? ""}
@@ -1594,28 +1791,134 @@ export function AppShell() {
               onCloseTab={handleCloseFileTab}
             />
           </div>
+          {activeTab && (
+            <div style={{ display: "flex", alignItems: "center", flexShrink: 0, borderLeft: "1px solid var(--border)" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeTab.kind === "web") {
+                    // A real tab is not an iframe — X-Frame-Options doesn't apply,
+                    // so open the raw URL (the page renders fully there).
+                    if (activeTab.url) window.open(activeTab.url, "_blank", "noopener,noreferrer");
+                  } else {
+                    const params = new URLSearchParams({ path: activeTab.filePath ?? "" });
+                    if (activeCwd) params.set("cwd", activeCwd);
+                    if (activeTab.sourceSessionId) params.set("session", activeTab.sourceSessionId);
+                    window.open(`/file?${params.toString()}`, "_blank", "noopener,noreferrer");
+                  }
+                  // The file is now open full-screen in its own tab — collapse
+                  // the in-app panel so the chat regains the space. The
+                  // open-file marker stays, so the agent still knows which
+                  // file the user is looking at.
+                  setRightPanelOpen(false);
+                }}
+                title={translate("files.openInNewTab")}
+                aria-label={translate("files.openInNewTab")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 36, height: 36, padding: 0,
+                  background: "none", border: "none",
+                  color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
+                  transition: "color 0.12s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
+              </button>
+              {!isMobile && (
+                <button
+                  type="button"
+                  onClick={handleToggleRightPanelMaximize}
+                  title={rightPanelMaximized ? translate("files.restorePanel") : translate("files.maximizePanel")}
+                  aria-label={rightPanelMaximized ? translate("files.restorePanel") : translate("files.maximizePanel")}
+                  aria-pressed={rightPanelMaximized}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 36, height: 36, padding: 0,
+                    background: rightPanelMaximized ? "var(--bg-selected)" : "none",
+                    border: "none",
+                    color: rightPanelMaximized ? "var(--text)" : "var(--text-muted)",
+                    cursor: "pointer", flexShrink: 0,
+                    transition: "color 0.12s, background 0.12s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = rightPanelMaximized ? "var(--text)" : "var(--text-muted)"; }}
+                >
+                  {rightPanelMaximized ? (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M8 3v3a2 2 0 0 1-2 2H3" />
+                      <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
+                      <path d="M3 16h3a2 2 0 0 1 2 2v3" />
+                      <path d="M16 21v-3a2 2 0 0 1 2-2h3" />
+                    </svg>
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+                      <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
+                      <path d="M3 16v3a2 2 0 0 0 2 2h3" />
+                      <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+                    </svg>
+                  )}
+                </button>
+              )}
+            </div>
+          )}
 
         </div>
 
-        {/* File content */}
+        {/* Right-panel content: file viewer + web browser */}
         <div style={{ flex: 1, overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {activeFileTab?.filePath ? (
-            <FileViewer
-              filePath={activeFileTab.filePath}
-              cwd={activeCwd ?? undefined}
-              sourceSessionId={activeFileTab.sourceSessionId}
-              gitRefreshKey={explorerRefreshKey}
-              initialDisplayMode={activeFileTab.initialDisplayMode}
-              onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
-              onOpenFile={(filePath) => handleOpenFile(
-                filePath,
-                getFileName(filePath),
-                { sourceSessionId: activeFileTab.sourceSessionId },
-              )}
-            />
-          ) : (
+          {fileTabs.map((tab) => {
+            const isActive = tab.id === activeFileTabId;
+            if (tab.kind === "web") {
+              // Keep every web tab mounted (inactive ones hidden via CSS) so
+              // iframe history/scroll survive switching between tabs.
+              return (
+                <div
+                  key={tab.id}
+                  style={{
+                    height: "100%",
+                    display: isActive ? "flex" : "none",
+                    flexDirection: "column",
+                  }}
+                >
+                  <WebViewer
+                    initialUrl={tab.url ?? null}
+                    active={isActive}
+                    onNavigate={(url) => handleWebNavigate(tab.id, url)}
+                  />
+                </div>
+              );
+            }
+            if (tab.kind === "file" && isActive && tab.filePath) {
+              return (
+                <FileViewer
+                  key={tab.id}
+                  filePath={tab.filePath}
+                  cwd={activeCwd ?? undefined}
+                  sourceSessionId={tab.sourceSessionId}
+                  gitRefreshKey={explorerRefreshKey}
+                  initialDisplayMode={tab.initialDisplayMode}
+                  onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
+                  onOpenFile={(filePath) => handleOpenFile(
+                    filePath,
+                    getFileName(filePath),
+                    { sourceSessionId: tab.sourceSessionId },
+                  )}
+                  onAiEdit={handleAiEdit}
+                />
+              );
+            }
+            return null;
+          })}
+          {fileTabs.length === 0 && (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
-               {translate("files.noneOpen")}
+              {translate("files.noneOpen")}
             </div>
           )}
         </div>
@@ -1664,6 +1967,12 @@ export function AppShell() {
         sessionId={selectedSession?.id ?? null}
         onClose={() => setPluginsConfigOpen(false)}
         onReloaded={() => setSessionKey((k) => k + 1)}
+      />
+    )}
+    {uploadsManagerOpen && (
+      <UploadsManager
+        onClose={() => setUploadsManagerOpen(false)}
+        onOpenFile={(path, name) => handleOpenFile(path, name)}
       />
     )}
     </>

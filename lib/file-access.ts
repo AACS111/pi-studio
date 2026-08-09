@@ -2,6 +2,7 @@ import { readdirSync } from "fs";
 import { homedir } from "os";
 import path from "path";
 import { getAdditionalAllowedRoots, normalizeSlashes } from "./allowed-roots";
+import { getDataDir } from "./storage-config";
 import { isExistingPathWithinRoots } from "./path-security";
 import { listAllSessions } from "./session-reader";
 export { allowFileRoot, normalizeSlashes } from "./allowed-roots";
@@ -45,6 +46,12 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
   } catch {
     // ignore if home is unreadable
   }
+
+  // The uploads store (pi-web data dir, default <project>/pi-web-uploads —
+  // configurable via lib/storage-config.ts) is browsable/servable so
+  // uploaded .xlsx/.univer files can open in the right panel and AI-edit
+  // outputs can be viewed.
+  roots.add(getDataDir());
 
   for (const root of getAdditionalAllowedRoots()) roots.add(root);
 

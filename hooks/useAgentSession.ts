@@ -314,7 +314,12 @@ export interface AttachedImage {
 }
 
 type SelectedModel = { provider: string; modelId: string };
-type ModelEntry = { id: string; name: string; provider: string };
+type ModelEntry = { id: string; name: string; provider: string; supportsImage?: boolean };
+
+export type VisionProxyStatus =
+  | { phase: "recognizing" }
+  | { phase: "error"; message: string }
+  | null;
 type ModelsResponse = {
   models: Record<string, string>;
   modelList?: ModelEntry[];
@@ -351,6 +356,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [modelNames, setModelNames] = useState<Record<string, string>>({});
   const [modelList, setModelList] = useState<ModelEntry[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [visionProxyStatus, setVisionProxyStatus] = useState<VisionProxyStatus>(null);
   const [modelScopeWarnings, setModelScopeWarnings] = useState<string[]>([]);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
@@ -1218,6 +1224,46 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [addNotice, cancelEventStreamGrace, handleExtensionUiRequest, loadSession, notifyPromptStage, onAgentEnd, scheduleEventStreamClose, settleUiStage]);
   handleAgentEventRef.current = handleAgentEvent;
 
+  // 视觉代理：当前模型不支持图片输入时，先把图片交给视觉模型识别成文字，
+  // 再把文字结果拼进消息发给当前模型（图片本身不再下发给模型）。
+  const proxyImagesIfNeeded = useCallback(async (
+    message: string,
+    images?: AttachedImage[],
+  ): Promise<{ message: string; images?: AttachedImage[] }> => {
+    if (!images?.length) return { message, images };
+    const model = displayModel;
+    const entry = modelList.find((m) => m.provider === model?.provider && m.id === model?.modelId);
+    const supportsImage = entry?.supportsImage ?? false;
+    if (supportsImage) return { message, images };
+
+    setVisionProxyStatus({ phase: "recognizing" });
+    try {
+      const res = await fetch("/api/vision/describe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: message,
+          images: images.map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType })),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { description?: unknown; modelName?: unknown; error?: unknown } | null;
+      if (!res.ok) {
+        throw new Error(data?.error && typeof data.error === "string" ? data.error : `图片识别失败 (HTTP ${res.status})`);
+      }
+      const description = typeof data?.description === "string" ? data.description.trim() : "";
+      if (!description) throw new Error("视觉模型没有返回识别结果");
+      const modelName = typeof data?.modelName === "string" ? data.modelName : "视觉模型";
+      setVisionProxyStatus(null);
+      const prefix = message.trim()
+        ? `${message.trim()}\n\n[附带图片已由 ${modelName} 识别，识别结果如下]\n${description}`
+        : `[图片已由 ${modelName} 识别，识别结果如下]\n${description}`;
+      return { message: prefix };
+    } catch (e) {
+      setVisionProxyStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
+  }, [displayModel, modelList]);
+
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return;
@@ -1234,15 +1280,28 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
 
     const promptRunId = promptRunIdRef.current + 1;
+    // 视觉代理：当前模型不支持图片时，先由视觉模型识别，再把文字结果发给当前模型
+    setVisionProxyStatus(null);
+    let effectiveMessage = message;
+    let effectiveImages = images;
+    if (images?.length) {
+      try {
+        const proxied = await proxyImagesIfNeeded(message, images);
+        effectiveMessage = proxied.message;
+        effectiveImages = proxied.images;
+      } catch {
+        return;
+      }
+    }
     cancelEventStreamGrace();
     rpcPromptPendingRef.current = true;
 
-    const imageBlocks = images?.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.data } }));
+    const imageBlocks = effectiveImages?.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.mimeType, data: img.data } }));
     const userMsg: AgentMessage = {
       role: "user",
       content: imageBlocks?.length
-        ? [...(message.trim() ? [{ type: "text" as const, text: message }] : []), ...imageBlocks]
-        : message,
+        ? [...(effectiveMessage.trim() ? [{ type: "text" as const, text: effectiveMessage }] : []), ...imageBlocks]
+        : effectiveMessage,
       timestamp: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
@@ -1255,7 +1314,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     pendingScrollToUserRef.current = true;
     completionScrollAllowedRef.current = true;
 
-    const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+    const piImages = effectiveImages?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     let sentSessionId: string | null = null;
     let promptRequestStarted = false;
 
@@ -1277,10 +1336,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           promptRequestStarted = true;
           await sendAgentCommand(sid, {
             type: "prompt",
-            message,
+            message: effectiveMessage,
             ...(piImages?.length ? { images: piImages } : {}),
           });
-          promoteNewSession(1, message);
+          promoteNewSession(1, effectiveMessage);
         }
       } else if (session) {
         sentSessionId = session.id;
@@ -1288,7 +1347,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         promptRequestStarted = true;
         await sendAgentCommand(session.id, {
           type: "prompt",
-          message,
+          message: effectiveMessage,
           ...(piImages?.length ? { images: piImages } : {}),
         });
       }
@@ -1328,7 +1387,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, opts.chatInputRef]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, proxyImagesIfNeeded, opts.chatInputRef]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -1578,17 +1637,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleSteer = useCallback(async (message: string, images?: AttachedImage[]) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-    const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     try {
+      const proxied = await proxyImagesIfNeeded(message, images);
+      const piImages = proxied.images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
       await sendAgentCommand(sid, {
         type: "steer",
-        message,
+        message: proxied.message,
         ...(piImages?.length ? { images: piImages } : {}),
       });
     } catch (e) {
       console.error("Failed to steer:", e);
     }
-  }, []);
+  }, [proxyImagesIfNeeded]);
 
   const handlePromptWithStreamingBehavior = useCallback(async (
     message: string,
@@ -1597,33 +1657,35 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   ) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-    const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     try {
+      const proxied = await proxyImagesIfNeeded(message, images);
+      const piImages = proxied.images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
       await sendAgentCommand(sid, {
         type: "prompt",
-        message,
+        message: proxied.message,
         streamingBehavior: behavior,
         ...(piImages?.length ? { images: piImages } : {}),
       });
     } catch (e) {
       console.error("Failed to queue prompt:", e);
     }
-  }, []);
+  }, [proxyImagesIfNeeded]);
 
   const handleFollowUp = useCallback(async (message: string, images?: AttachedImage[]) => {
     const sid = sessionIdRef.current;
     if (!sid) return;
-    const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
     try {
+      const proxied = await proxyImagesIfNeeded(message, images);
+      const piImages = proxied.images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
       await sendAgentCommand(sid, {
         type: "follow_up",
-        message,
+        message: proxied.message,
         ...(piImages?.length ? { images: piImages } : {}),
       });
     } catch (e) {
       console.error("Failed to follow up:", e);
     }
-  }, []);
+  }, [proxyImagesIfNeeded]);
 
   const handleAbortCompaction = useCallback(async () => {
     const sid = sessionIdRef.current;
@@ -1839,6 +1901,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    visionProxyStatus,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,

@@ -2,6 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
+import type { VisionProxyStatus } from "@/hooks/useAgentSession";
 import type { SkillsResponse } from "@/lib/api-types";
 import { clearDraft, getDraft, setDraft, type ChatDraftImage } from "@/lib/draft-store";
 import {
@@ -69,6 +70,12 @@ interface Props {
   draftKey?: string;
   /** Session working directory — enables the @ file autocomplete menu */
   cwd?: string | null;
+  /** 视觉代理状态：当前模型不支持图片时，图片由视觉模型识别（recognizing / error） */
+  visionProxyStatus?: VisionProxyStatus;
+  /** 手动上传 .xlsx/.univer 表格附件（上传后由上层在右侧打开） */
+  onUploadSpreadsheets?: (files: File[]) => void;
+  spreadsheetUploadBusy?: boolean;
+  spreadsheetUploadError?: string | null;
 }
 
 export interface ChatInputHandle {
@@ -76,6 +83,8 @@ export interface ChatInputHandle {
   insertIfEmpty: (text: string) => void;
   prependText: (text: string) => void;
   addImages: (files: File[]) => void;
+  /** 立即发送一条程序化消息（流式进行中或空文本时返回 false）。 */
+  sendText: (text: string) => boolean;
 }
 
 const TOOL_PRESETS = ["off", "default", "full"] as const;
@@ -99,6 +108,20 @@ export function filterModelOptions(options: ModelOption[], query: string): Model
       .toLocaleLowerCase()
       .includes(normalizedQuery)
   ));
+}
+
+/**
+ * 把附加的图片也存一份到上传存储目录（默认 <项目>/pi-web-uploads，可配置）。
+ * 后台静默执行，失败不影响消息流程。
+ */
+function persistImagesToUploads(files: File[]): void {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file, file.name));
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/uploads");
+  xhr.onload = () => { /* 静默 */ };
+  xhr.onerror = () => { /* 静默 */ };
+  xhr.send(formData);
 }
 
 const THINKING_LEVELS = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -322,6 +345,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onPromptWithStreamingBehavior,
   draftKey,
   cwd,
+  visionProxyStatus,
+  onUploadSpreadsheets,
+  spreadsheetUploadBusy,
+  spreadsheetUploadError,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -364,6 +391,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const controlsMenuRef = useRef<HTMLDivElement>(null);
   const historyMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const spreadsheetInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
   const slashCommandsRequestedRef = useRef(false);
@@ -376,8 +404,10 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
+  const isStreamingRef = useRef(isStreaming);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
+  isStreamingRef.current = isStreaming;
 
   useImperativeHandle(ref, () => ({
     insertIfEmpty(text: string) {
@@ -436,6 +466,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     addImages(files: File[]) {
       processImageFiles(files);
     },
+    sendText(text: string) {
+      const msg = text.trim();
+      if (!msg || isStreamingRef.current) return false;
+      onSend(msg);
+      return true;
+    },
   }));
 
   const processImageFiles = useCallback(async (files: File[]) => {
@@ -471,6 +507,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         newImages.slice(accepted.length).forEach(revokeImagePreview);
         return [...prev, ...accepted];
       });
+      // 图片也落一份到上传存储目录（默认 <项目>/pi-web-uploads，可配置），供用户管理；
+      // 消息仍走 base64，不影响 agent 的图片识别。
+      void persistImagesToUploads(imageFiles);
     } finally {
       pendingImageCountRef.current -= imageFiles.length;
     }
@@ -1134,7 +1173,68 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           e.target.value = "";
         }}
       />
+      {/* Hidden spreadsheet upload input (.xlsx / .univer) */}
+      <input
+        ref={spreadsheetInputRef}
+        type="file"
+        accept=".xlsx,.xls,.univer"
+        multiple
+        disabled={isStreaming || spreadsheetUploadBusy}
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const files = Array.from(e.target.files ?? []);
+          onUploadSpreadsheets?.(files);
+          e.target.value = "";
+        }}
+      />
       <div style={{ maxWidth: 820, margin: "0 auto" }}>
+        {visionProxyStatus && (
+          <div
+            role={visionProxyStatus.phase === "error" ? "alert" : "status"}
+            style={{
+              marginBottom: 8,
+              padding: "6px 10px",
+              borderRadius: 6,
+              fontSize: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              ...(visionProxyStatus.phase === "error"
+                ? {
+                    background: "rgba(239,68,68,0.07)",
+                    border: "1px solid rgba(239,68,68,0.3)",
+                    color: "#ef4444",
+                  }
+                : {
+                    background: "rgba(59,130,246,0.08)",
+                    border: "1px solid rgba(59,130,246,0.25)",
+                    color: "var(--text-muted)",
+                  }),
+            }}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{ flexShrink: 0 }}
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="9" cy="9" r="2" />
+              <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+            </svg>
+            <span style={{ overflowWrap: "anywhere" }}>
+              {visionProxyStatus.phase === "recognizing"
+                ? "正在用视觉模型识别图片…"
+                : visionProxyStatus.message}
+            </span>
+          </div>
+        )}
         <ModelErrorBanner error={modelError} />
         <ModelScopeWarningBanner warnings={modelScopeWarnings} />
         {/* Queued steering / follow-up messages (delivered by pi on upcoming turns) */}
@@ -1766,6 +1866,32 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         )}
 
+        {/* Spreadsheet upload status */}
+        {spreadsheetUploadError && (
+          <div
+            role="alert"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              marginTop: 6,
+              padding: "6px 10px",
+              borderRadius: 8,
+              background: "rgba(248,113,113,0.10)",
+              border: "1px solid rgba(248,113,113,0.30)",
+              color: "#f87171",
+              fontSize: 12,
+              lineHeight: 1.4,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{spreadsheetUploadError}</span>
+          </div>
+        )}
         {/* Bottom bar: left | center (context) | right */}
         <div style={{
           marginTop: 8,
@@ -1806,6 +1932,45 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 <circle cx="8.5" cy="8.5" r="1.5" />
                 <polyline points="21 15 16 10 5 21" />
               </svg>
+            </button>
+            {/* Upload spreadsheet (.xlsx / .univer) — uploaded files open in the right panel */}
+            <button
+              onClick={() => spreadsheetInputRef.current?.click()}
+              disabled={isStreaming || spreadsheetUploadBusy}
+              title={spreadsheetUploadBusy ? t("chat.uploadSpreadsheetBusy") : t("chat.uploadSpreadsheet")}
+              style={{
+                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                width: 32, height: 32, padding: 0,
+                background: "none", border: "none",
+                borderRadius: 9,
+                color: spreadsheetUploadBusy ? "var(--accent)" : "var(--text-muted)",
+                cursor: (isStreaming || spreadsheetUploadBusy) ? "not-allowed" : "pointer",
+                opacity: isStreaming ? 0.5 : 1,
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                if (isStreaming || spreadsheetUploadBusy) return;
+                e.currentTarget.style.background = "var(--bg-hover)";
+                e.currentTarget.style.color = "var(--text)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "none";
+                e.currentTarget.style.color = spreadsheetUploadBusy ? "var(--accent)" : "var(--text-muted)";
+              }}
+            >
+              {spreadsheetUploadBusy ? (
+                <span
+                  style={{ width: 13, height: 13, borderRadius: "50%", border: "2px solid var(--border)", borderTopColor: "var(--accent)", animation: "spin 0.8s linear infinite", display: "inline-block" }}
+                />
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  <path d="M3 9h18" />
+                  <path d="M3 15h18" />
+                  <path d="M9 3v18" />
+                  <path d="M15 3v18" />
+                </svg>
+              )}
             </button>
             {/* Model selector — visible always, disabled during streaming */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (

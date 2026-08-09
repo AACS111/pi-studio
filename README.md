@@ -1,55 +1,55 @@
-# Pi Web
+# Pi Studio
 
 [中文文档](./README.zh-CN.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
-Local web UI for the [pi coding agent](https://github.com/badlogic/pi-mono). Pi Web reads your local pi session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
+Local web UI for the [pi coding agent](https://github.com/badlogic/pi-mono). Pi Studio reads your local pi session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
 
-![Pi Web shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
+![Pi Studio shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](https://raw.githubusercontent.com/AACS111/pi-studio/main/docs/screenshot2.png)
 
-The same pi session in CLI and Pi Web: structured tool calls, readable Markdown, session browsing, and cleaner results.
+The same pi session in CLI and Pi Studio: structured tool calls, readable Markdown, session browsing, and cleaner results.
 
 ## Quick Start
 
-Pi Web requires Node.js 22.19.0 or newer. Check your version with `node --version`.
+Pi Studio requires Node.js 22.19.0 or newer. Check your version with `node --version`.
 
 **Run without installing:**
 
 ```bash
-npx @agegr/pi-web@latest
+npx @aacs111/pi-studio@latest
 ```
 
 **Or install globally:**
 
 ```bash
-npm install -g @agegr/pi-web
-pi-web
+npm install -g @aacs111/pi-studio
+pi-studio
 ```
 
-Then open [http://127.0.0.1:30141](http://127.0.0.1:30141). The CLI will try to open the browser automatically after the server is ready. Pi Web listens on `127.0.0.1` by default.
+Then open [http://127.0.0.1:30141](http://127.0.0.1:30141). The CLI will try to open the browser automatically after the server is ready. Pi Studio listens on `127.0.0.1` by default.
 
 **Options:**
 
 ```bash
-pi-web --port 8080              # custom port
-pi-web --hostname 0.0.0.0       # expose on a trusted network
-pi-web -p 8080 -H 0.0.0.0       # combine options
-pi-web --no-open                # do not open the browser automatically
+pi-studio --port 8080              # custom port
+pi-studio --hostname 0.0.0.0       # expose on a trusted network
+pi-studio -p 8080 -H 0.0.0.0       # combine options
+pi-studio --no-open                # do not open the browser automatically
 
-PORT=8080 pi-web                # environment variable is also supported
-PI_WEB_HOSTNAME=0.0.0.0 pi-web  # explicit network exposure
-PI_WEB_ALLOWED_HOSTS=pi-web.internal pi-web  # allow an exact proxy/custom hostname
-PI_WEB_PASSWORD='a-long-random-password' pi-web  # require Basic Auth (username: pi)
-PI_WEB_NO_OPEN=1 pi-web         # useful when running as a background service
+PORT=8080 pi-studio                # environment variable is also supported
+PI_WEB_HOSTNAME=0.0.0.0 pi-studio  # explicit network exposure
+PI_WEB_ALLOWED_HOSTS=pi-studio.internal pi-studio  # allow an exact proxy/custom hostname
+PI_WEB_PASSWORD='a-long-random-password' pi-studio  # require Basic Auth (username: pi)
+PI_WEB_NO_OPEN=1 pi-studio         # useful when running as a background service
 ```
 
 Set `PI_WEB_PASSWORD` to protect the web interface and every API endpoint with HTTP Basic Auth. The username is always `pi`. Leaving the variable unset or empty disables authentication.
 
-Pi Web can invoke a high-privilege agent. Basic Auth does not encrypt the password in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
+Pi Studio can invoke a high-privilege agent. Basic Auth does not encrypt the password in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
 API requests accept loopback names, IP literals, the selected bind hostname, and exact comma-separated names in `PI_WEB_ALLOWED_HOSTS`. Configure that variable when a trusted reverse proxy uses a different external hostname.
 
 ## HTTP Proxy
 
-Pi Web reads the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables for server-side model and API requests.
+Pi Studio reads the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables for server-side model and API requests.
 
 On macOS or Linux:
 
@@ -57,7 +57,7 @@ On macOS or Linux:
 HTTP_PROXY=http://127.0.0.1:7890 \
 HTTPS_PROXY=http://127.0.0.1:7890 \
 NO_PROXY=localhost,127.0.0.1 \
-npx @agegr/pi-web@latest
+npx @aacs111/pi-studio@latest
 ```
 
 On Windows PowerShell:
@@ -66,7 +66,7 @@ On Windows PowerShell:
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
 $env:HTTPS_PROXY = "http://127.0.0.1:7890"
 $env:NO_PROXY = "localhost,127.0.0.1"
-npx @agegr/pi-web@latest
+npx @aacs111/pi-studio@latest
 ```
 
 ## Features
@@ -81,11 +81,11 @@ npx @agegr/pi-web@latest
 
 ## Notes
 
-- **Data directory**: Pi Web reads `~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
+- **Data directory**: Pi Studio reads `~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
 - **Session files**: files are stored as `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`.
 - **Model config**: the Models panel reads and writes `models.json` in the pi agent directory. Model lists and defaults come from pi's config.
 - **File access**: file browsing and preview are scoped to the selected project directory and working directories that appear in sessions.
-- **Git worktrees**: see [Worktrees in Pi Web](./docs/worktrees.md) for when the switcher appears, how new worktrees are created, and what removal does.
+- **Git worktrees**: see [Worktrees in Pi Studio](./docs/worktrees.md) for when the switcher appears, how new worktrees are created, and what removal does.
 - **Forks vs in-session branches**: Fork creates a new `.jsonl` file. "Edit from here" creates another branch inside the same session file.
 - **Internationalization**: see [Internationalization](./docs/i18n.md) for using translations and adding languages or UI text.
 
@@ -150,6 +150,6 @@ hooks/
   useDragDrop.ts      # image drag/drop
   useTheme.ts         # theme switching
 bin/
-  pi-web.js           # npm CLI entrypoint
+  pi-studio.js           # npm CLI entrypoint
 instrumentation.ts    # initializes the server HTTP dispatcher
 ```

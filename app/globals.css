@@ -938,6 +938,20 @@ span.linenumber {
   .right-panel-container.right-panel-resizing > * {
     transition: none !important;
   }
+  /* Maximized file panel: overlay the whole window (chat/sidebar hidden).
+     Restore via the panel's restore button, Esc, or the top-right toggle. */
+  .right-panel-container.right-panel-maximized {
+    position: fixed;
+    inset: 0;
+    z-index: 260;
+    width: 100%;
+    min-width: 0;
+    transition: none;
+  }
+  .right-panel-container.right-panel-maximized > * {
+    width: 100%;
+    min-width: 0;
+  }
 }
 
 /* Compact desktop file panel: overlay the chat instead of collapsing it. */
@@ -977,6 +991,12 @@ span.linenumber {
   .right-panel-container.right-panel-closed {
     transform: translateX(100%);
     pointer-events: none;
+  }
+  .right-panel-container.right-panel-maximized {
+    inset: 0;
+    width: 100%;
+    min-width: 0;
+    transition: none;
   }
   .right-panel-container > * {
     width: 100%;

@@ -39,6 +39,7 @@ interface Props {
   onSessionStatsPanelOpen?: () => void;
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
   onOpenFile?: (filePath: string) => void;
+  onOpenWebUrl?: (url: string) => void;
   onOpenChangedFile?: (filePath: string) => void;
 }
 
@@ -98,6 +99,38 @@ function countToolCalls(messages: AgentMessage[], indices: number[]): number {
     count += countToolCallBlocks(getDisplayableAssistantBlocks(msg as AssistantMessage));
   }
   return count;
+}
+
+/* ------------------------------------------------------------------ */
+/* Spreadsheet attachment upload (.xlsx / .univer)                     */
+/* ------------------------------------------------------------------ */
+
+interface UploadsResponse {
+  uploaded?: Array<{ name: string; path: string; size: number; kind: string }>;
+  errors?: Array<{ name: string; error: string }>;
+  error?: string;
+}
+
+function uploadAttachments(files: File[]): Promise<{ status: number; data: UploadsResponse }> {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    files.forEach((file) => formData.append("files", file, file.name));
+
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/uploads");
+    xhr.onerror = () => reject(new Error("Network error while uploading files"));
+    xhr.onabort = () => reject(new Error("Upload cancelled"));
+    xhr.onload = () => {
+      let data: UploadsResponse = {};
+      try {
+        data = JSON.parse(xhr.responseText) as UploadsResponse;
+      } catch {
+        if (xhr.responseText) data.error = xhr.responseText;
+      }
+      resolve({ status: xhr.status, data });
+    };
+    xhr.send(formData);
+  });
 }
 
 function hasDisplayableProcessMessage(message: AgentMessage): boolean {
@@ -173,7 +206,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenChangedFile }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile }: Props) {
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -202,6 +235,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    visionProxyStatus,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
@@ -312,6 +346,40 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     chatInputRef?.current?.addImages(files);
   }, [sessionBusy, chatInputRef]);
 
+  // Manual .xlsx / .univer attachment upload: files land in the dedicated
+  // uploads store (default <project>/pi-web-uploads, configurable), then open in the right
+  // panel so the user can review them (and hit "AI 编辑" on .xlsx files).
+  const [spreadsheetUploadBusy, setSpreadsheetUploadBusy] = useState(false);
+  const [spreadsheetUploadError, setSpreadsheetUploadError] = useState<string | null>(null);
+  const handleUploadSpreadsheets = useCallback(async (files: File[]) => {
+    if (!files.length || spreadsheetUploadBusy) return;
+    const spreadsheets = files.filter((file) => /\.(xlsx|xls|univer)$/i.test(file.name));
+    if (!spreadsheets.length) {
+      setSpreadsheetUploadError(t("chat.uploadSpreadsheetTypeError"));
+      return;
+    }
+
+    setSpreadsheetUploadError(null);
+    setSpreadsheetUploadBusy(true);
+    try {
+      const { status, data } = await uploadAttachments(spreadsheets);
+      if (status < 200 || status >= 300) {
+        const failed = data.errors?.[0];
+        throw new Error(failed ? `${failed.name}: ${failed.error}` : (data.error ?? `Upload failed (HTTP ${status})`));
+      }
+
+      const uploaded = data.uploaded ?? [];
+      for (const entry of uploaded) {
+        if (!/\.(xlsx|xls|univer)$/i.test(entry.name)) continue;
+        if (entry.path) onOpenFile?.(entry.path);
+      }
+    } catch (error) {
+      setSpreadsheetUploadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSpreadsheetUploadBusy(false);
+    }
+  }, [spreadsheetUploadBusy, t, onOpenFile]);
+
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
 
   const visibleMessages = messages.filter((m) => m.role === "user" || m.role === "assistant");
@@ -383,6 +451,10 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       onAudioUnlock={unlockAudio}
       draftKey={session?.id ?? (newSessionCwd ? `new:${newSessionCwd}` : undefined)}
       cwd={session?.cwd ?? newSessionCwd}
+      visionProxyStatus={visionProxyStatus}
+      onUploadSpreadsheets={handleUploadSpreadsheets}
+      spreadsheetUploadBusy={spreadsheetUploadBusy}
+      spreadsheetUploadError={spreadsheetUploadError}
     />
   );
 
@@ -477,7 +549,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             >
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, minWidth: 0, flex: 1, lineHeight: 1.4, overflow: "hidden" }}>
                 <span style={{ fontSize: 28, fontWeight: 700, letterSpacing: 0, color: "var(--text)", flexShrink: 0, whiteSpace: "nowrap" }}>π</span>
-                <span style={{ fontSize: 22, color: "var(--text)", fontWeight: 700, letterSpacing: 0, flexShrink: 0, whiteSpace: "nowrap" }}>Pi Web</span>
+                <span style={{ fontSize: 22, color: "var(--text)", fontWeight: 700, letterSpacing: 0, flexShrink: 0, whiteSpace: "nowrap" }}>Pi Studio</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0 }}>
                 <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
@@ -581,6 +653,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     modelNames={modelNames}
                     cwd={messageCwd}
                     onOpenFile={onOpenFile}
+                    onOpenWebUrl={onOpenWebUrl}
                     entryId={entryIds[idx]}
                     onFork={sessionBusy || isNew || (idx === 0 && msg.role === "user") ? undefined : handleFork}
                     forking={forkingEntryId === entryIds[idx]}

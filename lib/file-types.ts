@@ -68,6 +68,17 @@ export function isAudioPath(filePath: string): boolean {
   return getAudioMime(filePath) !== null;
 }
 
+/** Spreadsheet files (.xlsx/.xls) opened in the built-in Univer viewer. */
+export function isSpreadsheetPath(filePath: string): boolean {
+  const ext = getFileExt(filePath);
+  return ext === "xlsx" || ext === "xls";
+}
+
+/** Univer CLI .univer files — rendered via the CLI export + Univer viewer. */
+export function isUniverFilePath(filePath: string): boolean {
+  return getFileExt(filePath) === "univer";
+}
+
 export function isDocumentPreviewPath(filePath: string): boolean {
   return documentPreviewKind(filePath) !== null;
 }

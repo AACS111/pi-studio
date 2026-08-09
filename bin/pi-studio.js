@@ -16,7 +16,7 @@ const path = require("path");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const fs = require("fs");
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { parseLaunchOptions } = require("./pi-web-options");
+const { parseLaunchOptions } = require("./pi-studio-options");
 
 const pkgDir = path.join(__dirname, "..");
 const nextDir = path.join(pkgDir, ".next");
@@ -48,11 +48,11 @@ if (!fs.existsSync(nextDir)) {
 if (!loopbackHostnames.has(hostname)) {
   if (passwordEnabled) {
     console.warn(
-      `Warning: pi-web is listening on ${hostname} with Basic Auth over HTTP. Use HTTPS or a trusted VPN to protect the password in transit.`,
+      `Warning: pi-studio is listening on ${hostname} with Basic Auth over HTTP. Use HTTPS or a trusted VPN to protect the password in transit.`,
     );
   } else {
     console.warn(
-      `Warning: pi-web is listening on ${hostname} without authentication. Only use this on a trusted network.`,
+      `Warning: pi-studio is listening on ${hostname} without authentication. Only use this on a trusted network.`,
     );
   }
 }

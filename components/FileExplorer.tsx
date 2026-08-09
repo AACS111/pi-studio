@@ -580,8 +580,14 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     if (uploaded.length > 0) {
       setHighlightedPaths(new Set(uploaded.map((name) => joinFilePath(cwd, name))));
       setTreeRefreshKey((key) => key + 1);
+      // Spreadsheet uploads (.xlsx / .univer) open immediately in the right
+      // panel so the user can review them (and hit "AI 编辑" on .xlsx files).
+      for (const name of uploaded) {
+        if (!/\.(xlsx|xls|univer)$/i.test(name)) continue;
+        onOpenFile(joinFilePath(cwd, name), name);
+      }
     }
-  }, [cwd]);
+  }, [cwd, onOpenFile]);
 
   const performUpload = useCallback(async (
     files: File[],

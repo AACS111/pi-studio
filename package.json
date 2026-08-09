@@ -1,22 +1,23 @@
 {
-  "name": "@agegr/pi-web",
+  "name": "@aacs111/pi-studio",
   "version": "0.8.6",
   "description": "Web UI for the pi coding agent",
-  "homepage": "https://github.com/agegr/pi-web#readme",
+  "homepage": "https://github.com/AACS111/pi-studio#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agegr/pi-web.git"
+    "url": "git+https://github.com/AACS111/pi-studio.git"
   },
   "bugs": {
-    "url": "https://github.com/agegr/pi-web/issues"
+    "url": "https://github.com/AACS111/pi-studio/issues"
   },
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
   },
   "bin": {
-    "pi-web": "bin/pi-web.js"
+    "pi-studio": "bin/pi-studio.js"
   },
+  "main": "electron/main.cjs",
   "files": [
     "bin",
     ".next",
@@ -33,6 +34,10 @@
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 30141",
     "start:lan": "next start -H 0.0.0.0 -p 30141",
+    "pack": "node scripts/package.mjs",
+    "pack:dir": "node scripts/package.mjs --dir",
+    "pack:portable": "node scripts/package.mjs --portable",
+    "pack:nsis": "node scripts/package.mjs --nsis",
     "lint": "eslint .",
     "release": "npm version patch --no-git-tag-version && npm run build && npm publish --access public"
   },
@@ -41,11 +46,15 @@
     "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@earendil-works/pi-tui": "0.83.0",
+    "@univerjs/presets": "^0.25.1",
+    "fflate": "^0.8.3",
     "next": "16.2.12",
     "proper-lockfile": "4.1.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "undici": "8.5.0"
+    "undici": "8.5.0",
+    "univer-cli": "^0.4.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@lobehub/icons": "^5.6.0",
@@ -55,6 +64,8 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
     "jiti": "^2.7.0",

@@ -1,9 +1,9 @@
-# Pi Web - Development Notes
+# Pi Studio - Development Notes
 
 ## Quick Start
 
 ```bash
-npm run dev   # port 30141
+npm run dev   # port 10141 (see package.json; the old doc said 30141 — a stale `next start` once ran there)
 ```
 
 Typecheck: `node_modules/.bin/tsc --noEmit`  
@@ -55,6 +55,10 @@ app/api/
   auth/providers/route.ts         GET OAuth provider list
   cwd/validate/route.ts           POST validate/select a cwd
   default-cwd/route.ts            POST create ~/pi-cwd-YYYYMMDD
+  open-file/route.ts              GET/POST right-panel active file marker (agent default target)
+  browser/route.ts                GET/POST/DELETE web-preview marker (agent pushes a page to the panel)
+  browser/proxy/route.ts          GET/POST server-side fetch+rewrite proxy for the sandboxed iframe
+  browser/control/[...path]/route.ts GET/POST streamed pass-through to the browser-use sidecar (127.0.0.1:17865): /open /url /content /screenshot /screencast (SSE live frames) /input (CDP click/type/scroll/key) /evaluate
   files/[...path]/route.ts        GET file contents for viewer
   home/route.ts                   GET user home directory
   models/route.ts                 GET { models, modelList, defaultModel }
@@ -67,6 +71,14 @@ app/api/
   skills/install/route.ts         POST install skills through npx skills add
   skills/search/route.ts          GET/POST skills.sh search
   worktrees/route.ts              GET/POST/DELETE git worktrees
+  univer/view/route.ts            GET .univer → xlsx bytes for the viewer (headCommit-validated cache)
+  univer/export/route.ts          GET export .univer → .xlsx/.csv download
+  univer/writeback/route.ts       POST write .univer back over its original .xlsx
+  univer/edit-commit/route.ts     POST commit online cell edits → worktree (or trunk via hidden pi-auto staging)
+  univer/worktree-create/route.ts POST create draft worktree (default name u-<6随机数>)
+  univer/worktree-delete/route.ts POST permanently delete a non-merged worktree (direct SQLite)
+  univer/worktrees/route.ts       GET .univer worktree list + commits + userSeqs (direct SQLite read)
+  univer/discard/route.ts         POST discard a worktree (CLI)
 
 lib/
   agent-client.ts      typed fetch helper for /api/agent commands
@@ -98,7 +110,13 @@ components/
   SkillsConfig.tsx    modal for loaded/search/installable skills
   FileExplorer.tsx    file tree inside sidebar
   FileIcons.tsx       file icon helpers
-  FileViewer.tsx      file content in a tab
+  FileViewer.tsx      file content in a tab (routes .xlsx → XlsxViewer, .univer → UniverFileViewer)
+  XlsxViewer.tsx      Univer sheets viewer — core preset + OSS plugins (conditional formatting,
+                      data validation, filter, find/replace, sort, table, hyperlink, note,
+                      thread comment; zh-CN locales merged) + filter worker preset. SheetJS CE
+                      drops conditionalFormatting/dataValidations/autoFilter on read, so the viewer
+                      unzips the xlsx with fflate and translates the sheet XML into Univer workbook
+                      `resources` payloads (see parseXlsxAdvancedFeatures / buildAdvancedResources)
   ChangedFilesCard.tsx changed-files summary card under assistant messages
   TabBar.tsx          tab bar (Chat + open file tabs)
 
@@ -113,6 +131,11 @@ hooks/
 ---
 
 ## Key Design Decisions & Traps
+
+### Right-panel open-file marker (agent convention)
+- `AppShell` reports the currently active file tab to `/api/open-file` whenever it changes (deduped per path via a ref; fires only on change). The route persists `{ filePath, updatedAt }` to pi-web's own data dir (default `<project>/pi-web-uploads/.internal/pi-web-open-file.json`; see `lib/storage-config.ts` — the location is user-configurable, no longer `~/.pi/agent`). Atomic tmp+rename write.
+- **Convention: when the user asks to edit "the table" / a spreadsheet without naming a file, default to the file recorded in that marker** (the one open in the right viewer). Read it with `GET /api/open-file` or directly from the marker file under pi-web's data dir (default `<project>/pi-web-uploads/.internal/pi-web-open-file.json`); if absent/unset, ask which file.
+- **Uploads storage**: uploaded files, AI-edit .univer outputs, and pi-web's internal state all live in the configurable data dir — default `<project>/pi-web-uploads/` (created on demand; `.internal/` inside holds the open-file marker, user-edit sidecar, and univer CLI home). Location resolution: `PI_WEB_UPLOADS_DIR` env var → `.pi-web-config.json` `uploadsDir` (editable via the uploads manager UI or by hand) → project default. Legacy data from `~/.pi/agent/pi-web-*` is migrated once on server start (`instrumentation.ts` → `migrateLegacyData()`).
 
 ### Changed-files card (per-turn change summary)
 - `extractChangedFiles()` (`lib/changed-files.ts`) scans assistant toolCall blocks for `edit`/`write` tools (input field is `path`, not `filePath`) and returns deduplicated `{filePath, kind}` entries.
@@ -148,7 +171,7 @@ Tool names are passed at session creation (`POST /api/agent/new` → `toolNames[
 `GET /api/models` returns `defaultModel` read from `~/.pi/agent/settings.json`. `ChatWindow` pre-selects this on mount for new sessions. Explicit browser model/thinking selections are applied atomically during AgentSession construction, then `lib/startup-preferences.ts` persists their effective values without replaying `set_model`/`set_thinking_level`; implicit `enabledModels` fallbacks and thinking pins are not persisted.
 
 ### `enabledModels` scoping
-The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-web and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.
+The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-studio and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.
 
 ### SSE reconnect on page refresh mid-stream
 On `ChatWindow` mount, `GET /api/agent/[id]` is called. If `state.isStreaming === true`, SSE is reconnected automatically. `thinkingLevel` and `isCompacting` are also synced from this response.
@@ -169,6 +192,13 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - Removing a dirty worktree returns `409` with `{ dirty: true }` so the UI can ask before retrying with `force`.
 - Sessions whose cwd points at a removed worktree are inferred back into the main project instead of becoming a phantom project row.
 
+### Univer viewer in-place sync (`.univer` files)
+- **One Univer instance per file.** `XlsxViewer` keeps the instance alive across scope switches; a scope change (branch switch / external `univer execute` commit) is **diff-applied in place** (cell v/t/f/s via `FRange.setValue`, merges via `merge()` / `sheet.command.remove-worksheet-merge`), not a full dispose+recreate. Only structural changes (sheet set/names/dimensions, CF/validation/filter resources, or >8000 changed cells) fall back to a recreate.
+- **Parsed-scope cache** (`loadScopeData`/`warmScopeData` in XlsxViewer.tsx): each scope's parsed workbook is cached keyed by `scopeKey = <file>::wt:<id>::<headCommit>` (or `::trunk::<mtime>`). `UniverFileViewer`'s poll advances an `ackRevRef` only when the **viewed** scope's own content changed externally — commits to other worktrees, status changes, and the user's own auto-saves (`ownSaveRef`: worktree=headCommit seq, trunk=file mtime from `/api/univer/edit-commit`) never re-sync the grid.
+- `/api/univer/worktrees` returns `trunkRev` (file mtime) so the frontend can key its trunk cache; a merge invalidates it regardless of what's viewed.
+- **Agent rule: never auto-merge worktrees.** Edit on a worktree, `worktree ready`, then stop — the user clicks 合并到主干 in the viewer or explicitly asks. The sheet-edit skill enforces this.
+- **Verification discipline (from user feedback, 2026-08): every change must pass tsc + eslint + a headless-browser round-trip (trunk→worktree→trunk with style assertions) before being reported — never hand the user an unverified state; their browser may be running stale chunks/scope caches (see sheet-edit skill's 交付流程铁律 / 常见坑 for the full list: `setValue` merge semantics, `s:null` the only style clearer, SheetJS drops alignment, `getCellData().s` is a style id → read `wb.save().styles[id]`, daemon file locks, dev port 10141).
+
 ### File access allow-list
 - `/api/files` is intentionally not a general filesystem browser. Allowed roots come from session cwds, their resolved project roots, `~/pi-cwd-*`, and roots explicitly added with `allowFileRoot()`.
 - `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable.
@@ -176,6 +206,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 ### Plugins and skills
 - `/api/plugins` uses pi's `SettingsManager` + `DefaultPackageManager` for global/project package install, remove, update, enable, and disable. Disabling writes empty `extensions/skills/prompts/themes` arrays for that package entry.
 - `/api/skills` uses `DefaultResourceLoader` so settings paths, package skills, and project `.agents/skills` are listed the same way the runtime sees them.
+- **Project skills ship in `.agents/skills/`** (sheet-edit + univer-cli, see `.agents/skills/README.md`) and travel with the repo to new servers. They load only after the project is trusted (`~/.pi/agent/trust.json`, shared with the pi CLI; `/api/project-trust` POST records it, but it refuses while a session is busy and destroys cwd sessions afterwards). A project that gains `.agents/skills` flips `hasTrustRequiringProjectResources` — untrusted projects skip them entirely (`projectResourcesLoaded: false`).
 - Skill toggling edits only the `disable-model-invocation` frontmatter key on the target `SKILL.md`; keep that surgical so user formatting survives.
 - `/api/skills/install` shells through `npx skills add ... --agent pi`; project installs run with the selected cwd.
 

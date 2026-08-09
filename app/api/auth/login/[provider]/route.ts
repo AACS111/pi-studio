@@ -22,7 +22,9 @@ export async function POST(
   const { provider } = await params;
   const { token, code } = (await req.json()) as { token?: string; code?: string };
 
-  if (!token || !code) {
+  // Empty string is a valid answer (e.g. github-copilot's "blank for github.com" prompt).
+  // Only a truly missing value is an error.
+  if (!token || code === undefined) {
     return Response.json({ error: "token and code required" }, { status: 400 });
   }
 

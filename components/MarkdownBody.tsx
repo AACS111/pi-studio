@@ -13,9 +13,11 @@ interface MarkdownBodyProps {
   isStreaming?: boolean;
   cwd?: string;
   onOpenFile?: (filePath: string) => void;
+  /** 外部 http(s) 链接点击时在右侧面板打开（而不是新浏览器标签）。 */
+  onOpenWebUrl?: (url: string) => void;
 }
 
-export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile }: MarkdownBodyProps) {
+export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, onOpenWebUrl }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // Stable renderer identities keep stateful blocks mounted across message hover updates.
   const components = useMemo<Components>(() => ({
@@ -46,6 +48,21 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       delete props.node;
       const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
       const openFile = onOpenFile;
+      const openWebUrl = onOpenWebUrl;
+      // 外部网页链接：在右侧面板打开（不是新浏览器标签）。
+      if (openWebUrl && href && /^https?:\/\//i.test(href)) {
+        const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+          if (event.defaultPrevented || event.button !== 0) return;
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+          event.preventDefault();
+          openWebUrl(href);
+        };
+        return (
+          <a href={href} {...props} onClick={handleClick}>
+            {children}
+          </a>
+        );
+      }
       if (!filePath || !openFile) {
         return (
           <a href={href} {...props} target="_blank" rel="noopener noreferrer">
@@ -86,7 +103,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile]);
+  }), [cwd, isStreaming, onOpenFile, onOpenWebUrl]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

@@ -158,7 +158,7 @@ async function checkGlobalSkill(
   const url = `https://api.github.com/repos/${install.source}/git/trees/${encodeURIComponent(ref)}?recursive=1`;
   const headers: Record<string, string> = {
     Accept: "application/vnd.github.v3+json",
-    "User-Agent": "pi-web",
+    "User-Agent": "pi-studio",
   };
   if (options.githubToken) headers.Authorization = `Bearer ${options.githubToken}`;
   const folder = skillFolder(install.skillPath!);

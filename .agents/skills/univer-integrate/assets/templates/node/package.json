@@ -1,0 +1,15 @@
+{
+  "name": "univer-node-headless",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@univerjs/core": "latest",
+    "@univerjs/engine-formula": "latest",
+    "@univerjs/sheets": "latest",
+    "@univerjs/sheets-formula": "latest"
+  },
+  "devDependencies": {
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}

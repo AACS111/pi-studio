@@ -1162,7 +1162,9 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
   }, [provider.id, onRefresh]);
 
   const submitCode = useCallback(async (token: string, code: string) => {
-    if (!code.trim()) return;
+    // Empty answer is valid for the domain prompt ("blank for github.com");
+    // for the callback-URL phase an empty value is meaningless.
+    if (!code.trim() && loginState.phase !== "prompt") return;
     setLoginState({ phase: "progress", message: "Verifying…" });
     try {
       const res = await fetch(`/api/auth/login/${encodeURIComponent(provider.id)}`, {

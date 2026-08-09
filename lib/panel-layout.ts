@@ -9,8 +9,18 @@ export const RIGHT_PANEL_FALLBACK_WIDTH = 560;
 export const RIGHT_PANEL_MIN_WIDTH = 300;
 export const RIGHT_PANEL_MAX_WIDTH = 1200;
 
+// Safety ceiling for the resizable right panel — the real limit is computed
+// from the viewport (getRightPanelMaxWidth); 4096 only keeps 4K+ monitors from
+// ever hitting the cap.
+export const RIGHT_PANEL_ABSOLUTE_MAX_WIDTH = 4096;
+
 const COMPACT_CHAT_MIN_WIDTH = 320;
-const DESKTOP_CHAT_MIN_WIDTH = 420;
+const DESKTOP_CHAT_MIN_WIDTH = 320;
+
+// When the file panel is dragged to its widest, the chat column keeps only
+// this slim sliver (still enough to keep the separator grabbable). For a
+// truly full-screen view use the panel's maximize button instead.
+export const DRAGGED_CHAT_MIN_WIDTH = 120;
 
 export function clampPanelWidth(width: number, minWidth: number, maxWidth: number): number {
   const finiteWidth = Number.isFinite(width) ? width : minWidth;
@@ -45,8 +55,8 @@ export function getRightPanelMaxWidth(options: {
   if (viewportWidth < SPLIT_PANEL_MIN_WIDTH) return RIGHT_PANEL_MAX_WIDTH;
 
   const visibleSidebarWidth = sidebarOpen ? sidebarWidth : 0;
-  return Math.min(
-    RIGHT_PANEL_MAX_WIDTH,
-    viewportWidth - DESKTOP_CHAT_MIN_WIDTH - visibleSidebarWidth,
+  return Math.max(
+    RIGHT_PANEL_MIN_WIDTH,
+    viewportWidth - DRAGGED_CHAT_MIN_WIDTH - visibleSidebarWidth,
   );
 }

@@ -111,6 +111,29 @@ def _pick_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _kill_stale_chrome_for_profile(profile_root: Path) -> None:
+    """杀光仍占用同一 user-data-dir 的残留 Chrome 进程。
+
+    上次崩溃/重启留下的 Chrome 会一直锁着 profile（Singleton* 锁 + 实例句柄），
+    导致新启动的 Chrome 直接退出（Chrome 对同一 user-data-dir 只允许一个实例），
+    CDP 永远不就绪。启动前先清理，避免死锁累积。
+    """
+    if os.name != "nt":
+        return
+    try:
+        profile_str = str(profile_root)
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
+             f"Where-Object {{ $_.CommandLine -like '*{profile_str}*' }} | "
+             f"ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"],
+            capture_output=True, timeout=15, check=False,
+        )
+        log.info("Stale Chrome cleanup done (profile=%s)", profile_root.name)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Stale Chrome cleanup skipped: %s", e)
+
+
 def _launch_clean_chrome(profile_root: Path) -> str:
     """手动启动干净 Chrome（无自动化标记），返回 CDP URL。
 
@@ -195,6 +218,7 @@ async def get_browser() -> BrowserSession:
         profile_root = Path(__file__).resolve().parent / ".browser-profile"
         profile_root.mkdir(parents=True, exist_ok=True)
         try:
+            _kill_stale_chrome_for_profile(profile_root)
             cdp_url = _launch_clean_chrome(profile_root)
             session = BrowserSession(cdp_url=cdp_url)
             await session.start()

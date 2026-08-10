@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import { createConnection } from "net";
+import { request as httpRequest } from "http";
 import { existsSync, mkdirSync, openSync } from "fs";
 import { join } from "path";
 
@@ -35,10 +36,11 @@ const GLOBAL_KEY = "__piStudioBrowserSidecar";
 interface SidecarState {
   child: ChildProcess | null;
   hooksRegistered: boolean;
+  healthTimer: ReturnType<typeof setInterval> | null;
 }
 function getState(): SidecarState {
   const g = globalThis as unknown as Record<string, SidecarState>;
-  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { child: null, hooksRegistered: false };
+  if (!g[GLOBAL_KEY]) g[GLOBAL_KEY] = { child: null, hooksRegistered: false, healthTimer: null };
   return g[GLOBAL_KEY];
 }
 
@@ -55,6 +57,27 @@ function isListening(port: number): Promise<boolean> {
       resolve(false);
     });
     socket.once("error", () => resolve(false));
+  });
+}
+
+/** HTTP-level probe: a live TCP listener is not enough — the sidecar's asyncio
+ *  loop can wedge (WinError 10054/64) leaving the port half-open. Only a real
+ *  request round-trip proves the app is responsive. */
+function isHttpAlive(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = httpRequest(
+      { host: "127.0.0.1", port, path: "/url", method: "GET", timeout: 2500 },
+      (res) => {
+        res.resume();
+        resolve(true); // any HTTP response (even 4xx/5xx) means the app is alive
+      },
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
+    req.end();
   });
 }
 
@@ -85,6 +108,54 @@ function registerShutdownHooks(state: SidecarState): void {
 }
 
 /**
+ * Watch the sidecar's HTTP endpoint. If the port accepts TCP but the app stops
+ * answering (wedged asyncio loop), kill the child and let ensureBrowserSidecar
+ * relaunch it. Self-healing keeps the agent browser usable across day-long dev
+ * sessions without manual restarts.
+ */
+function startHealthCheck(state: SidecarState): void {
+  if (state.healthTimer) return;
+  state.healthTimer = setInterval(async () => {
+    try {
+      const child = state.child;
+      const dead = !child || child.killed || child.exitCode !== null;
+      if (dead) {
+        // Child is gone (crashed / killed externally / wedged then killed by us).
+        // Give the port a moment to release, then relaunch.
+        state.child = null;
+        await new Promise((r) => setTimeout(r, 1500));
+        await ensureBrowserSidecar();
+        return;
+      }
+      const alive = await isHttpAlive(SIDECAR_PORT);
+      if (alive) return;
+      logWarn("browser-use sidecar unresponsive — restarting");
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      state.child = null;
+      await new Promise((r) => setTimeout(r, 1500));
+      await ensureBrowserSidecar();
+    } catch {
+      /* best-effort */
+    }
+  }, 15000);
+  // Never keep the process alive solely because of the watchdog.
+  state.healthTimer.unref?.();
+}
+
+function logWarn(msg: string): void {
+  try {
+    // eslint-disable-next-line no-console
+    console.warn(`[pi-studio] ${msg}`);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
  * Fire-and-forget sidecar start for boot hooks. Never rejects.
  * Skips when the port is already served. Spawns the venv python as a windowless
  * child of this process and ties its lifetime to pi-studio.
@@ -112,6 +183,7 @@ export async function ensureBrowserSidecar(): Promise<void> {
       windowsHide: true,
     });
     state.child = child;
+    startHealthCheck(state);
   } catch {
     /* best-effort */
   }

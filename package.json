@@ -11,6 +11,7 @@
     "url": "https://github.com/AACS111/pi-studio/issues"
   },
   "license": "MIT",
+  "author": "agegr",
   "engines": {
     "node": ">=22.19.0"
   },
@@ -30,6 +31,7 @@
   ],
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 10141",
+    "dev:electron": "node scripts/dev-electron.mjs",
     "dev:lan": "next dev -H 0.0.0.0 -p 30141",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 30141",
@@ -38,6 +40,7 @@
     "pack:dir": "node scripts/package.mjs --dir",
     "pack:portable": "node scripts/package.mjs --portable",
     "pack:nsis": "node scripts/package.mjs --nsis",
+    "pack:msi": "node scripts/package.mjs --msi",
     "lint": "eslint .",
     "release": "npm version patch --no-git-tag-version && npm run build && npm publish --access public"
   },

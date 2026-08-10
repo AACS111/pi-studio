@@ -3,6 +3,7 @@
 #       npm run pack:dir        → 只生成未打包目录（release/win-unpacked），快速验证
 #       npm run pack:portable   → 只生成单文件便携版 .exe
 #       npm run pack:nsis       → 只生成安装版 .exe
+#       npm run pack:msi        → 只生成 .msi 安装包
 # 首次运行需要联网下载 nsis/winCodeSign 工具（脚本已配置国内镜像）。
 
 appId: com.agegr.piweb
@@ -30,15 +31,8 @@ files:
   - ".agents/**"
   - "next.config.ts"
   - "package.json"
-  - "node_modules/**"
 
   # ---- 排除项 ----
-  - "!node_modules/.pnpm/**"        # 孤儿 pnpm store（约 1.1G），无符号链接引用
-  - "!node_modules/electron/**"     # 打包工具自身，运行时不需要
-  - "!node_modules/electron-builder/**"
-  - "!node_modules/.bin/**"
-  - "!node_modules/.cache/**"
-  - "!node_modules/**/node_modules/.bin/**"
   - "!**/*.map"                     # sourcemap 缩小体积
   - "!**/*.tsbuildinfo"
 
@@ -62,8 +56,7 @@ win:
       arch: [x64]
     - target: portable
       arch: [x64]
-  # 如需自定义图标：放一个 build/icon.ico（至少 256x256）并取消注释下面一行
-  # icon: build/icon.ico
+  icon: build/icon.ico
 
 nsis:
   oneClick: true
@@ -73,3 +66,8 @@ nsis:
 
 portable:
   artifactName: ${productName}-${version}-portable.${ext}
+
+msi:
+  oneClick: false
+  perMachine: false
+  artifactName: ${productName}-${version}-${arch}.${ext}

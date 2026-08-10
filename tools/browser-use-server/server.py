@@ -103,6 +103,8 @@ _lock = asyncio.Lock()
 
 
 _chrome_proc: subprocess.Popen | None = None
+# 当前 Chrome 的 CDP 调试端口（_launch_clean_chrome 设置；右侧面板据此直连 screencast）
+_chrome_cdp_port: int | None = None
 
 
 def _pick_free_port() -> int:
@@ -150,10 +152,18 @@ def _launch_clean_chrome(profile_root: Path) -> str:
     # PI_BROWSER_USE_HEADLESS=0 恢复有头。
     headless = os.environ.get("PI_BROWSER_USE_HEADLESS", "1") == "1"
     port = _pick_free_port()
+    global _chrome_cdp_port
+    _chrome_cdp_port = port
     args = [
         exe,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={profile_root}",
+        # 面板（http://localhost:10141 等任意 pi-studio origin）直接连 Chrome 的
+        # DevTools WebSocket 做实时镜像（Page.startScreencast，变化帧推流），
+        # 不再经过 Python 侧车转发。不带这个 flag 时 Chrome 会拒绝浏览器页面的
+        # WebSocket 连接（HTTP 403，见 _test_origin 记录）。端口随机且绑定 127.0.0.1，
+        # 本地开发工具可接受；如担心任意本地页面扫描端口，可改成显式 origin 列表。
+        "--remote-allow-origins=*",
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
         "--no-default-browser-check",
@@ -401,6 +411,36 @@ class AgentModel(BaseModel):
 # ---------------------------------------------------------------------------
 # 状态
 # ---------------------------------------------------------------------------
+
+
+@app.get("/cdp")
+async def cdp_info():
+    """当前镜像页面的 CDP WebSocket 地址（右侧面板直连实时镜像用）。
+
+    面板（用户浏览器里的页面）不能直连侧车的 HTTP API（127.0.0.1:17865 无 CORS），
+    但可以直连 Chrome 的 DevTools WebSocket（启动参数已带 --remote-allow-origins=*）：
+    面板拿到 wsUrl 后建立直连，用 Page.startScreencast 收变化帧 + Page.screencastFrameAck
+    流控，帧从 Chrome 直接推过来、零 Python 转发，交互延迟和帧率都远好于 SSE 轮询截图。
+    点击/输入仍走侧车 /input（侧车负责 popup 跟随、session 重绑、自愈）。
+    """
+    browser, cdp = await get_cdp()
+    target_id = str(getattr(cdp, "target_id", "") or "")
+    url = title = None
+    if target_id:
+        try:
+            url = await asyncio.wait_for(browser.get_current_page_url(), timeout=8)
+            title = await asyncio.wait_for(browser.get_current_page_title(), timeout=8)
+        except Exception:  # noqa: BLE001
+            pass
+    return {
+        "ok": True,
+        "port": _chrome_cdp_port,
+        "targetId": target_id,
+        "wsUrl": f"ws://127.0.0.1:{_chrome_cdp_port}/devtools/page/{target_id}"
+        if _chrome_cdp_port and target_id else None,
+        "url": url,
+        "title": title,
+    }
 
 
 @app.get("/health")
@@ -737,7 +777,7 @@ async def run_agent(body: AgentModel):
 
 @app.post("/close")
 async def close_browser():
-    global _browser, _chrome_proc
+    global _browser, _chrome_proc, _chrome_cdp_port
     async with _lock:
         if _browser is not None:
             try:
@@ -751,6 +791,7 @@ async def close_browser():
             except Exception:  # noqa: BLE001
                 pass
             _chrome_proc = None
+        _chrome_cdp_port = None
     return {"ok": True}
 
 

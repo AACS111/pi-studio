@@ -21,6 +21,7 @@ import {
 import { resolveDirentIsDirectory } from "@/lib/file-dirent";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
 import { isApiRequestAllowed } from "@/lib/request-security";
+import { decryptViaKet, detectSpreadsheetKind } from "@/lib/ket-bridge";
 import {
   inspectUploadTargets,
   parseUploadConflictStrategy,
@@ -288,19 +289,19 @@ function encodeHeaderValue(value: string): string {
   );
 }
 
-function getContentDisposition(filePath: string, asDownload = false): string {
+function getContentDisposition(filePath: string, asDownload = false, displayFileName?: string): string {
   const disposition = asDownload ? "attachment" : "inline";
-  const fileName = path.basename(filePath);
+  const fileName = displayFileName ?? path.basename(filePath);
   const fallback = fileName.replace(/[^\x20-\x7E]|["\\;\r\n]/g, "_") || "download";
   return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encodeHeaderValue(fileName)}`;
 }
 
-function streamFile(filePath: string, stat: fs.Stats, contentType: string, rangeHeader: string | null, asDownload = false): Response {
+function streamFile(filePath: string, stat: fs.Stats, contentType: string, rangeHeader: string | null, asDownload = false, displayFileName?: string): Response {
   const headers = {
     "Content-Type": contentType,
     "Cache-Control": "no-cache",
     "Accept-Ranges": "bytes",
-    "Content-Disposition": getContentDisposition(filePath, asDownload),
+    "Content-Disposition": getContentDisposition(filePath, asDownload, displayFileName),
   };
 
   if (!rangeHeader) {
@@ -446,9 +447,45 @@ export async function GET(
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
+    const SPREADSHEET_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    /**
+     * 表格文件读取：普通 .xlsx/.xls 直接流式返回；加密 .xlsx 走 WPS KET COM
+     * 自动化（Ket.Application）解冻后返回。加密文件未带密码时返回 400
+     * (code=KET_PASSWORD_REQUIRED)，密码错误返回 401 (code=KET_PASSWORD_WRONG)，
+     * 由查看器弹密码框引导。
+     */
+    async function streamSpreadsheet(request: NextRequest, filePath: string, stat: fs.Stats, rangeHeader: string | null, asDownload: boolean): Promise<Response> {
+      const kind = detectSpreadsheetKind(filePath);
+      if (kind !== "encrypted") {
+        const mime = getDocumentMime(filePath) || SPREADSHEET_MIME;
+        return streamFile(filePath, stat, mime, rangeHeader, asDownload);
+      }
+      const password = request.nextUrl.searchParams.get("password") || undefined;
+      const result = await decryptViaKet(filePath, { password });
+      if (result.ok && result.outPath) {
+        const outStat = fs.statSync(result.outPath);
+        return streamFile(result.outPath, outStat, SPREADSHEET_MIME, rangeHeader, asDownload, path.basename(filePath));
+      }
+      if (result.code === "KET_PASSWORD_REQUIRED" || result.code === "KET_PASSWORD_WRONG") {
+        return NextResponse.json(
+          { error: result.error ?? "需要打开密码", code: result.code },
+          { status: result.code === "KET_PASSWORD_REQUIRED" ? 400 : 401 },
+        );
+      }
+      return NextResponse.json(
+        { error: result.error ?? "KET 解密失败", code: result.code ?? "KET_FAILED" },
+        { status: 500 },
+      );
+    }
+
     if (type === "read") {
       if (!stat.isFile()) {
         return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      const fileExt = getFileExt(filePath);
+      if ((fileExt === "xlsx" || fileExt === "xls") && stat.size <= MAX_UPLOAD_FILE_BYTES) {
+        return await streamSpreadsheet(request, filePath, stat, request.headers.get("range"), false);
       }
       const imageMime = getImageMime(filePath);
       if (imageMime) {
@@ -476,6 +513,10 @@ export async function GET(
     if (type === "download") {
       if (!stat.isFile()) {
         return NextResponse.json({ error: "Not a file" }, { status: 400 });
+      }
+      const fileExt = getFileExt(filePath);
+      if ((fileExt === "xlsx" || fileExt === "xls") && stat.size <= MAX_UPLOAD_FILE_BYTES) {
+        return await streamSpreadsheet(request, filePath, stat, request.headers.get("range"), true);
       }
       const mime = getImageMime(filePath) || getAudioMime(filePath) || getDocumentMime(filePath) || "application/octet-stream";
       return streamFile(filePath, stat, mime, request.headers.get("range"), true);

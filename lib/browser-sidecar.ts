@@ -148,7 +148,6 @@ function startHealthCheck(state: SidecarState): void {
 
 function logWarn(msg: string): void {
   try {
-    // eslint-disable-next-line no-console
     console.warn(`[pi-studio] ${msg}`);
   } catch {
     /* best-effort */
@@ -162,6 +161,9 @@ function logWarn(msg: string): void {
  */
 export async function ensureBrowserSidecar(): Promise<void> {
   try {
+    // 打包后的桌面应用使用 Electron 原生 WebContentsView 控制桥，
+    // 不再需要独立 Python 侧车（main.cjs 会设置 PI_BROWSER_USE_BASE_URL）。
+    if (process.env.PI_BROWSER_USE_BASE_URL) return;
     if (await isListening(SIDECAR_PORT)) return; // already running
     const python = resolveVenvPython();
     if (!python) return; // venv not set up — user can run start.bat manually

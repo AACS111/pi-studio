@@ -1,26 +1,39 @@
 ---
 name: browser-control
-description: "控制真实浏览器（browser-use + 系统 Chrome，headless）并诊断页面内容：打开/跳转页面、点击、输入、按键、滚动、前进后退、刷新、截图、提取页面纯净 Markdown（比 iframe 代理更能诊断动态内容）。agent 通过 curl 调用本地侧车服务（127.0.0.1:17865）。Use when the user wants you to interact with a live website (fill a form, click through, check dynamic content), take a screenshot of a page, or extract readable page text — the browser-use sidecar drives a real headless Chrome and returns clean markdown/screenshots."
+description: "控制右侧浏览器（Electron 原生 WebContentsView 或 browser-use 侧车）并诊断页面内容：打开/跳转页面、点击、输入、按键、滚动、前进后退、刷新、截图、提取页面文本。agent 通过 curl 调用本地浏览器控制桥（127.0.0.1，端口见下方发现逻辑）。Use when the user wants you to interact with a live website (fill a form, click through, check dynamic content), take a screenshot of a page, or extract readable page text."
 ---
 
 # 控制浏览器（browser-control）
 
-pi-studio 内置了一个 **browser-use 浏览器控制侧车**（Python FastAPI，驱动系统 Chrome headless）。
-它和右侧面板的网页标签互补，但**右侧面板的「Agent 控制台」就是这台真实浏览器的实时镜像**
-（SSE 推流 ~5fps，可点/拖/滚/键盘直接操作，和 agent 共用同一会话）：
+右侧面板有两种驱动模式，接口一致：
 
-| | 网页标签（web-preview） | Agent 控制台 / browser-control |
+| | Electron 桌面壳（默认） | npm run dev / 浏览器模式 |
 |---|---|---|
-| 用途 | 用户自己看页面（iframe 代理） | **真实浏览器**（实时镜像 + agent 操作） |
-| 能力 | 只读显示 | 点击/输入/滚动/前进后退/截图/提 Markdown |
-| 内容诊断 | 沙箱内不可读 | **可读完整 DOM 纯文本**（/content） |
-| 浏览器 | pi-studio 页面的 iframe | 独立 headless Chrome（CDP，无窗口，面板即窗口） |
+| 渲染 | 原生 WebContentsView，无截图帧流 | browser-use headless Chrome 实时镜像 |
+| 控制 | Electron 主进程控制桥（CDP/executeJavaScript） | browser-use 侧车（127.0.0.1:17865） |
+| 体验 | 流畅、页面与 agent 同会话 | 有像素流延迟，可接受但不如原生 |
 
-> 侧车默认 **headless**（浏览器内嵌在右侧面板的实时镜像里，不再弹独立窗口）。
-> 需要反爬更强时设 `PI_BROWSER_USE_HEADLESS=0` 恢复有头真实窗口（Codex 同款）。
-> 会话僵死自动销毁重建（自愈），请求不会永久挂起。
+## 发现控制桥地址
 
-## 启动侧车
+先按顺序取 `baseUrl`：
+
+1. 环境变量 `PI_BROWSER_USE_BASE_URL`（Electron 主进程已设置）；
+2. 桥标记文件 `pi-web-uploads/.internal/pi-web-browser-bridge.json` 的 `baseUrl`；
+3. 回退 `http://127.0.0.1:17865`（browser-use 侧车）。
+
+PowerShell 示例：
+
+```powershell
+$dataDir = if ($env:PI_WEB_UPLOADS_DIR) { $env:PI_WEB_UPLOADS_DIR }
+  elseif (Test-Path "pi-web-uploads") { (Resolve-Path "pi-web-uploads").Path }
+  else { Join-Path $env:APPDATA "Pi Studio\pi-web-uploads" }
+$marker = Join-Path $dataDir ".internal\pi-web-browser-bridge.json"
+$base = if ($env:PI_BROWSER_USE_BASE_URL) { $env:PI_BROWSER_USE_BASE_URL }
+  elseif (Test-Path $marker) { (Get-Content $marker -Raw | ConvertFrom-Json).baseUrl }
+  else { "http://127.0.0.1:17865" }
+```
+
+## 启动（仅 browser-use 模式需要）
 
 ```bash
 tools/browser-use-server/start.bat
@@ -30,7 +43,7 @@ tools/browser-use-server/start.bat
 - 首次请求会自动启动 headless Chrome（系统 Chrome，独立 profile，不碰用户浏览器）。
 - 侧车未启动时先启动；启动脚本会检测端口已存在则跳过。
 
-## API（全部 JSON；`baseUrl=http://127.0.0.1:17865`）
+## API（全部 JSON；`baseUrl` 见上方发现逻辑）
 
 ### 导航
 ```bash
@@ -42,16 +55,24 @@ curl -s http://127.0.0.1:17865/url                     # 当前 {url,title}
 ```
 
 ### 面板实时镜像（右侧面板「Agent 控制台」自动使用）
+
+面板**不再消费侧车的 SSE 推流**：右侧面板从 `GET /cdp` 拿到当前页面 target 的 DevTools
+WebSocket 地址后**直连 Chrome**（启动参数带 `--remote-allow-origins=*`），用 DevTools 同款
+`Page.startScreencast` 收变化帧（页面静止时零开销，交互时秒级跟手）——帧从 Chrome 直接推到
+面板，不再经过 Python 转发，交互延迟和帧率都远好于旧版 SSE 轮询截图。输入仍走侧车 `/input`
+（侧车负责 popup 跟随、session 重绑、自愈）。
+
 ```bash
-curl -s http://127.0.0.1:17865/screencast          # SSE 推流 JPEG 帧（~10fps，面板消费）
-curl -s "http://127.0.0.1:17865/screencast?w=800&h=900&dpr=1.25"
-#   ?w=&h=&dpr= —— 前端把面板尺寸（CSS px × 屏幕 DPR）传来，侧车用
-#   Emulation.setDeviceMetricsOverride 把浏览器 viewport 设成与面板一致：
-#   截图 1:1 像素、不变形，点击坐标直接映射（无需缩放换算）。
+curl -s http://127.0.0.1:17865/cdp          # 当前镜像页面的 CDP WS 地址 {port,targetId,wsUrl}
+# 面板 = GET /api/browser/control/cdp → 直连 wsUrl → Page.enable + Emulation.setDeviceMetricsOverride
+#        （viewport 设为面板尺寸，截图 1:1 不变形）+ Page.startScreencast → 变化帧直接上屏
 curl -s -X POST http://127.0.0.1:17865/input -H 'Content-Type: application/json' -d '{"type":"click","x":640,"y":450}'
 # type: click|move|scroll|key|type
 #   click {x,y} / move {x,y} / scroll {x,y,delta_y} / key {key:"Enter"} / type {text:"中文"}
 # 坐标是浏览器 viewport 坐标（与面板 1:1，无需换算）
+
+# 侧车的 SSE /screencast 仍在（直连不可用时的退化路径），面板默认不用它：
+curl -s http://127.0.0.1:17865/screencast    # SSE 推流 JPEG 帧（旧式，仅回退用）
 ```
 
 ### 诊断内容（核心：比 iframe 强，可读动态渲染后的文字）
@@ -86,6 +107,10 @@ curl -s -X POST http://127.0.0.1:17865/agent -H 'Content-Type: application/json'
 curl -s http://127.0.0.1:17865/health   # 状态
 curl -s -X POST http://127.0.0.1:17865/close   # 关闭浏览器
 ```
+
+> 原生 WebContentsView 模式下 `/screencast` 和 LLM 驱动的 `/agent` 暂不可用
+> （面板本身就是页面，无需镜像；agent 用 `open/content/screenshot/click/...`
+> 即可完成诊断和操控）。
 
 ## 建议流程（诊断页面）
 

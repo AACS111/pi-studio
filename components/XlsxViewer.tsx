@@ -628,6 +628,18 @@ export function convertWorkbook(
 /* ------------------------------------------------------------------ */
 
 const MAX_SCOPE_CACHE_ENTRIES = 64;
+
+/** 带服务端错误码的加载错误（如 KET 解密需要密码）。 */
+class XlsxLoadError extends Error {
+  code: string;
+  status?: number;
+  constructor(code: string, message: string, status?: number) {
+    super(message);
+    this.name = "XlsxLoadError";
+    this.code = code;
+    this.status = status;
+  }
+}
 // Bump whenever the xlsx→Univer parsing pipeline changes (parseXlsxAdvancedFeatures /
 // convertWorkbook / fetchAndParseScope). It prefixes every cache key, so browsers
 // holding parses from older code re-fetch + re-parse instead of serving pre-fix data
@@ -652,7 +664,14 @@ function cacheScopeData(key: string, p: Promise<ScopeData>): Promise<ScopeData> 
 async function fetchAndParseScope(binaryUrl: string): Promise<ScopeData> {
   const [xlsx] = await Promise.all([import("xlsx")]);
   const response = await fetch(binaryUrl);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await response.json().catch(() => null) as { code?: string; error?: string } | null;
+      throw new XlsxLoadError(data?.code ?? "HTTP_ERROR", data?.error ?? `HTTP ${response.status}`, response.status);
+    }
+    throw new XlsxLoadError("HTTP_ERROR", `HTTP ${response.status}`, response.status);
+  }
   const bytes = new Uint8Array(await response.arrayBuffer());
   // SheetJS CE drops conditional formatting / data validation / filters on
   // read, so parse the raw xlsx XML for those and hand them to the Univer
@@ -691,7 +710,9 @@ export async function loadScopeData(scopeKey: string, binaryUrl: string, force =
     try {
       return await fetchAndParseScope(binaryUrl);
     } catch (error) {
-      if (attempt === 0) {
+      // 密码类错误（4xx）不重试，直接抛给上层弹密码框。
+      const retriable = error instanceof XlsxLoadError ? (error.status ?? 0) >= 500 : true;
+      if (attempt === 0 && retriable) {
         await new Promise((r) => setTimeout(r, 1200));
         return fetchWithRetry(1);
       }
@@ -998,6 +1019,11 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
   const xlsxWriteRef = useRef<((wb: XLSX.WorkBook, opts: Record<string, unknown>) => unknown) | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [errorMsg, setErrorMsg] = useState("");
+  // 加密 .xlsx 的打开密码（KET COM 解冻）。passwordPrompt 为 true 时渲染输入框。
+  const [xlsxPassword, setXlsxPassword] = useState("");
+  const [passwordPrompt, setPasswordPrompt] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
   // "AI 编辑" button state (plain .xlsx sources only).
@@ -1305,6 +1331,10 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
     if (filePathRef.current !== filePath) {
       disposeInstance();
       filePathRef.current = filePath;
+      setXlsxPassword("");
+      setPasswordPrompt(false);
+      setPasswordInput("");
+      setPasswordError("");
     }
     if (!instanceReadyRef.current) {
       setStatus("loading");
@@ -1315,7 +1345,10 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
 
     (async () => {
       try {
-        const url = binaryUrl ?? getDownloadUrl(filePath, sourceSessionId);
+        const base = binaryUrl ?? getDownloadUrl(filePath, sourceSessionId);
+        const url = xlsxPassword
+          ? `${base}${base.includes("?") ? "&" : "?"}password=${encodeURIComponent(xlsxPassword)}`
+          : base;
         const key = scopeKey ?? `plain::${filePath}::${refreshKey}`;
         const force = !scopeKey || refreshKey !== lastRefreshKeyRef.current;
         const target = await loadScopeData(key, url, force);
@@ -1337,13 +1370,24 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
         lastAppliedRef.current = target;
         lastRefreshKeyRef.current = refreshKey;
         originalDataRef.current = target.data.sheets ? structuredClone(normalizeCellMap(target.data)) : null;
+        setPasswordPrompt(false);
+        setPasswordError("");
         setStatus("ready");
         setSyncing(false);
       } catch (error) {
         console.error("[XlsxViewer]", error);
         if (!cancelled) {
-          setStatus("error");
-          setErrorMsg(error instanceof Error ? error.message : String(error));
+          if (error instanceof XlsxLoadError && (error.code === "KET_PASSWORD_REQUIRED" || error.code === "KET_PASSWORD_WRONG")) {
+            // 加密表格：弹密码输入框，用户提交后带密码重试。
+            setPasswordPrompt(true);
+            setPasswordError(error.code === "KET_PASSWORD_WRONG" ? t("files.xlsxPasswordWrong") : "");
+            setStatus("error");
+            setErrorMsg(error.message);
+          } else {
+            setPasswordPrompt(false);
+            setStatus("error");
+            setErrorMsg(error instanceof Error ? error.message : String(error));
+          }
           setSyncing(false);
         }
       }
@@ -1353,7 +1397,7 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
     // createInstance/disposeInstance/applyScopeData/flushPending are stable
     // per (filePath, binaryUrl, worktreeId) — all already covered by deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filePath, sourceSessionId, binaryUrl, refreshKey, scopeKey]);
+  }, [filePath, sourceSessionId, binaryUrl, refreshKey, scopeKey, xlsxPassword, t]);
 
   // Full teardown on unmount (instance persists across scope switches).
   useEffect(() => () => { disposeInstance(); }, []);
@@ -1486,15 +1530,78 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              color: status === "error" ? "#f87171" : "var(--text-muted)",
-              fontSize: 13,
-              padding: 20,
-              textAlign: "center",
               background: "var(--bg-panel)",
-              pointerEvents: "none",
             }}
           >
-            {status === "error" ? t("files.xlsxLoadFailed", { error: errorMsg }) : t("i18n.loading")}
+            {passwordPrompt ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const value = passwordInput.trim();
+                  if (!value) return;
+                  setPasswordError("");
+                  setXlsxPassword(value);
+                }}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                  width: 320,
+                  padding: 18,
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "var(--bg)",
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+                  {t("files.xlsxPasswordPrompt")}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", wordBreak: "break-all" }}>
+                  {(filePath.split(/[\\/]/).pop() ?? "")}
+                </div>
+                <input
+                  type="password"
+                  autoFocus
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  placeholder="••••••••"
+                  style={{
+                    padding: "6px 8px",
+                    borderRadius: 5,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-panel)",
+                    color: "var(--text)",
+                    fontSize: 13,
+                  }}
+                />
+                {passwordError && <div style={{ fontSize: 11, color: "#f87171" }}>{passwordError}</div>}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button type="button" onClick={() => setPasswordPrompt(false)} style={toolbarButtonStyle}>
+                    {t("files.xlsxPasswordCancel")}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!passwordInput.trim()}
+                    style={{ ...toolbarButtonStyle, color: "var(--accent)", fontWeight: 600 }}
+                  >
+                    {t("files.xlsxPasswordSubmit")}
+                  </button>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-dim)" }}>{t("files.xlsxPasswordHint")}</div>
+              </form>
+            ) : (
+              <div
+                style={{
+                  color: status === "error" ? "#f87171" : "var(--text-muted)",
+                  fontSize: 13,
+                  padding: 20,
+                  textAlign: "center",
+                }}
+              >
+                {status === "error" ? t("files.xlsxLoadFailed", { error: errorMsg }) : t("i18n.loading")}
+              </div>
+            )}
           </div>
         )}
       </div>

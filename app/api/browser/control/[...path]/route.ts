@@ -1,12 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
+import { getInternalDir } from "@/lib/storage-config";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const SIDECAR_BASE = process.env.PI_BROWSER_USE_BASE_URL ?? "http://127.0.0.1:17865";
+const DEFAULT_SIDECAR_BASE = "http://127.0.0.1:17865";
 const SIDECAR_TIMEOUT_MS = 300000; // /agent 任务可能跑几分钟
 
-type RouteContext = { params: Promise<{ path: string[] }> | { path: string[] } };
+type RouteContext = { params: Promise<{ path: string[] }> };
+
+function getBridgeMarkerBaseUrl(): string | null {
+  try {
+    const markerPath = join(getInternalDir(), "pi-web-browser-bridge.json");
+    if (!existsSync(markerPath)) return null;
+    const parsed = JSON.parse(readFileSync(markerPath, "utf8")) as { baseUrl?: unknown };
+    if (typeof parsed.baseUrl !== "string") return null;
+    const url = new URL(parsed.baseUrl);
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") return null;
+    return url.href.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function getSidecarBases(): string[] {
+  const bases = [
+    process.env.PI_BROWSER_USE_BASE_URL,
+    getBridgeMarkerBaseUrl(),
+    DEFAULT_SIDECAR_BASE,
+  ].filter((value): value is string => Boolean(value));
+  return Array.from(new Set(bases.map((value) => value.replace(/\/+$/, ""))));
+}
 
 /**
  * pi-studio → browser-use 侧车的同源代理。
@@ -22,8 +48,6 @@ async function forward(request: NextRequest, pathSegments: string[]) {
     return NextResponse.json({ error: "missing sidecar path" }, { status: 400 });
   }
   const path = pathSegments.join("/");
-  const url = new URL(`/${path}`, SIDECAR_BASE);
-  url.search = request.nextUrl.search;
 
   const method = request.method;
   let body: BodyInit | undefined;
@@ -31,36 +55,42 @@ async function forward(request: NextRequest, pathSegments: string[]) {
     body = await request.arrayBuffer();
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(url, {
-      method,
-      body,
-      redirect: "manual",
-      signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
-      headers: {
-        accept: request.headers.get("accept") ?? "*/*",
-        "content-type": request.headers.get("content-type") ?? "application/json",
-      },
-    });
-  } catch (error) {
-    const detail =
-      error instanceof DOMException && error.name === "TimeoutError"
-        ? "browser-use sidecar timed out"
-        : "browser-use sidecar unreachable — start it with tools/browser-use-server/start.bat";
-    return NextResponse.json({ error: detail }, { status: 502 });
+  let lastError: unknown = null;
+  for (const base of getSidecarBases()) {
+    const url = new URL(`/${path}`, base);
+    url.search = request.nextUrl.search;
+    try {
+      const upstream = await fetch(url, {
+        method,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
+        headers: {
+          accept: request.headers.get("accept") ?? "*/*",
+          "content-type": request.headers.get("content-type") ?? "application/json",
+        },
+      });
+
+      const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+      // 直接透传响应体流（不缓冲）——SSE 推流（/screencast）必须流式转发，否则会被
+      // arrayBuffer() 整体读完后才返回，实时镜像就卡死了。
+      return new NextResponse(upstream.body, {
+        status: upstream.status,
+        headers: {
+          "content-type": contentType,
+          "cache-control": "no-store",
+        },
+      });
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
-  // 直接透传响应体流（不缓冲）——SSE 推流（/screencast）必须流式转发，否则会被
-  // arrayBuffer() 整体读完后才返回，实时镜像就卡死了。
-  return new NextResponse(upstream.body, {
-    status: upstream.status,
-    headers: {
-      "content-type": contentType,
-      "cache-control": "no-store",
-    },
-  });
+  const detail =
+    lastError instanceof DOMException && lastError.name === "TimeoutError"
+      ? "browser control bridge timed out"
+      : "browser control bridge unreachable — run npm run dev:electron for the native right-panel browser";
+  return NextResponse.json({ error: detail }, { status: 502 });
 }
 
 export async function GET(request: NextRequest, ctx: RouteContext) {

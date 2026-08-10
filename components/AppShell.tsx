@@ -1888,6 +1888,7 @@ export function AppShell() {
                   }}
                 >
                   <WebViewer
+                    tabId={tab.id}
                     initialUrl={tab.url ?? null}
                     active={isActive}
                     onNavigate={(url) => handleWebNavigate(tab.id, url)}

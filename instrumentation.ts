@@ -24,4 +24,14 @@ export async function register(): Promise<void> {
   } catch {
     /* best-effort */
   }
+
+  // Auto-start the browser-use sidecar (127.0.0.1:17865) so the agent can drive
+  // a real headless Chrome (open/click/type/screenshot). Idempotent — skips when
+  // the port is already served — and failure-tolerant, so boot never blocks on it.
+  try {
+    const { ensureBrowserSidecar } = await import("./lib/browser-sidecar");
+    void ensureBrowserSidecar();
+  } catch {
+    /* best-effort */
+  }
 }

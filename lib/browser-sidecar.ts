@@ -46,10 +46,31 @@ function resolveVenvPython(): string | null {
  * Fire-and-forget sidecar start for boot hooks. Never rejects.
  * Skips when the port is already served; otherwise spawns the venv python detached
  * with stdout/stderr appended to server-console.log (server.py also writes server.log).
+ *
+ * Windows: delegates to start.bat, which uses `start` to create a brand-new console
+ * window for the sidecar. A bare `node spawn(detached)` on Windows leaves the child
+ * attached to the caller's console session — when that session ends the sidecar's
+ * listening socket dies with `WinError 64 (指定的网络名不再可用)`.
  */
 export async function ensureBrowserSidecar(): Promise<void> {
   try {
     if (await isListening(SIDECAR_PORT)) return; // already running
+
+    if (process.platform === "win32") {
+      const bat = join(SIDECAR_DIR, "start.bat");
+      if (!existsSync(bat)) return;
+      // start.bat is idempotent (re-checks the port) and spawns an independent
+      // console via `start`, so the sidecar survives this process's lifetime.
+      const cmd = spawn("cmd.exe", ["/c", bat], {
+        cwd: SIDECAR_DIR,
+        detached: true,
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      cmd.unref();
+      return;
+    }
+
     const python = resolveVenvPython();
     if (!python) return; // venv not set up — user can run start.bat manually
 

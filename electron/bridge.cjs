@@ -1,15 +1,28 @@
 "use strict";
 
 /**
- * 原生浏览器控制桥（Electron 主进程内嵌 WebContentsView）。
+ * 原生浏览器控制桥（Electron 主进程内嵌 WebContentsView）— Semantic Browser V2。
  *
  * 提供与 browser-use 侧车兼容的 HTTP 接口（127.0.0.1，随机端口），
  * 让 Next 服务 / agent 用同一套 /api/browser/control/* 语义控制右侧
- * 原生浏览器：open/back/forward/reload/content/screenshot/click/type/
- * press/scroll/input。
+ * 原生浏览器。页面由 Electron 直接合成，控制命令通过
+ * webContents.executeJavaScript / CDP 落到同一个页面。
  *
- * 与截图镜像不同，这里没有帧编码/传输：页面由 Electron 直接合成，
- * 控制命令通过 webContents.executeJavaScript / CDP 落到同一个页面。
+ * 相比 V1 的新增能力（Agent-facing 语义层）：
+ *   GET  /snapshot              → 高价值交互元素快照（ref/role/name/value/state）
+ *   POST /execute               → 一次 HTTP + 一次 JS 上下文批量执行多个动作
+ *   POST /select /fill /check   → 语义动作（原生 select / Ant Design / Element Plus）
+ *   POST /wait /assert          → 条件等待与断言
+ *   POST /open                  → 支持 wait:"dom"|"finish"|readyWhen + 返回内嵌 snapshot
+ *   POST /click /type /press    → 升级为评分定位器（exact>aria>placeholder>testid>contains）
+ *
+ * 设计原则：
+ *   1. Agent 先 observe（/snapshot 拿到 ref），再 act（/execute 按 ref 批量执行），
+ *      不要“一步一 curl”。快照 ref 只在快照有效期（DOM 签名一致）内有效。
+ *   2. 普通操作（click/type/select/scroll）不等待页面 load；只有检测到导航
+ *      （/open、/back、/forward、/reload）才等待。
+ *   3. 定位器是评分制：精确文本/aria/placeholder/testid 优先，contains 兜底，
+ *      歧义（两个同分候选）返回 409 + 候选列表让 agent 改用 ref。
  */
 
 const fs = require("fs");
@@ -19,6 +32,600 @@ const { URL } = require("url");
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const LOAD_TIMEOUT_MS = 15000;
+const DEFAULT_CONDITION_TIMEOUT_MS = 10000;
+const SNAPSHOT_MAX = 300;
+const SNAPSHOT_REGISTRY_CAP = 80;
+
+// ---------------------------------------------------------------------------
+// 页面引擎（注入到 WebContents 执行的一段纯 JS）
+// ---------------------------------------------------------------------------
+
+/**
+ * 生成页面引擎字符串。执行后返回一个对象：
+ *   { $collect, $signature, $findBest, $resolve, $doSelect, $setValue,
+ *     $waitFor, $assert, $sleep, $elName, $isVisible, $topCandidates }
+ * 注意：页面 JS 内不要使用反引号 / ${ }，以免与外层模板字符串冲突。
+ */
+function pageEngine(maxElements) {
+  return `(() => {
+  const $MAX = ${maxElements};
+  const $selectors = [
+    'button','input','textarea','select','a','label',
+    '[role="button"]','[role="link"]','[role="checkbox"]','[role="radio"]',
+    '[role="combobox"]','[role="listbox"]','[role="option"]','[role="tab"]',
+    '[role="textbox"]','[role="searchbox"]','[role="spinbutton"]','[role="slider"]',
+    '[role="menuitem"]','[contenteditable="true"]','[onclick]'
+  ];
+  const $sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+  const $isVisible = function (el) {
+    try {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return false;
+      const s = getComputedStyle(el);
+      if (s.visibility === 'hidden' || s.display === 'none') return false;
+      return true;
+    } catch (e) { return false; }
+  };
+  const $inferRole = function (el) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'button') return 'button';
+    if (tag === 'input') {
+      const t = String(el.type || 'text').toLowerCase();
+      if (t === 'checkbox') return 'checkbox';
+      if (t === 'radio') return 'radio';
+      if (t === 'range') return 'slider';
+      if (t === 'number') return 'spinbutton';
+      if (t === 'search') return 'searchbox';
+      return 'textbox';
+    }
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'a') return 'link';
+    if (tag === 'label') return 'label';
+    return tag;
+  };
+  const $scanSiblings = function (node) {
+    let sib = node.previousElementSibling;
+    while (sib) {
+      if (sib.matches && sib.matches('button,a,input,select,textarea,label,[role]')) { sib = sib.previousElementSibling; continue; }
+      const t = (sib.innerText || sib.textContent || '').trim();
+      if (t && t.length <= 30 && !sib.querySelector('input,select,textarea,button,[role]')) return t.replace(/[:：]\\s*$/, '');
+      sib = sib.previousElementSibling;
+    }
+    return '';
+  };
+  const $nearbyLabel = function (el) {
+    try {
+      // 邻近标签只对表单控件有意义；按钮/链接等自带文本，不需要也不应该去猜
+      if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA' && el.tagName !== 'SELECT' && el.getAttribute('role') !== 'combobox') return '';
+      // 1) 直接兄弟（span/div/label）
+      let t = $scanSiblings(el);
+      if (t) return t;
+      // 2) 组件根（.ant-select / .el-select / form-item）的前一个兄弟通常是标签
+      const root = el.closest('.ant-select, .el-select, .el-form-item, .ant-form-item, [class*="form-item"]');
+      if (root) {
+        t = $scanSiblings(root);
+        if (t) return t;
+      }
+      // 3) 容器内 label（el-form-item__label / ant-form-item-label）
+      const wrap = el.closest('.el-form-item, .ant-form-item, [class*="form-item"], [class*="field"], [class*="filter"], [class*="search"]');
+      if (wrap) {
+        const lbl = wrap.querySelector('.el-form-item__label, .ant-form-item-label, label, [class*="label"]');
+        if (lbl) {
+          const lt = (lbl.innerText || '').trim().replace(/[:：]\\s*$/, '');
+          if (lt) return lt;
+        }
+      }
+    } catch (e) {}
+    return '';
+  };
+  const $labelText = function (el) {
+    try {
+      if (el.labels && el.labels.length) {
+        const t = (el.labels[0].innerText || '').trim();
+        if (t) return t;
+      }
+      if (el.id) {
+        const lbl = document.querySelector('label[for="' + el.id.replace(/"/g, '&quot;') + '"]');
+        if (lbl) { const t = (lbl.innerText || '').trim(); if (t) return t; }
+      }
+    } catch (e) {}
+    return $nearbyLabel(el);
+  };
+  const $elName = function (el) {
+    const aria = el.getAttribute('aria-label');
+    if (aria && aria.trim()) return aria.trim();
+    const text = (el.innerText || el.textContent || '').trim();
+    if (text && text.length > 0 && text.length <= 120) return text;
+    const ph = el.getAttribute('placeholder');
+    if (ph && ph.trim()) return ph.trim();
+    const nearby = $nearbyLabel(el);
+    if (nearby) return nearby;
+    if ('value' in el && el.value != null && String(el.value) !== '') return String(el.value).slice(0, 120);
+    return '';
+  };
+  const $collect = function (includeEl) {
+    const seen = new Set();
+    const out = [];
+    const nodes = document.querySelectorAll($selectors.join(','));
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (!$isVisible(el)) continue;
+      const role = el.getAttribute('role') || $inferRole(el);
+      let name;
+      let value;
+      if (el.tagName === 'SELECT') {
+        // select：name 用关联 label，value 用选中项文本（不要把所有 option 拼起来）
+        name = $labelText(el);
+        const selOpt = el.selectedOptions && el.selectedOptions[0];
+        value = selOpt ? selOpt.text.trim() : '';
+      } else {
+        name = $elName(el);
+        value = ('value' in el && el.value != null) ? String(el.value) : (el.getAttribute('value') || '');
+      }
+      const item = {
+        ref: 'e' + out.length,
+        tag: el.tagName.toLowerCase(),
+        role: role,
+        name: (name || '').slice(0, 120),
+        value: (value || '').slice(0, 200),
+        placeholder: el.getAttribute('placeholder') || '',
+        disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
+        checked: !!el.checked || el.getAttribute('aria-checked') === 'true',
+        label: $labelText(el)
+      };
+      if (includeEl) item.el = el; // 仅 execute 使用：附带真实 DOM 节点
+      out.push(item);
+      if (out.length >= $MAX) break;
+    }
+    return out;
+  };
+  const $collectLive = function () { return $collect(true); };
+  const $signature = function (elements) {
+    let s = elements.length + ':';
+    const upto = Math.min(elements.length, 60);
+    for (let i = 0; i < upto; i++) {
+      s += elements[i].tag + '/' + elements[i].role + '/' + elements[i].name + '|';
+    }
+    return s;
+  };
+  const $score = function (el, target) {
+    if (!target) return 0;
+    let score = 0;
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute('role') || $inferRole(el);
+    const text = (el.innerText || el.textContent || '').trim();
+    const aria = el.getAttribute('aria-label') || '';
+    const placeholder = el.getAttribute('placeholder') || '';
+    const nameAttr = el.getAttribute('name') || '';
+    const testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || '';
+    const elId = el.id || '';
+    if (target.role) {
+      if (role === target.role) score += 100;
+      else if (tag === target.role) score += 80;
+    }
+    if (target.name) {
+      const needle = String(target.name).trim();
+      if (needle) {
+        if (testId === needle) score += 200;
+        if (aria === needle) score += 150;
+        if (placeholder === needle) score += 120;
+        if (nameAttr === needle) score += 100;
+        if (elId === needle) score += 100;
+        if (text === needle) score += 100;
+        if (text.indexOf(needle) !== -1) score += 30;
+        const lt = $labelText(el);
+        if (lt && lt === needle) score += 120;
+        else if (lt && lt.indexOf(needle) !== -1) score += 30;
+      }
+    }
+    if (target.css) {
+      try { if (el.matches(target.css)) score += 200; } catch (e) {}
+    }
+    if (target.value !== undefined && target.value !== null && 'value' in el) {
+      if (String(el.value) === String(target.value)) score += 40;
+    }
+    if ($isVisible(el)) score += 50;
+    if (!el.disabled && el.getAttribute('aria-disabled') !== 'true') score += 30;
+    return score;
+  };
+  const $findBest = function (target) {
+    if (!target) return { el: null, score: 0, gap: 0 };
+    let best = null; let bestScore = 0; let second = 0;
+    const nodes = document.querySelectorAll($selectors.join(','));
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (!$isVisible(el)) continue;
+      const s = $score(el, target);
+      if (s > bestScore) { second = bestScore; bestScore = s; best = el; }
+      else if (s > second) second = s;
+    }
+    return { el: best, score: bestScore, gap: bestScore - second };
+  };
+  const $controlOf = function (el) {
+    if (!el || el.tagName !== 'LABEL') return el;
+    const forId = el.getAttribute('for');
+    if (forId) { const c = document.getElementById(forId); if (c) return c; }
+    const inner = el.querySelector('input,select,textarea,button');
+    return inner || el;
+  };
+  const $setValue = function (el, value) {
+    const str = String(value == null ? '' : value);
+    if (el.isContentEditable) {
+      el.textContent = str;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+    let proto = null;
+    if (el.tagName === 'TEXTAREA') proto = HTMLTextAreaElement.prototype;
+    else if (el.tagName === 'INPUT') proto = HTMLInputElement.prototype;
+    if (proto && Object.getOwnPropertyDescriptor(proto, 'value') && Object.getOwnPropertyDescriptor(proto, 'value').set) {
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, str);
+    } else {
+      el.value = str;
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const $doSelect = async function (el, value) {
+    const needle = String(value == null ? '' : value);
+    if (el.tagName === 'SELECT') {
+      let opt = null;
+      for (let i = 0; i < el.options.length; i++) {
+        const o = el.options[i];
+        if (o.text.trim() === needle || o.value === needle) { opt = o; break; }
+      }
+      if (!opt) throw new Error('OPTION_NOT_FOUND:' + needle);
+      $setValue(el, opt.value);
+      return { method: 'native', value: opt.text.trim().slice(0, 80) };
+    }
+    const role = el.getAttribute('role') || '';
+    const isCombobox = role === 'combobox' ||
+      (el.tagName === 'INPUT' && (el.getAttribute('aria-haspopup') === 'listbox' ||
+        !!el.closest('.ant-select, .el-select, [class*="-select"], [class*="Select"]')));
+    if (isCombobox) {
+      const optSels = '[role="option"], .ant-select-item-option, .ant-select-dropdown-menu-item, .el-select-dropdown__item, .el-select-dropdown li, .ivu-select-item, [class*="select-dropdown"] *, [class*="dropdown"] [class*="item"], [class*="option"], [class*="Option"]';
+      const findOption = function () {
+        let best = null; let bestScore = 0;
+        const opts = document.querySelectorAll(optSels);
+        for (let i = 0; i < opts.length; i++) {
+          const opt = opts[i];
+          if (!$isVisible(opt)) continue;
+          const t = (opt.innerText || opt.textContent || '').trim();
+          const aria = opt.getAttribute('aria-label') || '';
+          const title = opt.getAttribute('title') || '';
+          let s = 0;
+          if (t === needle || aria === needle || title === needle) s = 200;
+          else if (t.indexOf(needle) !== -1) s = 80;
+          // 框架专属 option class 加分：antd/Element Plus 虚拟列表会渲染无 class 的
+          // [role=option] 幽灵元素（同分时排前面会抢到点击），真实选项必须优先
+          if (opt.className && /ant-select-item-option|el-select-dropdown__item|el-select-dropdown li|ivu-select-item|ant-select-dropdown-menu-item/.test(String(opt.className))) s += 50;
+          if (s > bestScore) { bestScore = s; best = opt; }
+        }
+        return bestScore >= 80 ? best : null;
+      };
+      // 打开下拉的策略梯子：inner click → 外层 wrapper mousedown/mouseup/click → ArrowDown 键盘
+      const openLadder = [
+        function () { el.click(); },
+        function () {
+          el.focus();
+          const wrap = el.closest('[class*="select"], [class*="Select"], .el-form-item, .ant-form-item, [class*="field"], [class*="filter"]') || el.parentElement;
+          if (wrap && wrap !== el) {
+            ['mousedown', 'mouseup', 'click'].forEach(function (t) {
+              wrap.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+            });
+          }
+        },
+        function () {
+          el.focus();
+          ['ArrowDown', 'Enter'].forEach(function (k) {
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: k, code: k, bubbles: true, cancelable: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { key: k, code: k, bubbles: true, cancelable: true }));
+          });
+        }
+      ];
+      for (let i = 0; i < openLadder.length; i++) {
+        try { openLadder[i](); } catch (e) {}
+        await $sleep(200);
+        const opt = findOption();
+        if (opt) {
+          try { opt.scrollIntoView({ block: 'center' }); } catch (e) {}
+          opt.click();
+          await $sleep(80);
+          return { method: 'dropdown', value: (opt.innerText || opt.textContent || '').trim().slice(0, 80) };
+        }
+      }
+      if (el.tagName === 'INPUT') {
+        $setValue(el, needle);
+        return { method: 'input-fallback', value: needle.slice(0, 80) };
+      }
+      throw new Error('OPTION_NOT_FOUND:' + needle);
+    }
+    if (el.tagName === 'INPUT') {
+      $setValue(el, needle);
+      return { method: 'input', value: needle.slice(0, 80) };
+    }
+    throw new Error('NOT_SELECTABLE');
+  };
+  const $waitFor = async function (action) {
+    const cond = action.for || action.condition || {};
+    const timeout = Number(action.timeout || ${DEFAULT_CONDITION_TIMEOUT_MS});
+    const deadline = Date.now() + timeout;
+    const check = function () {
+      if (cond.selector) {
+        try { return !!document.querySelector(cond.selector); } catch (e) { return false; }
+      }
+      if (cond.text) {
+        const bodyText = (document.body ? (document.body.innerText || document.body.textContent || '') : '');
+        return bodyText.indexOf(String(cond.text)) !== -1;
+      }
+      if (cond.url) {
+        const u = String(cond.url);
+        return location.href.indexOf(u) !== -1 || location.href.startsWith(u);
+      }
+      if (cond.role || cond.name) {
+        const t = {}; if (cond.role) t.role = cond.role; if (cond.name) t.name = cond.name;
+        const r = $findBest(t);
+        return !!(r.el && r.score >= 100);
+      }
+      return false;
+    };
+    while (Date.now() < deadline) {
+      if (check()) return true;
+      await $sleep(150);
+    }
+    return false;
+  };
+  const $assert = function (action) {
+    if (action.text !== undefined) {
+      const bodyText = (document.body ? (document.body.innerText || document.body.textContent || '') : '');
+      return { ok: bodyText.indexOf(String(action.text)) !== -1, found: true, detail: 'text' };
+    }
+    const target = action.target;
+    if (!target) return { ok: false, found: false, detail: 'no target' };
+    const r = $findBest(target);
+    if (!r.el) return { ok: false, found: false, detail: 'ELEMENT_NOT_FOUND' };
+    const state = action.state || 'exists';
+    let ok = true;
+    if (state === 'visible') ok = $isVisible(r.el);
+    else if (state === 'enabled') ok = !r.el.disabled && r.el.getAttribute('aria-disabled') !== 'true';
+    else if (state === 'disabled') ok = !!r.el.disabled || r.el.getAttribute('aria-disabled') === 'true';
+    else if (state === 'checked') ok = !!r.el.checked || r.el.getAttribute('aria-checked') === 'true';
+    else if (state === 'unchecked') ok = !r.el.checked && r.el.getAttribute('aria-checked') !== 'true';
+    else if (state === 'selected') ok = r.el.getAttribute('aria-selected') === 'true' || !!r.el.closest('.ant-select-item-option-selected, .el-select-dropdown__item.selected, [class*="selected"], [class*="Selected"]');
+    else if (state === 'value') ok = 'value' in r.el && String(r.el.value) === String(action.value != null ? action.value : '');
+    return { ok: ok, found: true, detail: state };
+  };
+  const $topCandidates = function (target) {
+    const out = [];
+    const nodes = document.querySelectorAll($selectors.join(','));
+    const scored = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const el = nodes[i];
+      if (!$isVisible(el)) continue;
+      const s = $score(el, target);
+      // 过滤纯基础分（可见+可用=80）的无关元素：>80 说明有实质匹配
+      if (s > 80) scored.push({ score: s, tag: el.tagName.toLowerCase(), name: $elName(el) });
+    }
+    scored.sort(function (a, b) { return b.score - a.score; });
+    for (let i = 0; i < Math.min(scored.length, 6); i++) out.push(scored[i]);
+    return out;
+  };
+  const $resolve = function (action, elements, refsMap) {
+    if (action.ref) {
+      const m = /^e(\\d+)$/.exec(String(action.ref));
+      if (!m) return { err: 'REF_STALE:' + action.ref };
+      const idx = Number(m[1]);
+      const item = elements[idx];
+      const expect = refsMap && refsMap[idx];
+      if (item && item.el && expect) {
+        const nameMatch = (item.name || '') === (expect.name || '');
+        if (item.tag === expect.tag && nameMatch) return { el: $controlOf(item.el) };
+        let seen = 0;
+        for (let i = 0; i < elements.length; i++) {
+          const c = elements[i];
+          if (!c.el || c.tag !== expect.tag) continue;
+          if (seen === expect.ord) {
+            if ((c.name || '') === (expect.name || '')) return { el: $controlOf(c.el) };
+            return { err: 'REF_STALE:' + action.ref };
+          }
+          seen++;
+        }
+        return { err: 'REF_STALE:' + action.ref };
+      }
+      if (item && item.el) return { el: $controlOf(item.el) };
+      return { err: 'REF_STALE:' + action.ref };
+    }
+    if (action.target) {
+      let target = action.target;
+      if (typeof target === 'string') target = { name: target };
+      const r = $findBest(target);
+      if (!r.el || r.score < 100) return { err: 'ELEMENT_NOT_FOUND' };
+      if (r.gap < 40) return { err: 'AMBIGUOUS', candidates: $topCandidates(target) };
+      return { el: $controlOf(r.el) };
+    }
+    return { err: 'NO_TARGET' };
+  };
+  return {
+    $collect: $collect, $collectLive: $collectLive, $signature: $signature, $findBest: $findBest, $resolve: $resolve,
+    $doSelect: $doSelect, $setValue: $setValue, $waitFor: $waitFor, $assert: $assert,
+    $sleep: $sleep, $elName: $elName, $isVisible: $isVisible, $topCandidates: $topCandidates
+  };
+})()`;
+}
+
+function snapshotScript(max) {
+  return `(() => {
+    const E = ${pageEngine(max)};
+    const elements = E.$collect();
+    return { url: location.href, title: document.title, signature: E.$signature(elements), elements: elements };
+  })()`;
+}
+
+function executeScript(actions, snapshotId, snapshotMeta, maxElements) {
+  const refsMap = snapshotMeta && Array.isArray(snapshotMeta.refs) ? snapshotMeta.refs : null;
+  const registrySignature = snapshotMeta && snapshotMeta.signature ? snapshotMeta.signature : "";
+  return `(() => {
+    const E = ${pageEngine(maxElements || SNAPSHOT_MAX)};
+    const elements = E.$collectLive();
+    const signature = E.$signature(elements);
+    const refsMap = ${JSON.stringify(refsMap)};
+    const actions = ${JSON.stringify(actions)};
+    const results = [];
+    const run = async function () {
+      for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+        const entry = { ok: false, action: action.type, ref: action.ref || null };
+        try {
+          if (action.type === 'wait') {
+            entry.ok = await E.$waitFor(action);
+            entry.value = entry.ok ? 'satisfied' : 'timeout';
+            results.push(entry);
+            continue;
+          }
+          if (action.type === 'assert' || action.type === 'assertText') {
+            const r = E.$assert(action);
+            entry.ok = r.ok; entry.found = r.found; entry.detail = r.detail;
+            results.push(entry);
+            continue;
+          }
+          if (action.type === 'scroll') {
+            if (action.target || action.ref) {
+              const resolved = E.$resolve(action, elements, refsMap);
+              if (resolved.err) { entry.error = resolved.err; results.push(entry); if (action.stopOnError !== false) break; continue; }
+              try { resolved.el.scrollIntoView({ block: 'center' }); } catch (e) {}
+            } else {
+              const dir = String(action.value || action.direction || 'down');
+              if (dir === 'top') window.scrollTo(0, 0);
+              else if (dir === 'bottom') window.scrollTo(0, document.body.scrollHeight);
+              else if (dir === 'up') window.scrollBy(0, -window.innerHeight * 0.8);
+              else window.scrollBy(0, window.innerHeight * 0.8);
+            }
+            entry.ok = true;
+            results.push(entry);
+            continue;
+          }
+          if (action.type === 'focus') {
+            const resolved = E.$resolve(action, elements, refsMap);
+            if (resolved.err) { entry.error = resolved.err; results.push(entry); if (action.stopOnError !== false) break; continue; }
+            resolved.el.focus();
+            entry.ok = true;
+            results.push(entry);
+            continue;
+          }
+          const resolved = E.$resolve(action, elements, refsMap);
+          if (resolved.err) {
+            entry.error = resolved.err;
+            if (resolved.candidates) entry.candidates = resolved.candidates;
+            results.push(entry);
+            if (action.stopOnError !== false) break;
+            continue;
+          }
+          const el = resolved.el;
+          if (action.type === 'click') {
+            try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+            el.click();
+            entry.ok = true;
+            entry.tag = el.tagName.toLowerCase();
+            entry.name = E.$elName(el).slice(0, 80);
+          } else if (action.type === 'fill') {
+            el.focus();
+            const val = action.value != null ? String(action.value) : '';
+            const cur = ('value' in el && el.value != null) ? String(el.value) : '';
+            E.$setValue(el, action.append ? cur + val : val);
+            entry.ok = true;
+            entry.value = ('value' in el ? String(el.value) : '').slice(0, 80);
+          } else if (action.type === 'select') {
+            const r = await E.$doSelect(el, action.value);
+            entry.ok = true; entry.method = r.method; entry.value = r.value;
+          } else if (action.type === 'check') {
+            const want = action.value === true || action.value === 'true' || action.value === 'check' || action.value === 'on';
+            const now = !!el.checked || el.getAttribute('aria-checked') === 'true';
+            if (now !== want) el.click();
+            entry.ok = true; entry.checked = want;
+          } else if (action.type === 'press') {
+            el.focus();
+            const key = String(action.key || action.value || 'Enter');
+            el.dispatchEvent(new KeyboardEvent('keydown', { key: key, code: key, bubbles: true, cancelable: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { key: key, code: key, bubbles: true, cancelable: true }));
+            entry.ok = true; entry.key = key;
+          } else {
+            entry.error = 'UNSUPPORTED_ACTION:' + action.type;
+            results.push(entry);
+            if (action.stopOnError !== false) break;
+            continue;
+          }
+          results.push(entry);
+        } catch (e) {
+          entry.error = String((e && e.message) || e);
+          results.push(entry);
+          if (action.stopOnError !== false) break;
+        }
+      }
+      const allOk = results.length > 0 && results.every(function (r) { return r.ok; });
+      return {
+        ok: allOk,
+        completed: results.length,
+        failed: results.filter(function (r) { return !r.ok; }).length,
+        results: results,
+        snapshotInvalidated: signature !== ${JSON.stringify(registrySignature)},
+        snapshotId: ${JSON.stringify(snapshotId || null)},
+        url: location.href,
+        title: document.title
+      };
+    };
+    return run();
+  })()`;
+}
+
+// ---------------------------------------------------------------------------
+// 快照注册表：snapshotId → { signature, max, refs, url, takenAt }
+// ref 只保存「第 N 个同 tag 元素」的序号，不保存 DOM 引用（DOM 会变）。
+// ---------------------------------------------------------------------------
+const snapshotRegistry = new Map();
+
+async function takeSnapshot(wc, max) {
+  const result = await evaluate(wc, snapshotScript(max));
+  const elements = Array.isArray(result.elements) ? result.elements : [];
+  const refs = [];
+  const tagCounts = {};
+  for (let i = 0; i < elements.length; i++) {
+    const e = elements[i];
+    const ord = tagCounts[e.tag] || 0;
+    tagCounts[e.tag] = ord + 1;
+    refs.push({ ref: e.ref, tag: e.tag, ord: ord, name: e.name || "" });
+  }
+  const snapshotId = "s_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  snapshotRegistry.set(snapshotId, {
+    signature: result.signature || "",
+    max: max,
+    refs: refs,
+    url: result.url || "",
+    takenAt: Date.now(),
+  });
+  while (snapshotRegistry.size > SNAPSHOT_REGISTRY_CAP) {
+    snapshotRegistry.delete(snapshotRegistry.keys().next().value);
+  }
+  return {
+    snapshotId,
+    url: result.url || null,
+    title: result.title || null,
+    signature: result.signature || "",
+    elements,
+    count: elements.length,
+  };
+}
+
+function evaluate(wc, expression) {
+  return wc.executeJavaScript(expression, true);
+}
+
+// ---------------------------------------------------------------------------
+// 基础工具
+// ---------------------------------------------------------------------------
 
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body ?? {});
@@ -32,7 +639,9 @@ function sendJson(res, status, body) {
 
 function sendError(res, err) {
   const status = err && Number.isInteger(err.status) ? err.status : 500;
-  sendJson(res, status, { error: err && err.message ? err.message : String(err) });
+  const body = { error: err && err.message ? err.message : String(err) };
+  if (err && err.candidates) body.candidates = err.candidates;
+  sendJson(res, status, body);
 }
 
 function readBody(req) {
@@ -121,6 +730,152 @@ function waitForLoad(wc, trigger, timeoutMs = LOAD_TIMEOUT_MS) {
   });
 }
 
+/**
+ * 通用导航等待：优先 load 事件；SPA hash 路由（base 相同）不触发 load 事件，
+ * 用「URL 变化 + readyState 就绪」轮询兜底。
+ */
+function waitForNav(wc, trigger, { timeoutMs = LOAD_TIMEOUT_MS, beforeUrl = null } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stopped = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      wc.removeListener("did-finish-load", onFinish);
+      wc.removeListener("did-fail-load", onFail);
+      stopped = true;
+    };
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      err ? reject(err) : resolve();
+    };
+    const timer = setTimeout(() => {
+      const err = new Error("Page load timed out");
+      err.status = 504;
+      finish(err);
+    }, timeoutMs);
+    const onFinish = () => finish(null);
+    const onFail = (_e, code, description, _u, isMainFrame) => {
+      if (!isMainFrame || settled) return;
+      const err = new Error(`Page load failed: ${description} (${code})`);
+      err.status = 504;
+      finish(err);
+    };
+    wc.once("did-finish-load", onFinish);
+    wc.once("did-fail-load", onFail);
+    const beforeBase = beforeUrl ? beforeUrl.replace(/#.*$/, "") : null;
+    const poll = async () => {
+      // 先给 loadURL 一个 commit 窗口，避免在旧文档上误判
+      await new Promise((r) => setTimeout(r, 150));
+      while (!stopped) {
+        try {
+          const now = wc.getURL() || "";
+          const sameBase = beforeBase === now.replace(/#.*$/, "");
+          if (sameBase && beforeUrl !== null && now !== beforeUrl) {
+            // SPA hash 导航：等 URL 变 + readyState 就绪 + 一小段路由渲染时间
+            const st = await evaluate(wc, "({ ready: document.readyState })");
+            if (st && (st.ready === "complete" || st.ready === "interactive")) {
+              await new Promise((r) => setTimeout(r, 250));
+              finish(null);
+              return;
+            }
+          }
+        } catch {
+          /* 页面可能正在加载，忽略 */
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    };
+    poll();
+    try {
+      trigger();
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
+  });
+}
+
+/**
+ * dom-ready 即返回（不等图片/iframe/analytics/WebSocket）。
+ * 对 MAS/MOM 这类页面，框架先出、几十个接口后到，dom-ready 远早于 did-finish-load。
+ */
+function waitForDomReady(wc, trigger, timeoutMs = LOAD_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const err = new Error("DOM ready timed out");
+      err.status = 504;
+      reject(err);
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      wc.removeListener("dom-ready", onReady);
+      wc.removeListener("did-fail-load", onFail);
+    };
+    const onReady = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const onFail = (_event, code, description, _url, isMainFrame) => {
+      if (!isMainFrame || settled) return;
+      settled = true;
+      cleanup();
+      const err = new Error(`Page load failed: ${description} (${code})`);
+      err.status = 504;
+      reject(err);
+    };
+
+    wc.once("dom-ready", onReady);
+    wc.once("did-fail-load", onFail);
+    try {
+      trigger();
+    } catch (err) {
+      cleanup();
+      reject(err);
+    }
+  });
+}
+
+/** 轮询页面直到条件满足（selector/text/url/role+name）。返回 bool。 */
+async function waitForCondition(wc, cond, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    let expr;
+    if (typeof cond === "string") {
+      expr = `(() => { try { return { found: !!document.querySelector(${JSON.stringify(cond)}) }; } catch (e) { return { found: false }; } })()`;
+    } else if (cond.selector) {
+      expr = `(() => { try { return { found: !!document.querySelector(${JSON.stringify(String(cond.selector))}) }; } catch (e) { return { found: false }; } })()`;
+    } else if (cond.text) {
+      expr = `(() => { const t = document.body ? (document.body.innerText || document.body.textContent || '') : ''; return { found: t.indexOf(${JSON.stringify(String(cond.text))}) !== -1 }; })()`;
+    } else if (cond.url) {
+      expr = `(() => { const u = ${JSON.stringify(String(cond.url))}; return { found: location.href.indexOf(u) !== -1 || location.href.startsWith(u) }; })()`;
+    } else if (cond.role || cond.name) {
+      const t = {};
+      if (cond.role) t.role = cond.role;
+      if (cond.name) t.name = cond.name;
+      expr = `(() => { const E = ${pageEngine(100)}; const r = E.$findBest(${JSON.stringify(t)}); return { found: !!(r.el && r.score >= 100) }; })()`;
+    } else {
+      return true; // 没有可等待的条件
+    }
+    try {
+      const res = await evaluate(wc, expr);
+      if (res && res.found) return true;
+    } catch {
+      /* 页面可能正在加载，忽略 */
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return false;
+}
+
 async function withDebugger(wc, fn) {
   const wasAttached = wc.debugger.isAttached();
   if (!wasAttached) wc.debugger.attach("1.3");
@@ -129,29 +884,6 @@ async function withDebugger(wc, fn) {
   } finally {
     if (!wasAttached && wc.debugger.isAttached()) wc.debugger.detach();
   }
-}
-
-async function evaluate(wc, expression) {
-  return wc.executeJavaScript(expression, true);
-}
-
-function findElementJs(selector) {
-  const q = JSON.stringify(String(selector ?? "").trim());
-  return `(() => {
-    const root = document;
-    let el = root.querySelector(${q});
-    if (!el) {
-      const candidates = root.querySelectorAll(
-        'button,a,input,textarea,select,label,[role="button"],[role="link"],[onclick]'
-      );
-      const needle = String(${q}).toLowerCase();
-      for (const node of candidates) {
-        const text = ((node.innerText || node.value || node.getAttribute('aria-label') || '') + '').trim();
-        if (text && text.toLowerCase().includes(needle)) { el = node; break; }
-      }
-    }
-    return el;
-  })()`;
 }
 
 async function screenshotPng(wc, fullPage) {
@@ -213,6 +945,7 @@ function keyParams(keyName) {
   return table[keyName] || { code: keyName, vk: 0 };
 }
 
+/** 真实 Chromium 键盘输入（CDP Input.dispatchKeyEvent），不是合成 DOM 事件。 */
 async function dispatchInput(wc, body) {
   const type = String(body.type || "").toLowerCase();
   const button = String(body.button || "left").toLowerCase();
@@ -276,18 +1009,15 @@ async function dispatchInput(wc, body) {
     }
     const { code, vk } = keyParams(keyName);
     await withDebugger(wc, async () => {
-      await wc.debugger.sendCommand("Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: keyName,
-        code,
-        windowsVirtualKeyCode: vk,
-      });
-      await wc.debugger.sendCommand("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: keyName,
-        code,
-        windowsVirtualKeyCode: vk,
-      });
+      const down = { type: "keyDown", key: keyName, code, windowsVirtualKeyCode: vk };
+      const up = { type: "keyUp", key: keyName, code, windowsVirtualKeyCode: vk };
+      if (keyName === "Enter") {
+        // 真实回车：携带 text 触发原生表单提交
+        down.text = "\r";
+        down.unmodifiedText = "\r";
+      }
+      await wc.debugger.sendCommand("Input.dispatchKeyEvent", down);
+      await wc.debugger.sendCommand("Input.dispatchKeyEvent", up);
     });
     return { ok: true };
   }
@@ -331,6 +1061,47 @@ function writeBridgeMarker(dataDir, baseUrl, port) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 动作执行（/execute 与单动作端点的公共逻辑）
+// ---------------------------------------------------------------------------
+
+async function runExecute(wc, body) {
+  const actions = Array.isArray(body.actions) ? body.actions : [];
+  const snapshotId = body.snapshotId || null;
+  const meta = snapshotId ? snapshotRegistry.get(snapshotId) : null;
+  const max = (meta && meta.max) || SNAPSHOT_MAX;
+  return evaluate(wc, executeScript(actions, snapshotId, meta || null, max));
+}
+
+/** 把单个动作的失败映射成合适的 HTTP 状态码（404/409/400）。 */
+function throwActionError(result, fallbackMessage) {
+  const first = result && result.results ? result.results[0] : null;
+  const message = first && first.error ? first.error : fallbackMessage;
+  const err = new Error(message);
+  if (first && /NOT_FOUND|STALE/.test(first.error || "")) err.status = 404;
+  else if (first && /AMBIGUOUS/.test(first.error || "")) {
+    err.status = 409;
+    err.candidates = first.candidates;
+  } else err.status = 400;
+  throw err;
+}
+
+function targetFromBody(body) {
+  // 兼容旧 selector / 新 target / ref 三种定位方式
+  if (body.ref !== undefined) return { ref: body.ref };
+  if (body.target !== undefined) return { target: body.target };
+  if (body.selector !== undefined) {
+    const sel = String(body.selector);
+    // 纯 CSS 选择器同时作为 css（精确 +200）与文本（contains +30）评分
+    return { target: { css: sel, name: sel } };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP 服务
+// ---------------------------------------------------------------------------
+
 function startBridge({ getActiveView, getDownloads, dataDir }) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
@@ -372,8 +1143,43 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
             throw err;
           }
           const wc = requireActive(getActiveView);
-          await waitForLoad(wc, () => wc.loadURL(target.href));
-          return sendJson(res, 200, currentInfo(wc));
+          const timeout = Number(body.timeout) || LOAD_TIMEOUT_MS;
+          const beforeUrl = wc.getURL() || "";
+          // readyWhen: "dom"(默认) | "finish" | {selector|text|url|role,name} | "#app"
+          const ready = body.readyWhen !== undefined ? body.readyWhen : body.wait || "dom";
+          if (ready === "finish" || ready === "load" || ready === "complete") {
+            await waitForLoad(wc, () => wc.loadURL(target.href), timeout);
+          } else if (ready === "dom" || ready === "interactive" || typeof ready === "string") {
+            await waitForNav(wc, () => wc.loadURL(target.href), { timeoutMs: timeout, beforeUrl });
+            if (typeof ready === "string" && ready !== "dom" && ready !== "interactive") {
+              const ok = await waitForCondition(wc, ready, Number(body.readyTimeout) || DEFAULT_CONDITION_TIMEOUT_MS);
+              if (!ok) {
+                const err = new Error(`readyWhen condition not met: ${ready}`);
+                err.status = 504;
+                throw err;
+              }
+            }
+          } else if (typeof ready === "object") {
+            await waitForNav(wc, () => wc.loadURL(target.href), { timeoutMs: timeout, beforeUrl });
+            const ok = await waitForCondition(wc, ready, Number(body.readyTimeout) || DEFAULT_CONDITION_TIMEOUT_MS);
+            if (!ok) {
+              const err = new Error("readyWhen condition not met");
+              err.status = 504;
+              throw err;
+            }
+          } else {
+            await waitForNav(wc, () => wc.loadURL(target.href), { timeoutMs: timeout, beforeUrl });
+          }
+          const info = currentInfo(wc);
+          if (body.snapshot === true || body.includeSnapshot === true) {
+            const snap = await takeSnapshot(wc, Number(body.max) || SNAPSHOT_MAX);
+            return sendJson(res, 200, {
+              ...info,
+              snapshotId: snap.snapshotId,
+              snapshot: { url: snap.url, title: snap.title, elements: snap.elements, count: snap.count },
+            });
+          }
+          return sendJson(res, 200, info);
         }
 
         if (method === "POST" && ["/back", "/forward"].includes(pathname)) {
@@ -381,13 +1187,15 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
           const isBack = pathname === "/back";
           const canMove = isBack ? wc.canGoBack() : wc.canGoForward();
           if (!canMove) return sendJson(res, 200, { ok: true, moved: false });
-          await waitForLoad(wc, () => (isBack ? wc.goBack() : wc.goForward()));
+          const beforeUrl = wc.getURL() || "";
+          await waitForNav(wc, () => (isBack ? wc.goBack() : wc.goForward()), { beforeUrl });
           return sendJson(res, 200, { ok: true, moved: true });
         }
 
         if (method === "POST" && pathname === "/reload") {
           const wc = requireActive(getActiveView);
-          await waitForLoad(wc, () => wc.reload());
+          const beforeUrl = wc.getURL() || "";
+          await waitForNav(wc, () => wc.reload(), { beforeUrl });
           return sendJson(res, 200, { ok: true });
         }
 
@@ -414,6 +1222,21 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
           });
         }
 
+        if (method === "GET" && pathname === "/snapshot") {
+          const wc = requireActive(getActiveView);
+          const max = Math.min(Number(url.searchParams.get("max") || SNAPSHOT_MAX) || SNAPSHOT_MAX, 800);
+          const snap = await takeSnapshot(wc, max);
+          return sendJson(res, 200, {
+            snapshotId: snap.snapshotId,
+            url: snap.url,
+            title: snap.title,
+            signature: snap.signature,
+            elements: snap.elements,
+            count: snap.count,
+            stats: { mode: "electron-webview", semantic: true },
+          });
+        }
+
         if (method === "GET" && pathname === "/screenshot") {
           const wc = requireActive(getActiveView);
           const fullPage = url.searchParams.get("full_page") === "true";
@@ -429,58 +1252,78 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
           return res.end(png);
         }
 
-        if (method === "POST" && pathname === "/click") {
+        if (method === "POST" && pathname === "/evaluate") {
+          // 低层逃生舱：任意 JS 求值（agent 正常流程不需要，调试/自研组件适配时用）
           const body = await readBody(req);
           const wc = requireActive(getActiveView);
-          const expr = `(() => {
-            const el = ${findElementJs(body.selector)};
-            if (!el) return { found: false };
-            el.scrollIntoView({ block: 'center' });
-            el.click();
-            return { found: true, tag: el.tagName, text: (el.innerText || '').slice(0, 80) };
-          })()`;
-          const value = await evaluate(wc, expr);
-          if (!value || !value.found) {
-            const err = new Error(`Element not found: ${body.selector}`);
-            err.status = 404;
+          const expr = body.expression || body.script;
+          if (!expr) {
+            const err = new Error("evaluate needs expression");
+            err.status = 400;
             throw err;
           }
-          return sendJson(res, 200, { ok: true, tag: value.tag, text: value.text });
+          const value = await evaluate(wc, expr);
+          return sendJson(res, 200, { ok: true, value });
         }
 
-        if (method === "POST" && pathname === "/type") {
+        if (method === "POST" && pathname === "/execute") {
           const body = await readBody(req);
           const wc = requireActive(getActiveView);
-          const clear = Boolean(body.clear);
-          const text = JSON.stringify(String(body.text || ""));
-          const expr = `(() => {
-            const el = ${findElementJs(body.selector)};
-            if (!el) return { found: false };
-            el.focus();
-            if (${clear}) {
-              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
-                || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-              if (setter && setter.set) setter.set.call(el, '');
-              else el.value = '';
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            const text = ${text};
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
-              || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-            if (setter && setter.set) setter.set.call(el, el.value + text);
-            else el.value = el.value + text;
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return { found: true, value: el.value.slice(0, 80) };
-          })()`;
-          const value = await evaluate(wc, expr);
-          if (!value || !value.found) {
-            const err = new Error(`Element not found: ${body.selector}`);
-            err.status = 404;
+          if (!Array.isArray(body.actions) || body.actions.length === 0) {
+            const err = new Error("execute needs a non-empty actions array");
+            err.status = 400;
             throw err;
           }
-          return sendJson(res, 200, { ok: true, value: value.value });
+          const result = await runExecute(wc, body);
+          return sendJson(res, 200, result);
+        }
+
+        if (method === "POST" && ["/click", "/type", "/select", "/fill", "/check"].includes(pathname)) {
+          const body = await readBody(req);
+          const wc = requireActive(getActiveView);
+          const actionType = pathname.slice(1);
+          const located = targetFromBody(body);
+          if (!located) {
+            const err = new Error(`${actionType} needs selector/target/ref`);
+            err.status = 400;
+            throw err;
+          }
+          const action = { type: actionType === "type" ? "fill" : actionType, ...located };
+          if (actionType === "click" || actionType === "select" || actionType === "check") {
+            if (body.value !== undefined) action.value = body.value;
+          }
+          if (actionType === "type") {
+            action.value = String(body.text || "");
+            // 旧语义：clear=false 追加，clear=true 替换
+            if (body.clear !== true) action.append = true;
+          }
+          if (actionType === "fill") {
+            action.value = body.value !== undefined ? String(body.value) : "";
+            if (body.clear === false) action.append = true;
+          }
+          const result = await runExecute(wc, { actions: [action], snapshotId: body.snapshotId });
+          const first = result.results && result.results[0];
+          if (!result.ok || !first || !first.ok) {
+            throwActionError(result, `${actionType} failed`);
+          }
+          const payload = {
+            ok: true,
+            action: actionType,
+            snapshotInvalidated: result.snapshotInvalidated,
+            snapshotId: result.snapshotId,
+          };
+          if (actionType === "click") {
+            payload.tag = first.tag;
+            payload.text = first.name;
+          } else if (actionType === "type" || actionType === "fill") {
+            payload.value = first.value;
+          } else if (actionType === "select") {
+            payload.method = first.method;
+            payload.value = first.value;
+          } else if (actionType === "check") {
+            payload.checked = first.checked;
+          }
+          return sendJson(res, 200, payload);
         }
 
         if (method === "POST" && pathname === "/press") {
@@ -492,23 +1335,40 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
             err.status = 400;
             throw err;
           }
-          if (key === "Enter") {
+          // 可选：先把焦点放到指定元素（ref/target/selector）
+          const located = targetFromBody(body);
+          if (located) {
+            const focusResult = await runExecute(wc, {
+              actions: [{ type: "focus", ...located }],
+              snapshotId: body.snapshotId,
+            });
+            if (!focusResult.ok || !(focusResult.results && focusResult.results[0] && focusResult.results[0].ok)) {
+              throwActionError(focusResult, "press: focus target failed");
+            }
+          }
+          // 真实 CDP 按键（Enter 携带 \r 触发原生表单提交），失败退回合成事件
+          let handled = false;
+          try {
+            await dispatchInput(wc, { type: "key", key: body.key });
+            handled = true;
+          } catch {
+            handled = false;
+          }
+          if (!handled) {
             await evaluate(
               wc,
               `(() => {
                 const el = document.activeElement;
                 if (!el) return { found: false };
-                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-                el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: '${key}', code: '${key}', bubbles: true, cancelable: true }));
+                el.dispatchEvent(new KeyboardEvent('keyup', { key: '${key}', code: '${key}', bubbles: true, cancelable: true }));
                 const form = el.closest('form');
                 if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
                 return { found: true };
               })()`
             );
-          } else {
-            await dispatchInput(wc, { type: "key", key: body.key });
           }
-          return sendJson(res, 200, { ok: true });
+          return sendJson(res, 200, { ok: true, key });
         }
 
         if (method === "POST" && pathname === "/scroll") {
@@ -527,6 +1387,45 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
           }
           await evaluate(wc, `(() => { ${js}; return { ok: true }; })()`);
           return sendJson(res, 200, { ok: true });
+        }
+
+        if (method === "POST" && pathname === "/wait") {
+          const body = await readBody(req);
+          const wc = requireActive(getActiveView);
+          if (!body.for && !body.condition) {
+            const err = new Error("wait needs for: {selector|text|url|role,name}");
+            err.status = 400;
+            throw err;
+          }
+          const result = await runExecute(wc, {
+            actions: [{ type: "wait", for: body.for || body.condition, timeout: body.timeout }],
+          });
+          const first = result.results && result.results[0];
+          const satisfied = !!(first && first.ok);
+          return sendJson(res, 200, {
+            ok: satisfied,
+            satisfied,
+            timeout: Number(body.timeout) || DEFAULT_CONDITION_TIMEOUT_MS,
+            url: result.url,
+            title: result.title,
+          });
+        }
+
+        if (method === "POST" && pathname === "/assert") {
+          const body = await readBody(req);
+          const wc = requireActive(getActiveView);
+          const action = { type: "assert" };
+          if (body.text !== undefined) action.text = body.text;
+          if (body.target !== undefined) action.target = body.target;
+          if (body.state !== undefined) action.state = body.state;
+          if (body.value !== undefined) action.value = body.value;
+          const result = await runExecute(wc, { actions: [action] });
+          const first = result.results && result.results[0];
+          return sendJson(res, 200, {
+            ok: !!(first && first.ok),
+            found: !!(first && first.found),
+            detail: first ? first.detail : null,
+          });
         }
 
         if (method === "POST" && pathname === "/input") {

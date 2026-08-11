@@ -53,6 +53,32 @@ function hostLabel(url: string | null): string {
 }
 
 /**
+ * 计算镜像区域的实际可见尺寸。
+ *
+ * 右侧面板（.right-panel-container）收起时容器 width:0，但内部内容被 CSS 保持固定
+ * 宽度（.right-panel-container > * { width: 固定值 }）——内层 getBoundingClientRect()
+ * 永远返回全宽，检测不到收起。所以必须看容器：class 是否 right-panel-closed / 是否
+ * 移出视口 / 裁剪后的有效宽度。原生 WebContentsView 是 DOM 外的覆盖层，不随 CSS 裁剪，
+ * 收起时若继续用旧 bounds 就会悬浮在聊天区上方。
+ */
+function visibleFrameSize(el: HTMLElement): { w: number; h: number; visible: boolean } {
+  const r = el.getBoundingClientRect();
+  const container = el.closest(".right-panel-container");
+  const panel = container ? container.getBoundingClientRect() : r;
+  const closed = container ? container.classList.contains("right-panel-closed") : false;
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const onScreen = panel.right > 0 && panel.left < vw && panel.bottom > 0 && panel.top < vh;
+  const effW = Math.min(r.width, panel.width);
+  const visible = !closed && onScreen && effW >= 40 && r.height >= 40;
+  return {
+    w: visible ? Math.round(Math.min(effW, r.width)) : 0,
+    h: visible ? Math.round(r.height) : 0,
+    visible,
+  };
+}
+
+/**
  * 右侧浏览器面板：Agent 控制台（browser-use 侧车实时镜像）。
  *
  * 只保留 Agent 打开网页的方式——agent 通过 /api/browser marker 推送 URL，
@@ -90,6 +116,9 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
   // 镜像区域尺寸（CSS px）+ 用户屏幕 DPR —— 传给侧车把浏览器 viewport 设成与面板一致，
   // 截图 1:1 像素、不变形、点击坐标直接映射。
   const [frameSize, setFrameSize] = useState<{ w: number; h: number; dpr: number } | null>(null);
+  // 镜像区域是否已收起（面板关闭/宽度过小）：收起时原生 WebContentsView 必须隐藏，
+  // 否则它会以最后一份 bounds 悬浮在聊天区之上（它是 DOM 外的覆盖层，不随面板 CSS 收窄）。
+  const [frameTiny, setFrameTiny] = useState(false);
 
   // ---- 控制台模式：URL/标题轮询（帧画面走 SSE 推流，见下方 effect） ----
   useEffect(() => {
@@ -140,9 +169,13 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
     const el = frameAreaRef.current;
     if (!el) return;
     const measure = () => {
-      const r = el.getBoundingClientRect();
-      if (r.width < 40 || r.height < 40) return;
-      const next = { w: Math.round(r.width), h: Math.round(r.height), dpr: window.devicePixelRatio || 1 };
+      const vs = visibleFrameSize(el);
+      if (!vs.visible) {
+        setFrameTiny(true);
+        return;
+      }
+      setFrameTiny(false);
+      const next = { w: vs.w, h: vs.h, dpr: window.devicePixelRatio || 1 };
       setFrameSize((prev) => {
         if (
           prev
@@ -154,8 +187,11 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
       });
     };
     measure();
+    // 观察容器而非内层：收起时 CSS 保持内层固定宽度（仅容器 width→0 裁剪），
+    // 观察内层永远等不到 resize 事件，frameTiny 就不会更新。
+    const observeTarget = el.closest(".right-panel-container") || el;
     const ro = new ResizeObserver(measure);
-    ro.observe(el);
+    ro.observe(observeTarget);
     return () => ro.disconnect();
   }, [active]);
 
@@ -359,8 +395,9 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
 
   useEffect(() => {
     if (!nativeApi || !nativeReady) return;
-    nativeApi.setVisible(tabId, Boolean(active));
-  }, [nativeApi, nativeReady, tabId, active]);
+    // 面板收起（frameTiny）时强制隐藏：原生视图是 DOM 外的覆盖层，必须显式隐藏。
+    nativeApi.setVisible(tabId, Boolean(active) && !frameTiny);
+  }, [nativeApi, nativeReady, tabId, active, frameTiny]);
 
   useEffect(() => {
     if (!nativeApi || !nativeReady) return;
@@ -394,18 +431,23 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
   }, [nativeApi, nativeReady, tabId, inputValue, onNavigate]);
 
   useEffect(() => {
-    if (!nativeMode || !nativeReady || !active || !frameSize || !nativeApi) return;
+    if (!nativeMode || !nativeReady || !nativeApi) return;
+    if (!active || frameTiny) return;
     const el = frameAreaRef.current;
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.width < 40 || r.height < 40) return;
+    const vs = visibleFrameSize(el);
+    if (!vs.visible) {
+      // 兜底：激活瞬间面板仍处于收起状态（frameTiny 尚未更新）时先隐藏
+      nativeApi.setVisible(tabId, false);
+      return;
+    }
     nativeApi.setBounds(tabId, {
-      x: Math.round(r.left),
-      y: Math.round(r.top),
-      width: Math.round(r.width),
-      height: Math.round(r.height),
+      x: Math.round(el.getBoundingClientRect().left),
+      y: Math.round(el.getBoundingClientRect().top),
+      width: vs.w,
+      height: vs.h,
     });
-  }, [nativeMode, nativeReady, nativeApi, active, frameSize, tabId]);
+  }, [nativeMode, nativeReady, nativeApi, active, frameSize, frameTiny, tabId]);
 
   // 控制台模式的导航：直接驱动侧车浏览器
   const consoleNavigate = useCallback(async (raw: string): Promise<boolean> => {

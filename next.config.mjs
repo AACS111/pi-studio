@@ -1,18 +1,18 @@
-import type { NextConfig } from "next";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-const { version } = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf8")) as { version: string };
+const root = import.meta.dirname;
+const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 let piVersion = "unknown";
 try {
-  const piPkgPath = join(__dirname, "node_modules/@earendil-works/pi-coding-agent/package.json");
-  piVersion = (JSON.parse(readFileSync(piPkgPath, "utf8")) as { version: string }).version;
+  const piPkgPath = join(root, "node_modules/@earendil-works/pi-coding-agent/package.json");
+  piVersion = JSON.parse(readFileSync(piPkgPath, "utf8")).version;
 } catch { /* package not found, use default */ }
 
-const nextConfig: NextConfig = {
+const nextConfig = {
   // 打包桌面应用（electron-builder）时用独立目录构建，避免污染 dev 的 .next
   distDir: process.env.PI_WEB_DIST_DIR || ".next",
-  // 浏览器代理的路径式 URL（/api/browser/proxy/<b64>/
+  // 浏览器代理的路径式 URL（/api/browser/proxy/<b64>/）
   // 目录型请求必须保留尾斜杠，否则 308 重定向后动态 import 相对解析又断掉
   skipTrailingSlashRedirect: true,
   serverExternalPackages: [

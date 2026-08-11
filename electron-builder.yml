@@ -29,12 +29,30 @@ files:
   - "public/**"
   - "skills/**"
   - ".agents/**"
-  - "next.config.ts"
+  - "next.config.mjs"
   - "package.json"
 
   # ---- 排除项 ----
   - "!**/*.map"                     # sourcemap 缩小体积
   - "!**/*.tsbuildinfo"
+
+  # ---- node_modules 瘦身（以下均已实测验证：移除后 next start 与全部 API 正常）----
+  # next build 会把应用代码（xlsx/fflate/@univerjs/presets 等）打进 .next-pkg 的 chunk，
+  # 因此这些可以排除。
+  # ⚠️ 但 @earendil-works/pi-*（serverExternalPackages，不打进 chunk）在运行时从
+  # node_modules 加载，它们依赖的包（proper-lockfile 及其依赖 graceful-fs/p-retry/
+  # retry/signal-exit 等）绝不能排除！曾经在打包时临时排除 proper-lockfile 导致安装版
+  # 全部 auth/session API ERR_MODULE_NOT_FOUND → 启动即 HTTP 500。
+  - "!node_modules/@next/swc*/**"                                   # SWC 编译器 ~130MB，next start 不需要
+  - "!node_modules/typescript/**"                                   # 类型系统 ~20MB，仅 dev/build 用
+  - "!node_modules/xlsx/**"                                         # 已打进 chunk
+  - "!node_modules/codepage/**"                                     # xlsx 的依赖，同上
+  - "!node_modules/fflate/**"                                       # 已打进 chunk
+  # 注意：不要在这里加 !node_modules/proper-lockfile/** 或任何 @earendil-works/pi-* 的
+  # 运行时依赖排除项（见上方注释，运行时从 node_modules 加载）。
+  - "!node_modules/@univerjs/presets/**"                            # 前端查看器，已打进 client chunk
+  - "!node_modules/@univerjs-pro/doc-typst-native-binding-win32-x64-msvc/**"  # 文档 native ~43MB，pi-studio 只用 sheet
+  - "!node_modules/@univerjs-pro/uexcli-windows-x64/**"                       # Base/CLI native ~38MB，同上
 
   # 项目目录里的开发/临时内容
   - "!**/.next/**"

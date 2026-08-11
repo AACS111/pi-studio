@@ -35,13 +35,17 @@ function getSidecarBases(): string[] {
 }
 
 /**
- * pi-studio → browser-use 侧车的同源代理。
+ * pi-studio → 浏览器控制桥（Electron 原生 WebContentsView / browser-use 侧车）的同源代理。
  *
- * 浏览器页面无法直连侧车（127.0.0.1:17865，无 CORS），通过本路由同源转发，
+ * 浏览器页面无法直连桥（127.0.0.1，无 CORS），通过本路由同源转发，
  * 让右侧面板的「Agent 控制台」视图可以轮询截图/URL/内容。
  *
- * GET  /api/browser/control/content|screenshot|url|health?...
- * POST /api/browser/control/open|click|type|press|scroll|back|forward|reload|agent|close
+ * GET  /api/browser/control/snapshot|content|screenshot|url|health?…
+ * POST /api/browser/control/execute|open|click|type|fill|select|check|press|scroll|wait|assert|back|forward|reload|input|close
+ *
+ * 语义接口（snapshot/execute/select/fill/check/wait/assert）由 Electron 原生桥提供
+ * （见 electron/bridge.cjs Semantic Browser V2）；Web 模式下这些端点由侧车返回 404，
+ * agent 回退到 content/click/type/press。
  */
 async function forward(request: NextRequest, pathSegments: string[]) {
   if (pathSegments.length === 0) {

@@ -18,7 +18,8 @@
 /out/
 
 # production
-/build
+/build/*
+!/build/icon.ico
 
 # desktop packaging (electron-builder)
 /release/
@@ -48,8 +49,17 @@ next-env.d.ts
 # pi-web runtime data (configurable; default location)
 /pi-web-uploads/
 .pi-web-config.json
+
+# 临时诊断脚本（trace-*）与输出，不入库
+scripts/trace-hook.cjs
+scripts/trace-requires.cjs
+trace-result.txt
 # browser-use sidecar (Python venv + logs)
 tools/browser-use-server/.venv/
 tools/browser-use-server/.browser-profile/
 tools/browser-use-server/__pycache__/
 tools/browser-use-server/*.log
+
+# 日志与临时文件
+*.log
+*.tmp

@@ -1,18 +1,60 @@
-# Pi Studio - Development Notes
+# Pi Studio — 开发笔记
+
+> 本项目是 **Pi Studio**（`@aacs111/pi-studio` v0.8.6），基于 [agegr/pi-web](https://github.com/agegr/pi-web)
+> 二次开发：保留原 Web UI 的全部能力，新增 **Electron 桌面壳**、**原生右侧浏览器控制（Semantic Browser V2）**、
+> **Univer 表格深度集成**（查看/在线编辑/worktree/写回/加密解密/压缩）、**browser-use 侧车**、**上传管理器**、
+> **i18n（en/zh-CN）**、**PWA**、**Git 集成**、**项目信任**、**skill 安装/更新/锁定**、**模型目录/发现/测试**、
+> **视觉描述**、**安全加固**（CSRF/Host/路径/可选 Basic Auth）、**性能优化**（聊天懒加载、undici 空闲超时）等。
+
+---
 
 ## Quick Start
 
 ```bash
-npm run dev   # port 10141 (see package.json; the old doc said 30141 — a stale `next start` once ran there)
+npm run dev            # 浏览器模式，127.0.0.1:10141（见 package.json 的 dev script）
+npm run dev:electron   # Electron 壳 + dev server（scripts/dev-electron.mjs）
+npm run dev:lan        # 局域网模式 0.0.0.0:30141
 ```
 
-Typecheck: `node_modules/.bin/tsc --noEmit`  
-Lint: `npm run lint`  
-**Never run `next build` during dev** — pollutes `.next/` and breaks `npm run dev`.
+Typecheck: `node_modules/.bin/tsc --noEmit`
+Lint: `npm run lint`
+**开发期间永远不要跑 `next build`** — 它污染 `.next/` 并搞坏 `npm run dev`。打包构建走独立目录 `.next-pkg`（`PI_WEB_DIST_DIR`），互不干扰。
+
+### 打包桌面应用
+
+```bash
+npm run pack:dir       # 只生成 release/win-unpacked（快速验证）
+npm run pack:portable  # 单文件便携版 .exe
+npm run pack:nsis      # 安装版 .exe
+npm run pack:msi       # .msi
+npm run pack           # 安装版 + 便携版
+```
+
+- `scripts/package.mjs` 自动设置 `PI_WEB_DIST_DIR=.next-pkg` 和国内镜像（electron-builder-binaries / electron），GitHub 不可达时不会卡下载。
+- `electron-builder.yml`：`asar: false`（内置服务要读真实文件路径）、`npmRebuild: false`（原生依赖均为预编译产物）。首次打包需联网拉 nsis/winCodeSign（已配镜像）。
+- 打出来的 exe 用 `electron/main.cjs` 以「本 exe + `ELECTRON_RUN_AS_NODE=1`」方式启动内置 Next 服务（随机空闲端口，只监听 127.0.0.1）。
 
 ---
 
-## Architecture
+## 架构
+
+### 两种运行形态
+
+**浏览器模式（npm run dev / next start）**：直接访问 Next 服务，右侧浏览器为沙箱 iframe（`/api/browser/proxy` 代理去 frame 限制）。
+
+**Electron 桌面模式（electron/main.cjs）**：
+
+```
+Pi Studio.exe (Electron main)
+  ├─ spawn(本 exe + ELECTRON_RUN_AS_NODE=1 → next start，随机端口，127.0.0.1)
+  ├─ BrowserWindow（UI 主窗口，加载服务地址）
+  ├─ WebContentsView 池（右侧浏览器：每个网页标签一个 WebContentsView，仅一个可见）
+  │    └─ bridge.cjs 启动 HTTP 桥（127.0.0.1 随机端口）暴露语义接口 /snapshot /execute /open ...
+  ├─ CDP 远程调试端口（默认 9222，仅 127.0.0.1；PI_WEB_CDP_PORT 可改，设 0 关闭）
+  └─ 退出时结束服务子进程（含其 worker 树 / univer daemon / 侧车）
+```
+
+### 请求链路（与 pi 一致，浏览器/桌面通用）
 
 ```
 Browser                Next.js Server              AgentSession (in-process)
@@ -30,204 +72,402 @@ Browser                Next.js Server              AgentSession (in-process)
   │◀── data: {...} ─────────│                               │
 ```
 
-**Session browsing** (read-only): reads `.jsonl` files through SDK `SessionManager` helpers and `lib/session-reader.ts` — no AgentSession created.  
-**Sending a message**: `startRpcSession()` in `lib/rpc-manager.ts` creates an AgentSession in-process.
+**Session 浏览**（只读）：直接读 `.jsonl`（`lib/session-reader.ts` + SDK `SessionManager`），不创建 AgentSession。
+**发消息**：`startRpcSession()`（`lib/rpc-manager.ts`）进程内创建 AgentSession。
 
 ---
 
-## File Map
+## 文件地图
+
+### API 路由（`app/api/`，共 60+ 个）
+
+**Agent / Session**
+```
+agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId? } 创建会话
+agent/[id]/route.ts             GET state | POST 任意命令
+agent/[id]/events/route.ts      GET SSE 事件流
+agent/[id]/bash-output/route.ts GET 会话引用的 bash 输出临时文件（pi-bash-*.log，系统 tmpdir）
+agent/running/route.ts          GET 当前运行中的 session id
+agent/running/events/route.ts   GET 运行中 id 的 SSE 流
+sessions/route.ts               GET 会话列表
+sessions/[id]/route.ts          GET/PATCH/DELETE 会话（含级联重挂子会话）
+sessions/[id]/context/route.ts  GET ?leafId= — 指定叶子节点的上下文
+sessions/[id]/export/route.ts   GET 导出的 HTML
+sessions/[id]/auto-name/route.ts POST 用 LLM 自动生成会话标题（lib/session-title.ts）
+sessions/[id]/state/route.ts    GET AgentSession 运行时状态快照（running / thinkingLevel / isCompacting）
+sessions/[id]/entries/[entryId]/thinking/route.ts GET 指定条目的 thinking 块
+```
+
+**Auth / 模型**
+```
+auth/all-providers/route.ts      GET API-key 提供商列表
+auth/api-key/[provider]/route.ts GET/POST/DELETE 提供商 API key 状态/存储
+auth/login/[provider]/route.ts   GET OAuth/device-code SSE | POST 手动码
+auth/logout/[provider]/route.ts  POST OAuth 登出
+auth/providers/route.ts          GET OAuth 提供商列表
+models/route.ts                  GET { models, modelList, defaultModel }（含 enabledModels 作用域、thinking 固定、警告）
+models-config/route.ts           GET/PUT ~/.pi/agent/models.json
+models-config/catalog/route.ts   GET models.dev 定价预设
+models-config/discover/route.ts  POST 拉取已配置提供商的上游模型列表
+models-config/test/route.ts      POST 测试配置的模型/提供商（app/api/models/test/ 不是真实路由）
+```
+
+**文件 / CWD / Git / 上传**
+```
+cwd/browse/route.ts              GET 目录浏览（Windows 盘符选择、可读子目录列表）
+cwd/validate/route.ts            POST 校验/选择一个 cwd
+default-cwd/route.ts             POST 创建 ~/pi-cwd-YYYYMMDD
+files/[...path]/route.ts         GET 文件内容（受允许根列表限制，见下）
+files/save/route.ts              POST 写回文件（base64，25MB 上限）
+file-index/route.ts              GET 文件模糊索引（git ls-files 优先，回退 readdir）
+open-file/route.ts               GET/POST 右侧面板激活文件标记（agent 默认编辑目标）
+git/diff/route.ts                GET 单文件 unified diff（changed-files 卡片的 +N/-M 统计）
+git/status/route.ts              GET git 仓库状态
+home/route.ts                    GET 用户主目录
+uploads/route.ts                 GET 上传列表 | POST 上传（含 .xlsx→.univer 转换）| DELETE 删除 | PATCH 改存储目录
+worktrees/route.ts               GET/POST/DELETE git worktrees
+```
+
+**浏览器（右面板）**
+```
+browser/route.ts                 GET/POST/DELETE 网页预览标记（agent 推页面到面板）
+browser/proxy/route.ts           GET/POST 服务端抓取+改写代理（沙箱 iframe 用，去 X-Frame-Options/CSP）
+browser/proxy/[...path]/route.ts 路径式代理 URL（/api/browser/proxy/<b64>，目录型请求保留尾斜杠）
+browser/control/[...path]/route.ts 流式透传到浏览器控制桥（Electron 原生 WebContentsView 优先，
+                                    回退 browser-use 侧车 127.0.0.1:17865）：
+                                    /open /url /content /snapshot /screenshot /screencast /input
+                                    /click /type /fill /select /check /press /scroll /wait /assert
+                                    /execute (批量) /evaluate — 语义接口仅 Electron 原生模式提供
+```
+
+**Univer（表格）**
+```
+univer/view/route.ts             GET .univer → xlsx 字节（headCommit 校验的导出缓存）
+univer/export/route.ts           GET 导出 .xlsx/.csv 下载
+univer/writeback/route.ts        POST 把 .univer 写回原 .xlsx（经 KET/SheetJS 重建）
+univer/edit-commit/route.ts      POST 提交在线单元格编辑 → worktree（或经隐藏 pi-auto 暂存上主干）
+univer/worktree-create/route.ts  POST 创建草稿 worktree（默认名 u-<6随机数>）
+univer/worktree-delete/route.ts  POST 永久删除未合并 worktree（直接 SQLite）
+univer/worktrees/route.ts        GET worktree 列表 + 提交 + userSeqs（直接 SQLite 读）
+univer/merge/route.ts            POST 合并 worktree 到主干（agent 永不自动合并！）
+univer/discard/route.ts          POST 丢弃 worktree（CLI）
+univer/from-xlsx/route.ts        POST 上传的 xlsx → .univer（导入后做一次体积压缩）
+```
+
+**Skill / 插件 / 信任**
+```
+plugins/route.ts                 GET/POST 包插件管理（SettingsManager + DefaultPackageManager）
+skills/route.ts                  GET/PATCH 已加载 skills 与 disable-model-invocation
+skills/install/route.ts          POST 通过 npx skills add 安装
+skills/search/route.ts           GET/POST skills.sh 搜索
+skills/check/route.ts            POST 检查 skill 包更新（git 浅克隆到系统 tmpdir 比对）
+skills/update/route.ts           POST 更新 skill 包
+project-trust/route.ts           POST 信任项目（~/.pi/agent/trust.json；busy 时拒绝，之后销毁该 cwd 的会话）
+vision/describe/route.ts         POST 用视觉模型描述图片（90s 超时，2048 tokens）
+```
+
+### `lib/`
+
+**核心运行时**
+```
+rpc-manager.ts        AgentSessionWrapper + registry + startRpcSession（globalThis.__piSessions）
+session-reader.ts     SessionManager 封装 + 路径缓存 + buildSessionContext 适配
+agent-client.ts       类型化 fetch 助手
+normalize.ts          normalizeToolCalls() — 文件格式字段名 → 我们类型的映射
+pi-types.ts           本地结构类型
+types.ts / api-types.ts  共享类型
+tool-presets.ts       PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
+startup-preferences.ts 新会话模型/思考级别的持久化（不重放 set_model/set_thinking_level）
+model-scope.ts        enabledModels 作用域（委托 SDK resolveModelScopeWithDiagnostics）
+models-cache.ts       模型列表缓存（信任变更时失效）
+model-catalog.ts      models.dev 预设目录
+model-discovery.ts / model-discovery-auth.ts  上游模型发现（tmpdir 里 mkdtemp 存凭证）
+provider-listing.ts / provider-listing-runtime.ts  能力驱动（非 id 驱动）的提供商列表
+provider-credential-store.ts  按文件锁安全删凭据
+```
+
+**会话文件**
+```
+session-path.ts / session-title.ts / session-file-references.ts(+core) / compaction-summary.ts
+changed-files.ts      每轮编辑/写入文件汇总（edit/write 工具 input 字段是 path 不是 filePath）
+```
+
+**存储 / 上传**
+```
+storage-config.ts     数据目录解析：PI_WEB_UPLOADS_DIR > .pi-web-config.json uploadsDir > 项目默认
+                      pi-web-uploads/；.internal/ 存内部状态；旧数据 (~/.pi/agent/pi-web-*) 启动时迁移一次
+uploads.ts            上传隔离存储（默认上限 300MB，按 mtime 从旧到新清理；文件名消毒防穿越）
+atomic-file.ts        原子写（tmp+rename）
+```
+
+**浏览器**
+```
+browser-proxy.ts      代理 URL 规范化
+browser-sidecar.ts    browser-use 侧车（tools/browser-use-server/server.py，127.0.0.1:17865）自动启动；
+                      幂等 + 失败容忍；作为后台子进程（不分离，随主进程退出），stdout 落 server-console.log
+```
+
+**Univer**
+```
+univer-cli.ts         专属 univer daemon（UNIVER_HOME=<数据目录>/.internal/univer 隔离全局 ~/.univer）；
+                      优先项目固定入口 node_modules/univer-cli/bin/univer.js（直调 node，避开 cmd 引号坑），
+                      回退全局安装；首次调用加锁暖机；runUniver 仍重试一次兜底
+univer-db.ts          直接 SQLite 读（busy_timeout=8000ms，.univer 回滚日志模式下写锁可持 11-23s）
+univer-dims.ts        从 SQLite 快照读每表行/列数（替代 ~8s 的 inspect）
+univer-unit-id.ts     按 path+mtime 缓存 unitId（文件重建后 id 会变）
+univer-view-cache.ts  xlsx 导出缓存（30min TTL + 同 key 合并 + edit-commit 预热；导出文件写系统 tmpdir）
+univer-compact.ts     导入后压缩：删除已合并 worktree 的 seed/artifact 冗余行（34MB→9.8MB 量级）
+univer-user-edits.ts  「u」前缀在线编辑提交的旁路标记（<数据目录>/.internal/pi-web-univer-user-edits.json）
+ket-bridge.ts         加密 .xlsx 解密（WPS KET COM：首选 SaveAs 51，兜底 COM 取数重建；结果按
+                      源路径|大小|mtime|密码 缓存到内部目录，上限 32 个 / 7 天）
+```
+
+**Skill / 插件**
+```
+skills-service.ts     DefaultResourceLoader + 信任门控加载
+skill-lock.ts         ~/.agents/.skill-lock.json 安装来源标注（skills install 之后 /api/skills 列表要能识别）
+skill-updates.ts      更新检查（git 浅克隆到 tmpdir 比对版本）
+npx.ts                npx 运行器
+```
+
+**安全 / 网络**
+```
+request-security.ts   Origin/Host 校验（允许回环、IP 字面量、绑定 hostname、PI_WEB_ALLOWED_HOSTS）
+path-security.ts      路径规范化/防穿越
+web-auth.ts           可选 Basic Auth（用户名固定 pi；PI_WEB_PASSWORD 开启，timingSafeEqual 比较）
+http-dispatcher.ts    全局 undici dispatcher：空闲 300s 超时 + 忽略内部 Client error（防进程被 EventEmitter error 打死）
+bash-output.ts        bash 输出临时文件白名单解析（pi-bash-*.log 必须在系统 tmpdir 根，O_NOFOLLOW 防软链）
+```
+
+**其他**
+```
+file-access.ts / allowed-roots.ts   /api/files 允许根列表
+file-paths.ts / file-dirent.ts / file-types.ts / file-fuzzy.ts / file-links.ts / file-upload.ts / image-attachments.ts
+directory-browser.ts / bounded-form-data.ts / clipboard.ts / ansi.ts
+git-changes.ts / git-status.ts / git-types.ts
+worktree.ts           worktree 解析与 git 操作（link 回主仓库 projectRoot）
+chat-lazy-load.ts     聊天窗口虚拟化（每页 50 条，滚动距离保持）
+terminal-input.ts     键盘事件 → 终端转义序列
+custom-ui-terminal.ts 无头 TUI 终端（92x40，扩展用）
+draft-store.ts        本地草稿
+i18n/                 messages/{en,zh-CN}.ts + registry + format（浏览器 locale 自动检测）
+markdown.ts           markdown 辅助
+pi-studio-options.ts / node-version.js  CLI 启动参数与 Node 版本门禁（>=22.19）
+project-trust.ts      hasTrustRequiringProjectResources + ProjectTrustStore 封装
+```
+
+### `components/`
 
 ```
-app/api/
-  sessions/route.ts               GET  list all sessions
-  sessions/[id]/route.ts          GET/PATCH/DELETE session
-  sessions/[id]/context/route.ts  GET ?leafId= — context for a specific leaf
-  sessions/[id]/export/route.ts   GET exported HTML for a session
-  agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId? }
-  agent/[id]/route.ts             GET state | POST any command
-  agent/[id]/events/route.ts      GET SSE stream
-  agent/running/route.ts          GET currently-running session ids
-  agent/running/events/route.ts   GET SSE stream of currently-running session ids
-  auth/all-providers/route.ts     GET API-key provider list
-  auth/api-key/[provider]/route.ts GET/POST/DELETE provider API key status/storage
-  auth/login/[provider]/route.ts  GET OAuth/device-code SSE | POST manual code
-  auth/logout/[provider]/route.ts POST OAuth logout
-  auth/providers/route.ts         GET OAuth provider list
-  cwd/validate/route.ts           POST validate/select a cwd
-  default-cwd/route.ts            POST create ~/pi-cwd-YYYYMMDD
-  open-file/route.ts              GET/POST right-panel active file marker (agent default target)
-  browser/route.ts                GET/POST/DELETE web-preview marker (agent pushes a page to the panel)
-  browser/proxy/route.ts          GET/POST server-side fetch+rewrite proxy for the sandboxed iframe
-  browser/control/[...path]/route.ts GET/POST streamed pass-through to the browser-use sidecar (127.0.0.1:17865): /open /url /content /screenshot /screencast (SSE live frames) /input (CDP click/type/scroll/key) /evaluate
-  files/[...path]/route.ts        GET file contents for viewer
-  home/route.ts                   GET user home directory
-  models/route.ts                 GET { models, modelList, defaultModel }
-  models-config/route.ts          GET/PUT — read/write ~/.pi/agent/models.json
-  models-config/catalog/route.ts  GET models.dev pricing presets
-  models-config/discover/route.ts POST fetch a configured provider's upstream model list
-  models-config/test/route.ts     POST test a configured model/provider
-  plugins/route.ts                GET/POST package plugin management
-  skills/route.ts                 GET/PATCH loaded skills and disable-model-invocation
-  skills/install/route.ts         POST install skills through npx skills add
-  skills/search/route.ts          GET/POST skills.sh search
-  worktrees/route.ts              GET/POST/DELETE git worktrees
-  univer/view/route.ts            GET .univer → xlsx bytes for the viewer (headCommit-validated cache)
-  univer/export/route.ts          GET export .univer → .xlsx/.csv download
-  univer/writeback/route.ts       POST write .univer back over its original .xlsx
-  univer/edit-commit/route.ts     POST commit online cell edits → worktree (or trunk via hidden pi-auto staging)
-  univer/worktree-create/route.ts POST create draft worktree (default name u-<6随机数>)
-  univer/worktree-delete/route.ts POST permanently delete a non-merged worktree (direct SQLite)
-  univer/worktrees/route.ts       GET .univer worktree list + commits + userSeqs (direct SQLite read)
-  univer/discard/route.ts         POST discard a worktree (CLI)
+AppShell.tsx           布局 + URL 状态 + tab 管理
+SessionSidebar.tsx     会话树 + FileExplorer
+ChatWindow.tsx         聊天组合 + 完成音包装 + 懒加载渲染 + changed-files 卡片装配点
+ChatInput.tsx          输入栏 + 模型/思考/工具/紧凑控制
+MessageView.tsx        单条消息渲染
+BranchNavigator.tsx    会话内分支切换
+ChatMinimap.tsx        滚动缩略图
+MarkdownBody.tsx       markdown 渲染（含 katex/mermaid 支持）
+MermaidBlock.tsx       mermaid 图渲染
+TabBar.tsx             标签栏（Chat + 打开的文件 tab）
+FileExplorer.tsx       侧栏文件树
+FileViewer.tsx         文件内容 tab（.xlsx → XlsxViewer，.univer → UniverFileViewer，图片/文本等）
+XlsxViewer.tsx         Univer sheets 查看器（core preset + OSS 插件 + fflate 解 zip 翻译 sheet XML 高级特性）
+UniverFileViewer.tsx   .univer 文件查看器（轮询 + ackRevRef 就地同步 + scope 缓存）
+univer-worker.ts       表格 worker（公式/筛选等）
+WebViewer.tsx          右侧网页浏览器（iframe 代理 / Electron WebContentsView 双后端）
+UploadsManager.tsx     上传管理弹窗（列表/删除/改存储目录/容量统计）
+ModelsConfig.tsx       models.json 编辑弹窗
+PluginsConfig.tsx      包插件弹窗
+SkillsConfig.tsx       skills 加载/搜索/安装弹窗
+ProjectTrustDialog.tsx 项目信任确认弹窗
+DirectoryPicker.tsx    目录选择器（盘符/浏览）
+ExtensionStatusBar.tsx 扩展状态条（ANSI 清洗）
+ChangedFilesCard.tsx   助手消息下的变更文件摘要卡
+PwaRegistration.tsx    Service Worker 注册
+MobilePwaLayout.tsx    移动 PWA 布局
+FileIcons.tsx          文件图标
+```
 
-lib/
-  agent-client.ts      typed fetch helper for /api/agent commands
-  draft-store.ts       local draft persistence helpers
-  file-access.ts       allowed file roots for /api/files and worktrees
-  file-paths.ts        client/server path encoding helpers
-  markdown.ts          shared markdown helpers
-  npx.ts               npx runner used by skill install
-  pi-types.ts          local structural types for pi SDK objects
-  rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
-  session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
-  tool-presets.ts     PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
-  types.ts            shared TypeScript types
-  normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
-  changed-files.ts    extractChangedFiles() — files edited/written during an assistant turn
-  worktree.ts         project/worktree resolution and git worktree operations
+### `hooks/`
 
-components/
-  AppShell.tsx        layout + URL state + tab management
-  SessionSidebar.tsx  session tree + FileExplorer
-  ChatWindow.tsx      chat composition + completion sound wrapper
-  ChatInput.tsx       input bar + model/thinking/tools/compact controls
-  MessageView.tsx     renders one message (user/assistant/toolCall/toolResult)
-  BranchNavigator.tsx in-session branch switcher
-  ChatMinimap.tsx     scroll minimap alongside the message list
-  MarkdownBody.tsx    markdown renderer
-  ModelsConfig.tsx    modal for editing models.json (opened from sidebar bottom)
-  PluginsConfig.tsx   modal for installed package plugins
-  SkillsConfig.tsx    modal for loaded/search/installable skills
-  FileExplorer.tsx    file tree inside sidebar
-  FileIcons.tsx       file icon helpers
-  FileViewer.tsx      file content in a tab (routes .xlsx → XlsxViewer, .univer → UniverFileViewer)
-  XlsxViewer.tsx      Univer sheets viewer — core preset + OSS plugins (conditional formatting,
-                      data validation, filter, find/replace, sort, table, hyperlink, note,
-                      thread comment; zh-CN locales merged) + filter worker preset. SheetJS CE
-                      drops conditionalFormatting/dataValidations/autoFilter on read, so the viewer
-                      unzips the xlsx with fflate and translates the sheet XML into Univer workbook
-                      `resources` payloads (see parseXlsxAdvancedFeatures / buildAdvancedResources)
-  ChangedFilesCard.tsx changed-files summary card under assistant messages
-  TabBar.tsx          tab bar (Chat + open file tabs)
+```
+useAgentSession.ts    消息 + 流式 + SSE + fork/navigate/对账逻辑
+useAudio.ts            完成音 + AudioContext 解锁（localStorage: pi-sound-enabled）
+useDragDrop.ts         拖放状态
+useI18n.tsx            i18n context（localStorage: pi-locale）
+useIsMobile.ts         响应式断点
+useKeyboardShortcuts.ts 快捷键
+useResizablePanel.ts   可拖拽分隔面板
+useTheme.ts            主题
+useViewportHeight.ts   视口高度（移动端地址栏）
+```
 
-hooks/
-  useAgentSession.ts  messages + streaming + SSE + fork/navigate/reconciliation logic
-  useAudio.ts         completion sound + browser AudioContext unlock
-  useDragDrop.ts      shared drag/drop state
-  useIsMobile.ts      responsive breakpoint hook
-  useTheme.ts         theme state
+### Electron（`electron/`）
+
+```
+main.cjs    桌面主进程：ELECTRON_RUN_AS_NODE=1 起 next start（随机端口）；WebContentsView 标签池；
+            CDP 远程调试（9222）；下载目录；退出杀整棵子进程树
+bridge.cjs  Semantic Browser V2 控制桥（HTTP，127.0.0.1 随机端口）：/snapshot /execute /open
+            /select /fill /wait /assert 等语义接口，基于 executeJavaScript 注入评分定位器
+preload.cjs WebContentsView 的 preload（网页侧桥接）
+```
+
+### 其他
+
+```
+bin/pi-studio.js        CLI 入口（node 版本门禁 + next 启动 + 端口/host/自动开浏览器）
+scripts/package.mjs     打包（.next-pkg + electron-builder + 国内镜像）
+scripts/dev-electron.mjs dev 模式 Electron
+scripts/bridge-engine-test.cjs / bridge-http-test.cjs  桥测试
+tools/browser-use-server/  browser-use 侧车（FastAPI 17865，回退后端）
+.agents/skills/          项目技能：browser-control / sheet-edit / univer-cli / univer-integrate / web-preview
+docs/                    i18n.md / release.md / worktrees.md(.zh-CN.md)
+proxy.ts                 Next middleware：API 的 Origin+Host 校验、浏览器代理只校验 Host
+instrumentation.ts       启动钩子：数据目录迁移 + undici dispatcher + univer daemon 暖机 + 侧车启动
 ```
 
 ---
 
-## Key Design Decisions & Traps
+## 关键设计决策与坑
 
-### Right-panel open-file marker (agent convention)
-- `AppShell` reports the currently active file tab to `/api/open-file` whenever it changes (deduped per path via a ref; fires only on change). The route persists `{ filePath, updatedAt }` to pi-web's own data dir (default `<project>/pi-web-uploads/.internal/pi-web-open-file.json`; see `lib/storage-config.ts` — the location is user-configurable, no longer `~/.pi/agent`). Atomic tmp+rename write.
-- **Convention: when the user asks to edit "the table" / a spreadsheet without naming a file, default to the file recorded in that marker** (the one open in the right viewer). Read it with `GET /api/open-file` or directly from the marker file under pi-web's data dir (default `<project>/pi-web-uploads/.internal/pi-web-open-file.json`); if absent/unset, ask which file.
-- **Uploads storage**: uploaded files, AI-edit .univer outputs, and pi-web's internal state all live in the configurable data dir — default `<project>/pi-web-uploads/` (created on demand; `.internal/` inside holds the open-file marker, user-edit sidecar, and univer CLI home). Location resolution: `PI_WEB_UPLOADS_DIR` env var → `.pi-web-config.json` `uploadsDir` (editable via the uploads manager UI or by hand) → project default. Legacy data from `~/.pi/agent/pi-web-*` is migrated once on server start (`instrumentation.ts` → `migrateLegacyData()`).
+### 右侧面板 open-file 标记（agent 约定）
+- `AppShell` 在激活文件 tab 变化时上报 `/api/open-file`（按路径去重，只变更时发）。路由把 `{ filePath, updatedAt }` 持久化到 pi-studio 数据目录（默认 `<项目>/pi-web-uploads/.internal/pi-web-open-file.json`，位置可配置，见 `lib/storage-config.ts`），原子 tmp+rename 写。
+- **约定：用户说「编辑这张表」又没点名文件时，默认编辑该标记记录的文件**（右侧查看器里打开的那个）。用 `GET /api/open-file` 或直接读标记文件；缺失/未设置就问用户。
+- **上传存储**：上传文件、AI 编辑 .univer 产物、pi-studio 内部状态都在可配置数据目录（默认 `<项目>/pi-web-uploads/`，`.internal/` 存放 open-file 标记、user-edits 侧车、univer CLI home）。解析顺序：`PI_WEB_UPLOADS_DIR` env → `.pi-web-config.json` 的 `uploadsDir`（可在 UI 改）→ 项目默认。旧数据从 `~/.pi/agent/pi-web-*` 启动时迁移一次（`instrumentation.ts` → `migrateLegacyData()`）。
 
-### Changed-files card (per-turn change summary)
-- `extractChangedFiles()` (`lib/changed-files.ts`) scans assistant toolCall blocks for `edit`/`write` tools (input field is `path`, not `filePath`) and returns deduplicated `{filePath, kind}` entries.
-- The card is rendered by `ChatWindow`, NOT inside `MessageView`: assistant turns are split into a collapsed `ProcessDetailsGroup` (thinking + tool calls) and a separate final-answer message. The card must sit at the **message footer level** (below the answer text, above the usage stats) or it gets hidden inside the collapsed process group.
-- Changed files are gathered from **all assistant messages in the group** (`userIdx+1..endIdx`), not just the final answer message — edit/write tool calls live in the process messages.
-- Per-file `+N`/`-M` diff stats are fetched lazily from `/api/git/diff` and parsed with `parseUnifiedPatch`. The fetch effect depends on a **stable `filesKey` string**, never the `files` array reference (parent re-creates it every render — depending on it causes a fetch storm that crashes the dev server).
-- The card is also rendered on the streaming tail (`isLiveTail` + `streamingMessage`) so edits appear live while the agent works.
+### Changed-files 卡片（每轮变更摘要）
+- `extractChangedFiles()`（`lib/changed-files.ts`）扫描助手 turn 的 toolCall 块里的 `edit`/`write` 工具（input 字段是 `path` 不是 `filePath`），去重返回 `{filePath, kind}`。
+- 卡片由 `ChatWindow` 渲染，**不在 MessageView 内**：assistant turn 被拆成折叠的 `ProcessDetailsGroup`（思考+工具调用）和独立最终回答消息。卡片必须放在**消息 footer 层**（回答文本下方、用量统计上方），否则会被折叠进 process group。
+- 变更文件从**组内所有 assistant 消息**（`userIdx+1..endIdx`）收集，不只看最终回答。
+- 每个文件的 `+N`/`-M` diff 统计从 `/api/git/diff` 惰性拉取并用 `parseUnifiedPatch` 解析。fetch effect 依赖**稳定的 `filesKey` 字符串**，绝不依赖 `files` 数组引用（父组件每次渲染重建数组 — 依赖它会导致 fetch 风暴打崩 dev server）。
+- 流式尾部（`isLiveTail` + `streamingMessage`）也渲染卡片，让编辑实时可见。
 
-### AgentSession lifecycle (`lib/rpc-manager.ts`)
-- One `AgentSessionWrapper` per session id, keyed in `globalThis.__piSessions`
-- `globalThis` survives Next.js hot-reload; plain module-level Map does not
-- Idle timeout: 10 minutes. Concurrent `startRpcSession()` calls share a single start Promise (`globalThis.__piStartLocks`)
+### AgentSession 生命周期（`lib/rpc-manager.ts`）
+- 每个 session id 一个 `AgentSessionWrapper`，挂在 `globalThis.__piSessions`（Next.js 热重载下 module 级 Map 会丢，globalThis 不会）。
+- 空闲超时 10 分钟。并发的 `startRpcSession()` 共享单个启动 Promise（`globalThis.__piStartLocks`）。
 
-### Fork must destroy the wrapper immediately
-`AgentSession.fork()` **mutates the wrapper's inner state in-place** — after fork, `inner.sessionId` is the *new* session's id. If the wrapper stays alive in the registry under the old id, the next request gets the already-forked state and subsequent forks produce a corrupt `parentSession` chain.
+### Fork 必须立刻销毁 wrapper
+`AgentSession.fork()` **原地修改 wrapper 内部状态** — fork 之后 `inner.sessionId` 变成新会话的 id。如果 wrapper 还以旧 id 活在 registry 里，下一次请求会拿到已 fork 的状态，后续 fork 产生损坏的 `parentSession` 链。
+**修复**：`send("fork")` 拿到 `newSessionId` 后先 `this.destroy()` 再返回。下次请求原会话时从原文件重新加载干净的 AgentSession。
 
-**Fix**: `send("fork")` captures `newSessionId`, then calls `this.destroy()` before returning. The next request for the original session reloads a clean AgentSession from the original file.
+### 两种分支，别混淆
+- **Fork**（用户消息上的 Fork 按钮）：创建独立的新 `.jsonl` 文件，经 `parentSession` 头字段在侧栏树里显示为子节点。
+- **会话内分支**（Continue 按钮 / BranchNavigator）：同一文件内 `navigate_tree`，多个条目共享同一个 `parentId`，切换走 `/api/sessions/[id]/context?leafId=`。
 
-### Two kinds of branching — don't confuse them
-- **Fork** (Fork button on user message): creates a new independent `.jsonl` file. Shown as a child in the sidebar tree via `parentSession` header field.
-- **In-session branch** (Continue button / BranchNavigator): calls `navigate_tree` within the same file. Multiple entries share the same `parentId`. Switching between them calls `/api/sessions/[id]/context?leafId=`.
+### 会话文件可整文件重写
+`parentSession` 头字段**只是显示元数据** — 对聊天内容零影响，可安全 `writeFileSync` 整个文件（pi 自己迁移时也这么干）。删除会话时级联重挂子会话就靠它。
 
-### Session files can be fully rewritten
-`parentSession` in the header is **display metadata only** — has zero effect on chat content. Safe to `writeFileSync` the entire file (pi does this itself during migrations). Used when cascade-reparenting children on delete.
+### ToolCall 字段归一化
+pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCallContent` 用 `{toolCallId, toolName, input}`。`normalizeToolCalls()`（`lib/normalize.ts`）处理这个映射 — `session-reader.ts`（文件加载）和 `ChatWindow.handleAgentEvent()`（流式）都调用。
 
-### ToolCall field normalization
-Pi stores toolCall blocks as `{type:"toolCall", id, name, arguments}` but `ToolCallContent` uses `{toolCallId, toolName, input}`. `normalizeToolCalls()` in `lib/normalize.ts` handles this — called in both `session-reader.ts` (file load) and `ChatWindow.handleAgentEvent()` (streaming).
+### 新会话工具预设
+建会话时传 `toolNames[]`（`POST /api/agent/new`）。已有会话挂载时经 `get_tools` → `getPresetFromTools()` 推断预设。工具全禁用（`toolNames = []`）时，`rpc-manager.ts` 传空 allow-list 并强制 `agent.state.systemPrompt = ""`（启动/重载/资源发现之后都要设）。
 
-### New session tool preset
-Tool names are passed at session creation (`POST /api/agent/new` → `toolNames[]`). For existing sessions, the active preset is inferred on mount via `get_tools` → `getPresetFromTools()`. When tools are fully disabled (`toolNames = []`), `rpc-manager.ts` passes an empty tool allow-list and forces `agent.state.systemPrompt = ""` after startup/reload/resource discovery.
+### 新会话模型默认值
+`GET /api/models` 从 `~/.pi/agent/settings.json` 读 `defaultModel`，`ChatWindow` 挂载时预选。显式的模型/思考级别选择在 AgentSession 构造时原子应用，随后 `lib/startup-preferences.ts` 持久化生效值**而不重放** `set_model`/`set_thinking_level`；隐式的 `enabledModels` 回退与思考固定不持久化。
 
-### Model defaults for new sessions
-`GET /api/models` returns `defaultModel` read from `~/.pi/agent/settings.json`. `ChatWindow` pre-selects this on mount for new sessions. Explicit browser model/thinking selections are applied atomically during AgentSession construction, then `lib/startup-preferences.ts` persists their effective values without replaying `set_model`/`set_thinking_level`; implicit `enabledModels` fallbacks and thinking pins are not persisted.
+### `enabledModels` 作用域
+`enabledModels` 用 pi 的 `--models` 语法：minimatch glob 匹配 `provider/modelId` 或裸 `modelId`，非 glob 模式模糊匹配，可带 `:thinkingLevel` 后缀。**永远别把这些模式当字面字符串比较** — `lib/model-scope.ts` 委托 SDK 的 `resolveModelScopeWithDiagnostics()`，让 pi-studio 和 TUI 看到一致的模型列表；模式解析为空时回退全部模型。`startRpcSession()` 在创建 AgentSession 前解析作用域，原子传入初始模型、思考固定和 SDK 原生 `scopedModels`；`GET /api/models` 只用同一 helper 取选择器数据、`thinkingLevelPins` 和 `modelScopeWarnings`。
 
-### `enabledModels` scoping
-The `enabledModels` setting uses pi's `--models` syntax: minimatch globs against `provider/modelId` or a bare `modelId`, fuzzy matching for non-glob patterns, and an optional `:thinkingLevel` suffix. Never compare those patterns as literal strings — `lib/model-scope.ts` delegates to the SDK's `resolveModelScopeWithDiagnostics()` so pi-studio and the TUI agree on the visible model list, and falls back to all available models when patterns resolve to nothing. `startRpcSession()` resolves that scope before creating an AgentSession and passes the selected initial model, thinking pin, and SDK-native `scopedModels` atomically; `GET /api/models` reuses the helper only for selector data, `thinkingLevelPins`, and `modelScopeWarnings` display.
+### 页面刷新中断流后 SSE 重连
+`ChatWindow` 挂载时先 `GET /api/agent/[id]`；若 `state.isStreaming === true` 自动重连 SSE，并同步 `thinkingLevel` / `isCompacting`。
 
-### SSE reconnect on page refresh mid-stream
-On `ChatWindow` mount, `GET /api/agent/[id]` is called. If `state.isStreaming === true`, SSE is reconnected automatically. `thinkingLevel` and `isCompacting` are also synced from this response.
+### Compaction SSE 事件
+新 pi 发 `compaction_start`/`compaction_end`，旧版发 `auto_compaction_start`/`auto_compaction_end`。`handleAgentEvent` 两套都收，保证 `isCompacting` 同步。手动 compact 是阻塞 POST — 按钮在响应返回前保持禁用。
 
-### Compaction SSE events
-Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `auto_compaction_start` / `auto_compaction_end`. `handleAgentEvent` accepts both sets to keep `isCompacting` in sync. Manual compact is a blocking POST — the button stays disabled until the response returns.
+### 运行状态轮询 + 对账
+- 侧栏每 2.5s 轮询 `/api/agent/running`（标签页可见时；后台标签暂停，会话列表响应作初始回退）。
+- `useAgentSession` 把每条会话的 SSE 当主通道，每次 prompt 前打开。`prompt_done` 完成当前 UI 阶段与通知，但空闲 SSE 保持 30s 宽限窗口供下次 prompt 复用。`agent_start` 取消关闭定时器；`agent_settled` 收尾扩展注入的、没有 wrapper 级 `prompt_done` 的运行并开新宽限窗。**别在第一个 `agent_end` 就关闭**：重试、compaction、扩展排队消息会延续同一逻辑 prompt。
+- 运行期间周期调 `GET /api/agent/[id]` 并在 `visibilitychange`/`online` 时对账，修复后台标签/半开连接的漏事件。
+- Prompt 运行用单调 run id；旧 run 的迟到 SSE 或慢对账响应必须忽略，防止复活过期流式气泡。
 
-### Running state polling + reconciliation
-- The sidebar polls `/api/agent/running` every 2.5 seconds while the tab is visible and pauses polling in background tabs. The session-list response remains the initial fallback.
-- `useAgentSession` treats per-session SSE as primary for chat events and opens it before each prompt. `prompt_done` completes the current UI stage and notification immediately, but the idle SSE stays open for a 30-second grace window and is reused by the next prompt. `agent_start` cancels that close timer; `agent_settled` finishes extension-injected runs that have no wrapper-level `prompt_done` and starts a fresh grace window. Do not close on the first `agent_end`: retries, compaction, and extension-queued messages can continue the same logical prompt.
-- While a run is active, `useAgentSession` periodically calls `GET /api/agent/[id]` and also reconciles on `visibilitychange`/`online`. This fixes missed terminal events from background tabs or half-open connections.
-- Prompt runs use a monotonic run id; late SSE or slow reconciliation responses from an old run must be ignored so they cannot resurrect stale streaming bubbles.
+### Worktrees 与项目分组
+- `lib/worktree.ts` 把链接的 worktree 顶层解析回主仓库 `projectRoot`；`listAllSessions()` 把它挂到每个 `SessionInfo`，同一仓库的所有 worktree 在侧栏里归组。
+- worktree 操作由 `/api/worktrees` 服务，受 `/api/files` 相同的允许根规则保护。
+- 新 worktree 建在 `<repoRoot>-worktrees/<sanitized-branch>`；已有分支复用，否则 `git worktree add -b`。
+- 删除脏 worktree 返回 `409 { dirty: true }`，UI 询问后 `force` 重试。
+- cwd 指向已删 worktree 的会话回退归到主项目，不产生幽灵项目行。
 
-### Worktrees and project grouping
-- `lib/worktree.ts` resolves linked worktree top-levels back to the main repo `projectRoot`; `listAllSessions()` attaches that to each `SessionInfo` so all worktrees for one repo are grouped together in the sidebar.
-- Worktree operations are served by `/api/worktrees` and guarded by the same allowed-root rules as `/api/files`.
-- New worktrees are created under `<repoRoot>-worktrees/<sanitized-branch>`. Existing branches are reused; otherwise `git worktree add -b` creates the branch.
-- Removing a dirty worktree returns `409` with `{ dirty: true }` so the UI can ask before retrying with `force`.
-- Sessions whose cwd points at a removed worktree are inferred back into the main project instead of becoming a phantom project row.
+### Univer 查看器就地同步（`.univer` 文件）
+- **每个文件一个 Univer 实例**。`XlsxViewer` 在 scope 切换间保活；scope 变化（分支切换 / 外部 `univer execute` 提交）**就地 diff 应用**（单元格 v/t/f/s 走 `FRange.setValue`，合并走 `merge()` / `sheet.command.remove-worksheet-merge`），不是销毁重建。只有结构性变化（sheet 集合/名称/尺寸、CF/校验/筛选资源、或 >8000 个变更单元格）才回退重建。
+- **解析 scope 缓存**（`loadScopeData`/`warmScopeData`）：每个 scope 的解析工作簿按 `scopeKey = <file>::wt:<id>::<headCommit>`（或 `::trunk::<mtime>`）缓存。`UniverFileViewer` 的轮询只在**正在看的** scope 内容外部变化时才推进 `ackRevRef` — 其他 worktree 的提交、状态变化、用户自己的自动保存（`ownSaveRef`：worktree=headCommit seq，trunk=文件 mtime）永不重同步网格。
+- `/api/univer/worktrees` 返回 `trunkRev`（文件 mtime）供前端缓存 key；合并会使其失效（无论看的是什么）。
+- **Agent 铁律：永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。sheet-edit 技能强制这条。
+- **验证纪律**：每个改动必须过 tsc + eslint + headless 浏览器往返（trunk→worktree→trunk 带样式断言）再交付 — 绝不把未验证状态交给用户（浏览器可能跑着旧 chunk/scope 缓存）。坑位清单见 sheet-edit 技能的交付流程铁律/常见坑（`setValue` 合并语义、`s:null` 是唯一清样式方式、SheetJS 丢对齐、`getCellData().s` 是样式 id 要读 `wb.save().styles[id]`、daemon 文件锁、dev 端口 10141）。
 
-### Univer viewer in-place sync (`.univer` files)
-- **One Univer instance per file.** `XlsxViewer` keeps the instance alive across scope switches; a scope change (branch switch / external `univer execute` commit) is **diff-applied in place** (cell v/t/f/s via `FRange.setValue`, merges via `merge()` / `sheet.command.remove-worksheet-merge`), not a full dispose+recreate. Only structural changes (sheet set/names/dimensions, CF/validation/filter resources, or >8000 changed cells) fall back to a recreate.
-- **Parsed-scope cache** (`loadScopeData`/`warmScopeData` in XlsxViewer.tsx): each scope's parsed workbook is cached keyed by `scopeKey = <file>::wt:<id>::<headCommit>` (or `::trunk::<mtime>`). `UniverFileViewer`'s poll advances an `ackRevRef` only when the **viewed** scope's own content changed externally — commits to other worktrees, status changes, and the user's own auto-saves (`ownSaveRef`: worktree=headCommit seq, trunk=file mtime from `/api/univer/edit-commit`) never re-sync the grid.
-- `/api/univer/worktrees` returns `trunkRev` (file mtime) so the frontend can key its trunk cache; a merge invalidates it regardless of what's viewed.
-- **Agent rule: never auto-merge worktrees.** Edit on a worktree, `worktree ready`, then stop — the user clicks 合并到主干 in the viewer or explicitly asks. The sheet-edit skill enforces this.
-- **Verification discipline (from user feedback, 2026-08): every change must pass tsc + eslint + a headless-browser round-trip (trunk→worktree→trunk with style assertions) before being reported — never hand the user an unverified state; their browser may be running stale chunks/scope caches (see sheet-edit skill's 交付流程铁律 / 常见坑 for the full list: `setValue` merge semantics, `s:null` the only style clearer, SheetJS drops alignment, `getCellData().s` is a style id → read `wb.save().styles[id]`, daemon file locks, dev port 10141).
+### 加密 xlsx（KET 桥）
+标准 OOXML 加密 / WPS TSD 加密 / WPS 结构加密的 `.xlsx` 无法被 fflate/SheetJS 解析时走 `lib/ket-bridge.ts` 的 WPS KET COM 自动化（ProgID `Ket.Application`）：首选 `Workbooks.Open` → `SaveAs(FileFormat=51)` 另存为标准 xlsx 并校验 PK 魔数；受限 WPS 365 企业版强制 TSD 容器时兜底 COM 按 Range 取数 + SheetJS 重建（只还原活动工作表）。解密结果按「源路径|大小|mtime|密码」缓存（上限 32 个 / 7 天）。KET 调用 90s 超时防弹窗挂死。
 
-### File access allow-list
-- `/api/files` is intentionally not a general filesystem browser. Allowed roots come from session cwds, their resolved project roots, `~/pi-cwd-*`, and roots explicitly added with `allowFileRoot()`.
-- `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable.
+### 文件访问允许列表
+- `/api/files` 刻意不是通用文件系统浏览器。允许根来自：会话 cwds、其解析出的项目根、`~/pi-cwd-*`、以及显式 `allowFileRoot()` 添加的根。
+- `/api/cwd/validate`、`/api/default-cwd`、`/api/worktrees` 在产生新可浏览位置时调用 `allowFileRoot()`。
+- `/api/files/save`、`/api/git/*`、`/api/file-index` 走同一套 `isFilePathAllowed` 校验。
 
-### Plugins and skills
-- `/api/plugins` uses pi's `SettingsManager` + `DefaultPackageManager` for global/project package install, remove, update, enable, and disable. Disabling writes empty `extensions/skills/prompts/themes` arrays for that package entry.
-- `/api/skills` uses `DefaultResourceLoader` so settings paths, package skills, and project `.agents/skills` are listed the same way the runtime sees them.
-- **Project skills ship in `.agents/skills/`** (sheet-edit + univer-cli, see `.agents/skills/README.md`) and travel with the repo to new servers. They load only after the project is trusted (`~/.pi/agent/trust.json`, shared with the pi CLI; `/api/project-trust` POST records it, but it refuses while a session is busy and destroys cwd sessions afterwards). A project that gains `.agents/skills` flips `hasTrustRequiringProjectResources` — untrusted projects skip them entirely (`projectResourcesLoaded: false`).
-- Skill toggling edits only the `disable-model-invocation` frontmatter key on the target `SKILL.md`; keep that surgical so user formatting survives.
-- `/api/skills/install` shells through `npx skills add ... --agent pi`; project installs run with the selected cwd.
+### Plugins 和 skills
+- `/api/plugins` 用 pi 的 `SettingsManager` + `DefaultPackageManager` 做全局/项目包安装、移除、更新、启停。禁用时把该包条目的 `extensions/skills/prompts/themes` 数组写成空。
+- `/api/skills` 用 `DefaultResourceLoader`，settings 路径、包 skills、项目 `.agents/skills` 与运行时视角一致。
+- **项目技能在 `.agents/skills/`**（browser-control / sheet-edit / univer-cli / univer-integrate / web-preview），随仓库分发。只在项目被信任（`~/.pi/agent/trust.json`，与 pi CLI 共享；`/api/project-trust` 记录，busy 时拒绝并事后销毁 cwd 会话）后加载。新增 `.agents/skills` 的项目会翻转 `hasTrustRequiringProjectResources` — 未信任项目完全跳过（`projectResourcesLoaded: false`）。
+- skill 开关只改目标 `SKILL.md` 的 `disable-model-invocation` frontmatter 键，保持外科手术式修改以保留用户格式。
+- `/api/skills/install` 走 `npx skills add ... --agent pi`；项目级安装用所选 cwd。`/api/skills/check` 与 `/api/skills/update` 用 git 浅克隆到系统 tmpdir 做版本比对。
 
-### Auth and model config
-- `ModelsConfig` combines models from `~/.pi/agent/models.json` with provider auth status from pi's `AuthStorage`/`ModelRegistry`.
-- Provider listing is capability-driven, never id-driven: `lib/provider-listing.ts` decides membership from `auth.apiKey.login` / `auth.oauth` plus the stored credential type, so dual-auth providers (anthropic and github-copilot today — which providers declare both changes between SDK releases, so never assume it from an id) appear exactly once and never fall through both lists (#309). `lib/provider-listing-runtime.ts` adapts `ModelRuntime` to those pure helpers.
-- auth.json holds **one** credential per provider and `ModelRuntime.logout()` deletes whichever it is. The delete routes therefore use `removeStoredCredentialIfType()` to compare and delete under the same file lock used by pi's auth storage. `ModelsConfig` also refreshes *both* provider lists after any auth change — refreshing one leaves a dual-auth provider rendered twice.
-- OAuth/device-code/manual-code flows are streamed by `GET /api/auth/login/[provider]`; manual code responses POST back with a short-lived token stored in `globalThis.__piLoginCallbacks`.
-- API-key routes store and remove keys through `AuthStorage`. Status endpoints must never return the raw key.
-- The model test route is `app/api/models-config/test/route.ts`; `app/api/models/test/` is not a real route.
+### Auth 和模型配置
+- `ModelsConfig` 把 `~/.pi/agent/models.json` 的模型与 pi `AuthStorage`/`ModelRegistry` 的提供商认证状态合并展示。
+- 提供商列表是**能力驱动，绝不 id 驱动**：`lib/provider-listing.ts` 依据 `auth.apiKey.login` / `auth.oauth` 加已存凭据类型决定归属，双认证提供商（现在 anthropic 与 github-copilot — SDK 版本之间声明会变，别按 id 猜）恰好出现一次、绝不双列。
+- auth.json 每个提供商**一个**凭据，`ModelRuntime.logout()` 删掉它。删除路由因此用 `removeStoredCredentialIfType()` 在 pi auth 存储同一文件锁下比较再删。`ModelsConfig` 在任何认证变化后**刷新两个列表** — 只刷一个会让双认证提供商渲染两次。
+- OAuth/device-code/manual-code 流由 `GET /api/auth/login/[provider]` SSE 流式输出；manual code 响应 POST 回短时 token 存 `globalThis.__piLoginCallbacks`。
+- API-key 路由经 `AuthStorage` 存/删，状态端点绝不返回裸 key。
+- 模型测试路由是 `app/api/models-config/test/route.ts`；`app/api/models/test/` 不是真实路由。
 
-### Completion sound
-- `hooks/useAudio.ts` stores the toggle in `localStorage` as `pi-sound-enabled` and reuses one `AudioContext`.
-- Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
+### 完成音
+- `hooks/useAudio.ts` 把开关存 `localStorage` 的 `pi-sound-enabled`，复用一个 `AudioContext`。
+- 浏览器自动播放策略要求从用户手势解锁；`ChatInput` 在交互控件上调用解锁 hook，`ChatWindow` 从 `onAgentEnd` 播放提示音。
 
-### Exported session HTML
-- `/api/sessions/[id]/export` delegates to pi's export helper, then patches recursive tree helpers in the generated HTML to iterative versions so very deep linear sessions do not overflow the browser call stack.
+### 导出的会话 HTML
+`/api/sessions/[id]/export` 委托 pi 导出助手，再把生成 HTML 里的递归树 helper 补丁成迭代版本，避免极深线性会话把浏览器调用栈打爆。
 
-## Pi Session File Format
+### Electron 桌面壳
+- `main.cjs` 用 `ELECTRON_RUN_AS_NODE=1` 让 exe 扮演 node 启动 `next start`（随机端口 / `PI_WEB_PORT` 固定；dev 模式 `PI_WEB_SERVER_MODE=dev` 走 10141）。子进程（含 univer daemon）继承该 env。
+- 打包后数据目录移到 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写）。
+- 右侧浏览器 = WebContentsView 池，每网页标签一个，仅一个可见；`bridge.cjs` 起 HTTP 桥暴露语义控制接口；CDP 端口 9222（`PI_WEB_CDP_PORT` 改/关）。
+- 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
 
-Location: `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
+### 浏览器控制桥（Semantic Browser V2）
+- **原生模式优先**：Electron 内嵌 WebContentsView，`bridge.cjs` 用 `executeJavaScript` + CDP 落到同一页面，语义接口（/snapshot /execute /select /fill /check /wait /assert）只在此模式提供。snapshot 返回 ref/role/name/value；评分定位器顺序 精确文本 > aria > placeholder > testid > contains，歧义返回 409 + 候选。
+- **回退**：browser-use 侧车（FastAPI 17865，`tools/browser-use-server/server.py`），无头 Chrome 兜底。侧车由 `instrumentation.ts` → `lib/browser-sidecar.ts` 自动拉起：幂等（17865 已监听则跳过）、失败容忍、后台子进程不分离（Windows 上 detached 子进程会丢 console session，socket 报 WinError 64）。
+- `/api/browser/control/[...path]` 把请求流式透传到桥/侧车，agent 通过它观察并操作右侧页面。
+
+### 服务端网页代理
+沙箱 iframe（无 `allow-same-origin`）加载跨站子资源时 Origin 是 `null`，会被 CSRF 校验拦截；`proxy.ts` 对 `/api/browser/proxy` 只校验 Host（必须在允许主机上），跳过 Origin — 它是纯内容代理，设计上就该被跨源调用。`skipTrailingSlashRedirect: true` 保证目录型代理 URL 不被 308 重定向搞坏相对解析。
+
+### 安全模型（proxy.ts）
+- `/api/*` 请求校验 Origin（同源或可信列表）+ Host；非 API 页面只校验 Host。
+- `PI_WEB_PASSWORD` 开启 Basic Auth（用户名固定 `pi`，sha256 + timingSafeEqual）；`PI_WEB_ALLOWED_HOSTS` 允许可信反代的外部 hostname。
+- 上传文件名消毒（`sanitizeUploadName` 防穿越）；`/api/files/save` 走允许根校验。
+
+### bash 输出临时文件
+- 大命令输出由 pi 写到系统 tmpdir 的 `pi-bash-*.log`，`/api/agent/[id]/bash-output` 提供读取（内联显示限 5MB，下载走流式）。路径必须位于 tmpdir 根且文件名匹配白名单（`lib/bash-output.ts`），`O_NOFOLLOW` 打开防符号链接，且必须被该会话真实引用（`lib/session-file-references.ts` 扫会话条目）。
+- 这些文件在系统 Temp 里不随会话结束自动清理，属已知行为；定期清空 `%TEMP%` 下 `pi-bash-*`、`univer-view-*`、`pi-web-*`、`pi-cdp-*`、`piweb-cdp-*` 前缀文件即可（详见下方「Temp 目录卫生」）。
+
+### 性能与稳定性
+- **undici dispatcher**（`lib/http-dispatcher.ts`）：`instrumentation.ts` 启动时调 `configureHttpDispatcher()`，全局 fetch 走带 300s 空闲超时（`DEFAULT_HTTP_IDLE_TIMEOUT_MS`）的 Client，并吞掉终止响应体时的内部 Client error（否则 EventEmitter error 直接打死 Next 进程）。超时是 `configureHttpDispatcher(timeoutMs)` 的代码级参数（`0` 禁用），非环境变量。
+- **聊天懒加载**（`lib/chat-lazy-load.ts`）：默认只渲染末尾 50 条，滚到底加载上一页 50 条，保持滚动距离不跳。
+- **univer 读取**：`/api/univer/view` 有 30min TTL 导出缓存 + 同 key inflight 合并 + edit-commit 后预热；尺寸/提交信息直接 SQLite 读，不跑慢 CLI。
+
+### Temp 目录卫生
+pi-studio 相关临时产物都落在系统 Temp（`%TEMP%` / `os.tmpdir()`），按前缀可分：
+- `pi-bash-*.log` — 大命令输出缓存
+- `univer-view-*.xlsx` — univer 导出缓存文件
+- `pi-web-model-discovery-*` / `pi-web-skill-check-*` — 模型发现与 skill 更新检查的临时目录
+- `pi-cdp-*` / `piweb-cdp-*` — pi/pi-studio 的 Chrome CDP user-data 目录（每个约 20-40MB，用后残留）
+- `cdp-test-profile` / `piweb-cdp-smoke-*` / `e2e-profile` 等 — 测试/验证临时 profile
+
+全部可在 pi-studio 未运行时安全删除。若想自动清理：在 dev 启动脚本（`restart-dev.ps1` 或 dev 前置命令）里加一步删除这些前缀的旧文件即可；不要删正在运行的会话可能仍要读的 `pi-bash-*`（仅删除超过若干小时的）。
+
+---
+
+## Pi Session 文件格式
+
+位置：`~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
 
 ```jsonl
 {"type":"session","version":3,"id":"<uuid>","timestamp":"...","cwd":"/path","parentSession":"/abs/path/to/parent.jsonl"}
@@ -239,11 +479,11 @@ Location: `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
 {"type":"session_info","id":"...","parentId":"...","name":"user-defined name"}
 ```
 
-`entryIds[]` in `SessionContext` is a parallel array to `messages[]` — maps each displayed message back to its `.jsonl` entry id, used for fork and navigate_tree calls.
+`SessionContext.entryIds[]` 与 `messages[]` 平行 — 把每个展示消息映射回 `.jsonl` entry id，用于 fork 和 navigate_tree。
 
 ---
 
-## CSS Variables (`app/globals.css`)
+## CSS Variables（`app/globals.css`）
 
 ```
 --bg --bg-panel --bg-hover --bg-selected --border
@@ -251,3 +491,18 @@ Location: `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
 --accent --user-bg --tool-bg
 --font-mono
 ```
+
+## 环境变量一览
+
+| 变量 | 作用 |
+| --- | --- |
+| `PI_WEB_PORT` | Electron 内置服务固定端口（默认随机） |
+| `PI_WEB_DIST_DIR` | Next 构建目录（默认 `.next`，打包用 `.next-pkg`） |
+| `PI_WEB_UPLOADS_DIR` | 数据目录（上传 + 内部状态），优先级最高 |
+| `PI_WEB_UPLOADS_MAX_BYTES` | 上传总量上限（默认 300MB） |
+| `PI_WEB_CDP_PORT` | Electron CDP 调试端口（默认 9222，`0` 关闭） |
+| `PI_WEB_HOSTNAME` / `PI_WEB_NO_OPEN` / `PI_WEB_SERVER_MODE` | Electron 内置服务绑定/不弹浏览器/dev 模式 |
+| `PI_WEB_PASSWORD` / `PI_WEB_AUTH_USERNAME` | 可选 Basic Auth（用户名默认 `pi`） |
+| `PI_WEB_ALLOWED_HOSTS` | 可信反代外部 hostname（逗号分隔） |
+| `PI_WEB_UNIVER_HOME` | univer daemon 运行时根（默认 `<数据目录>/.internal/univer`） |
+| `PI_BROWSER_USE_PORT` | browser-use 侧车端口（默认 17865） |

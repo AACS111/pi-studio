@@ -1,6 +1,6 @@
 # Pi Studio
 
-[中文文档](./README.zh-CN.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
+[中文文档](./README.zh-CN.md)
 
 Pi Studio is a local web workspace for the [pi coding agent](https://github.com/badlogic/pi-mono), forked from [agegr/pi-web](https://github.com/agegr/pi-web). It reads your local pi session files and provides a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview — plus things the CLI alone can't do: a **full spreadsheet engine** for viewing and editing `.xlsx` / `.univer` files in place, and a **built-in browser** the agent can drive and push pages to.
 

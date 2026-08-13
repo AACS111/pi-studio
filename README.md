@@ -1,6 +1,6 @@
 # Pi Studio
 
-[English](./README.md)
+
 
 Pi Studio 是 [pi 编程智能体](https://github.com/badlogic/pi-mono) 的本地 Web 工作台，源自 [agegr/pi-web](https://github.com/agegr/pi-web)。它会读取本机的 pi 会话文件，在浏览器里提供会话管理、实时对话、模型配置、技能管理和项目文件预览——此外还提供了 CLI 做不到的两件事：内置**完整表格引擎**（就地查看/编辑 `.xlsx` / `.univer` 文件），以及**内置浏览器**（可被智能体驱动、推送页面）。
 
@@ -13,9 +13,9 @@ Pi Studio 是 [pi 编程智能体](https://github.com/badlogic/pi-mono) 的本�
 
 
 
-![CLI 与 Pi Studio 显示同一 pi 会话：结构化工具调用、可读 Markdown、会话浏览、更清爽的结果](public\icons\icon-514.png)
-![网页问题总结并写入Excel](public\icons\icon-516.png)
-![支持全程留痕、随时回滚](public\icons\icon-515.png)
+![CLI 与 Pi Studio 显示同一 pi 会话：结构化工具调用、可读 Markdown、会话浏览、更清爽的结果](public/icons/icon-514.png)
+![网页问题总结并写入Excel](public/icons/icon-516.png)
+![支持全程留痕、随时回滚](public/icons/icon-515.png)
 
 ## 功能特性
 

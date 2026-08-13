@@ -26,4 +26,6 @@ export interface GitFileDiffResponse {
   supported: boolean;
   status?: GitFileStatusKind;
   patch?: string;
+  /** True when the file still exists on disk (false for deleted/scratch files). */
+  exists?: boolean;
 }

@@ -22,6 +22,8 @@ const child = spawn(electronBin, ["."], {
     ...process.env,
     PI_WEB_SERVER_MODE: "dev",
     PI_WEB_PORT: process.env.PI_WEB_PORT || "10141",
+    // 开发版与已安装的桌面版 Pi Studio（默认占 9222）区分开，避免 CDP 端口冲突
+    PI_WEB_CDP_PORT: process.env.PI_WEB_CDP_PORT || "9223",
     PI_WEB_DIST_DIR: process.env.PI_WEB_DIST_DIR || ".next",
   },
 });

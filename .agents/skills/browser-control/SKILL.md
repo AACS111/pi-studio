@@ -1,18 +1,19 @@
 ---
 name: browser-control
-description: "控制右侧浏览器（Electron 原生 WebContentsView 或 browser-use 侧车）并诊断页面内容。支持语义快照（/snapshot 返回 ref/role/name/value）、评分定位器（精确文本>aria>placeholder>testid>contains，歧义返回 409+候选）、批量执行（/execute 一次 JS 上下文完成多步动作：fill/select/click/check/wait/assert）、高级动作（/select 原生下拉 + Ant Design/Element Plus combobox）、条件等待与断言（/wait /assert）、智能打开（/open 支持 wait:\"dom\" 与 readyWhen + 内嵌 snapshot）。Use when the user wants you to interact with a live website (fill a form, click through, check dynamic content), take a screenshot of a page, or extract readable page text."
+description: "控制右侧浏览器（Electron 原生 WebContentsView）并诊断页面内容。支持语义快照（/snapshot 返回 ref/role/name/value）、评分定位器（精确文本>aria>placeholder>testid>contains，歧义返回 409+候选）、批量执行（/execute 一次 JS 上下文完成多步动作：fill/select/click/check/wait/assert）、高级动作（/select 原生下拉 + Ant Design/Element Plus combobox）、条件等待与断言（/wait /assert）、智能打开（/open 支持 wait:\"dom\" 与 readyWhen + 内嵌 snapshot）。仅 Electron 桌面模式可用（npm run dev:electron / 打包应用）；npm run dev 纯浏览器模式不支持右侧浏览器。Use when the user wants you to interact with a live website (fill a form, click through, check dynamic content), take a screenshot of a page, or extract readable page text. Only works in the Electron desktop app (npm run dev:electron or packaged build); plain npm run dev browser mode has no right-panel browser."
 ---
 
 # 控制浏览器（browser-control）
 
-右侧面板有两种驱动模式，接口一致（语义接口 `/snapshot /execute /select /fill /check /wait /assert` 仅 Electron 原生模式提供，Web 模式自动回退到基础接口）：
+右侧面板浏览器由 **Electron 原生 WebContentsView** 渲染，`electron/bridge.cjs` 起 HTTP 控制桥（127.0.0.1 随机端口）暴露语义接口。
 
-| | Electron 桌面壳（默认） | npm run dev / 浏览器模式 |
-|---|---|---|
-| 渲染 | 原生 WebContentsView，无截图帧流 | browser-use headless Chrome 实时镜像 |
-| 控制 | Electron 主进程控制桥（CDP/executeJavaScript） | browser-use 侧车（127.0.0.1:17865） |
-| 语义接口 | ✅ snapshot / execute / select / fill / check / wait / assert | ❌ 无（用基础接口） |
-| 体验 | 流畅、页面与 agent 同会话 | 有像素流延迟，可接受但不如原生 |
+| 项目 | 说明 |
+|---|---|
+| 渲染 | 原生 WebContentsView（页面由 Chromium 直接合成） |
+| 控制 | Electron 主进程控制桥（CDP / executeJavaScript） |
+| 语义接口 | ✅ snapshot / execute / select / fill / check / wait / assert |
+| 可用形态 | `npm run dev:electron`、打包应用（exe） |
+| 不可用形态 | `npm run dev` 纯浏览器模式（无桥，接口返回 502） |
 
 ## ⚠️ 核心工作流（先读这里）
 
@@ -53,9 +54,8 @@ curl -s -X POST $base/wait -H 'Content-Type: application/json' -d '{"for":{"text
 
 先按顺序取 `baseUrl`：
 
-1. 环境变量 `PI_BROWSER_USE_BASE_URL`（Electron 主进程已设置）；
-2. 桥标记文件 `pi-web-uploads/.internal/pi-web-browser-bridge.json` 的 `baseUrl`；
-3. 回退 `http://127.0.0.1:17865`（browser-use 侧车）。
+1. 环境变量 `PI_WEB_BROWSER_BRIDGE_URL`（Electron 主进程已设置）；
+2. 桥标记文件 `pi-web-uploads/.internal/pi-web-browser-bridge.json` 的 `baseUrl`（Electron 数据目录：打包版 `%APPDATA%/Pi Studio/pi-web-uploads`，dev 版 `%APPDATA%/Pi Studio Dev/pi-web-uploads`）。
 
 PowerShell 示例：
 
@@ -64,26 +64,18 @@ $dataDir = if ($env:PI_WEB_UPLOADS_DIR) { $env:PI_WEB_UPLOADS_DIR }
   elseif (Test-Path "pi-web-uploads") { (Resolve-Path "pi-web-uploads").Path }
   else { Join-Path $env:APPDATA "Pi Studio\pi-web-uploads" }
 $marker = Join-Path $dataDir ".internal\pi-web-browser-bridge.json"
-$base = if ($env:PI_BROWSER_USE_BASE_URL) { $env:PI_BROWSER_USE_BASE_URL }
+$base = if ($env:PI_WEB_BROWSER_BRIDGE_URL) { $env:PI_WEB_BROWSER_BRIDGE_URL }
   elseif (Test-Path $marker) { (Get-Content $marker -Raw | ConvertFrom-Json).baseUrl }
-  else { "http://127.0.0.1:17865" }
+  else { throw "browser bridge not found — 仅在 Electron 桌面模式下可用" }
 ```
 
-## 启动（仅 browser-use 模式需要）
-
-```bash
-tools/browser-use-server/start.bat
-```
-
-- 端口 **17865**（`PI_BROWSER_USE_PORT` 可改），日志 `tools/browser-use-server/server.log`。
-- 首次请求会自动启动 headless Chrome（系统 Chrome，独立 profile，不碰用户浏览器）。
-- 侧车未启动时先启动；启动脚本会检测端口已存在则跳过。
+> 桥标记可能过期（Electron 重启后端口会变）——`$base` 连不上时，用 `netstat -ano | grep LISTENING` 找 Electron 主进程实际监听的 HTTP 端口，或直接查 CDP `http://127.0.0.1:9222/json`（dev 用 9223）确认 WebContentsView 是否存活。也可走 pi-studio 同源代理 `/api/browser/control/<path>`（无 CORS 问题，推荐 agent 用这个）。
 
 ## API（全部 JSON；`baseUrl` 见上方发现逻辑）
 
 ### ① 语义观察：/snapshot（推荐替代 /content）
 
-返回**高价值交互元素**（button/input/textarea/select/combobox/checkbox/radio/link/tab/option/contenteditable，隐藏与零尺寸元素自动过滤）：
+返回**高价值交互元素**（button/input/textarea/select/combobox/checkbox/radio/link/tab/option/contenteditable，隐藏与零尺寸元素自动过滤）。图标按钮（无文本但有 `title` / svg `<title>`）的名称会取 title，语义定位也能命中：
 
 ```bash
 curl -s "$base/snapshot"            # 默认最多 300 个元素；?max=500 可调
@@ -108,7 +100,9 @@ curl -s "$base/snapshot"            # 默认最多 300 个元素；?max=500 可�
 
 ### ② 批量执行：/execute（最常用）
 
-一次 HTTP + 一次 JS 上下文完成多个动作，**不要拆成多次调用**：
+一次 HTTP + 一次 JS 上下文完成多个动作，**不要拆成多次调用**。
+
+**auto-wait（2026-08-12 新增）**：`click/fill/select/check/press/focus` 执行前会等待元素可交互（可见 + 未禁用 + 可接收指针事件）且几何稳定（动画/懒加载中的元素会移动），超时默认 4s（`"wait": 8000` 可调）。等不到则返回 `NOT_ACTIONABLE`，避免“元素没加载完就点空”。
 
 ```bash
 curl -s -X POST $base/execute -H 'Content-Type: application/json' -d '{
@@ -211,7 +205,6 @@ curl -s -X POST $base/open -H 'Content-Type: application/json' -d '{"url":"http:
 - `"snapshot":true` → 返回里直接带 `snapshotId` + `elements`，open 和 observe 一次完成。
 
 ### ⑥ 基础/底层接口（保留兼容）
-
 ```bash
 curl -s -X POST $base/back            # 后退（返回 {moved:true/false}）
 curl -s -X POST $base/forward         # 前进
@@ -228,9 +221,21 @@ curl -s -X POST $base/input -H 'Content-Type: application/json' -d '{"type":"cli
 - `/press` 走**真实 Chromium 键盘输入**（CDP `Input.dispatchKeyEvent`，Enter 携带 `\r` 触发原生表单提交），不是合成 DOM 事件——对 Ant Design / Element Plus / Vue / React 组件更可靠。可先指定 `{"ref":"e0","key":"Enter"}` 把焦点放到目标再按键。
 - 语义操作（click/fill/select/check/press）**不等待页面加载**，点击后若发生导航，用 `/wait` 等新页面出现。
 
-### 面板实时镜像（右侧面板「Agent 控制台」自动使用）
+### ⑦ evaluate（低层逃生舱，canvas/自研组件首选）
 
-面板从 `GET /cdp` 拿到当前页面 target 的 DevTools WebSocket 地址后**直连 Chrome**（启动参数带 `--remote-allow-origins=*`），用 `Page.startScreencast` 收变化帧。Web 模式下可用；Electron 模式下面板本身就是页面，无需镜像。
+任意 JS 求值，**读 canvas 应用内部状态（如 Univer 的 FUniver 实例）、自研组件适配都走这里**（语义定位对 canvas 内容无效）。支持三种写法：
+
+```bash
+# 1) 普通表达式
+curl -s -X POST $base/evaluate -H 'Content-Type: application/json' -d '{"expression":"document.title"}'
+# 2) 函数式 + args 传参（省去每次内嵌长参数）
+curl -s -X POST $base/evaluate -H 'Content-Type: application/json' -d '{"expression":"(a,b) => a + b", "args":[2,3]}'
+# 3) 直接传一个匿名函数体
+curl -s -X POST $base/evaluate -H 'Content-Type: application/json' -d '{"expression":"() => ({ n: document.querySelectorAll(\"canvas\").length })"}'
+```
+
+- 支持异步表达式（`async () => …`）；默认 15s 超时，`{"timeoutMs": 5000}` 可调（上限 120s）。
+- JS 抛错返回 `{"ok":false,"error":"..."}`（不会整个请求 500）。
 
 ## 建议流程（诊断 + 操作页面）
 
@@ -244,9 +249,8 @@ curl -s -X POST $base/input -H 'Content-Type: application/json' -d '{"type":"cli
 
 - **snapshotId 有效期**：页面 DOM 变化后旧 ref 失效，必须重新 `/snapshot`。execute 返回的 `snapshotInvalidated:true` 就是信号。
 - **优先用 ref**：语义 target 有歧义时返回 409 + 候选，改用 ref 精确操作。
-- 侧车默认 **headless** Chrome（干净参数，无自动化标记）。设 `PI_BROWSER_USE_HEADLESS=0` 可恢复有头窗口（反爬更强，会弹出可见 Chrome）。
-- 侧车是**独立 profile 的匿名会话**，需要登录的站点会显示未登录；登录状态在 `.browser-profile/` 里持久化（下次重启仍在）。
-- **语义接口（snapshot/execute/select/fill/check/wait/assert）只有 Electron 原生模式可用**；Web 模式（npm run dev）下这些端点 404，回退用 `content` + `click/type/press` 逐步行事。
+- 原生浏览器与用户会话同源（同一 Electron 实例的 WebContentsView），登录态取决于页面自身。
 - 同一时间只有一个浏览器会话（串行操作），`agent` 运行时其他操作会排队等待。
-- **会话自愈**：Chrome 意外退出/卡死时，下一次请求自动销毁旧会话并重建新 Chrome（几秒内恢复，不挂起）。
-- 侧车只绑定 127.0.0.1，别暴露到局域网。
+- **会话自愈**：WebContentsView 意外退出/卡死时，下一次请求自动重建（几秒内恢复，不挂起）。
+- 桥只绑定 127.0.0.1，别暴露到局域网。
+- **npm run dev 纯浏览器模式不支持右侧浏览器**：`/api/browser/control/*` 返回 502。遇到时先确认用户是否在用 Electron 桌面版。

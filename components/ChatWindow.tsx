@@ -7,7 +7,8 @@ import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { MessageView } from "./MessageView";
 import { ChangedFilesCard } from "./ChangedFilesCard";
-import { extractChangedFiles } from "@/lib/changed-files";
+import { GeneratedFilesCard } from "./GeneratedFilesCard";
+import { extractChangedFiles, extractGeneratedFiles } from "@/lib/changed-files";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -41,6 +42,7 @@ interface Props {
   onOpenFile?: (filePath: string) => void;
   onOpenWebUrl?: (url: string) => void;
   onOpenChangedFile?: (filePath: string) => void;
+  onOpenGeneratedFile?: (filePath: string) => void;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -206,7 +208,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, onOpenGeneratedFile }: Props) {
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -236,6 +238,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     loading, error, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
     visionProxyStatus,
+    visionModels, visionModelSelected, handleVisionModelChange,
     retryInfo, contextUsage, forkingEntryId,
     isCompacting, compactError, compactResult, displayModel: displayModelValue, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,
@@ -452,6 +455,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       draftKey={session?.id ?? (newSessionCwd ? `new:${newSessionCwd}` : undefined)}
       cwd={session?.cwd ?? newSessionCwd}
       visionProxyStatus={visionProxyStatus}
+      visionModels={visionModels}
+      visionModelSelected={visionModelSelected}
+      onVisionModelChange={handleVisionModelChange}
       onUploadSpreadsheets={handleUploadSpreadsheets}
       spreadsheetUploadBusy={spreadsheetUploadBusy}
       spreadsheetUploadError={spreadsheetUploadError}
@@ -679,11 +685,20 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (!isGroupAnchor(msg)) {
                   rendered.push(renderMessage(idx));
                   if (msg.role === "assistant") {
-                    const changedFiles = extractChangedFiles((msg as AssistantMessage).content ?? []);
+                    const msgBlocks = (msg as AssistantMessage).content ?? [];
+                    const changedFiles = extractChangedFiles(msgBlocks, messageCwd);
+                    const generatedFiles = extractGeneratedFiles(msgBlocks, messageCwd);
                     if (changedFiles.length > 0) {
                       rendered.push(
                         <div key={`changed-${idx}`} style={{ marginBottom: 16 }}>
                           <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                        </div>,
+                      );
+                    }
+                    if (generatedFiles.length > 0) {
+                      rendered.push(
+                        <div key={`generated-${idx}`} style={{ marginBottom: 16 }}>
+                          <GeneratedFilesCard files={generatedFiles} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                         </div>,
                       );
                     }
@@ -712,11 +727,20 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     rendered.push(renderMessage(renderIdx));
                     const liveMsg = messages[renderIdx];
                     if (liveMsg?.role === "assistant") {
-                      const liveChanged = extractChangedFiles((liveMsg as AssistantMessage).content ?? []);
+                      const liveBlocks = (liveMsg as AssistantMessage).content ?? [];
+                      const liveChanged = extractChangedFiles(liveBlocks, messageCwd);
+                      const liveGenerated = extractGeneratedFiles(liveBlocks, messageCwd);
                       if (liveChanged.length > 0) {
                         rendered.push(
                           <div key={`changed-live-${renderIdx}`} style={{ marginBottom: 16 }}>
                             <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                          </div>,
+                        );
+                      }
+                      if (liveGenerated.length > 0) {
+                        rendered.push(
+                          <div key={`generated-live-${renderIdx}`} style={{ marginBottom: 16 }}>
+                            <GeneratedFilesCard files={liveGenerated} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                           </div>,
                         );
                       }
@@ -779,11 +803,19 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                   const gm = messages[gi];
                   if (gm?.role === "assistant") groupBlocks.push(...((gm as AssistantMessage).content ?? []));
                 }
-                const changedFiles = extractChangedFiles(groupBlocks);
+                const changedFiles = extractChangedFiles(groupBlocks, messageCwd);
+                const generatedFiles = extractGeneratedFiles(groupBlocks, messageCwd);
                 if (changedFiles.length > 0) {
                   rendered.push(
                     <div key={`changed-${userIdx}-${finalAssistantIdx}`} style={{ marginBottom: 16 }}>
                       <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                    </div>,
+                  );
+                }
+                if (generatedFiles.length > 0) {
+                  rendered.push(
+                    <div key={`generated-${userIdx}-${finalAssistantIdx}`} style={{ marginBottom: 16 }}>
+                      <GeneratedFilesCard files={generatedFiles} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                     </div>,
                   );
                 }
@@ -810,13 +842,25 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               {(() => {
                 const sm = streamState.streamingMessage;
                 if (sm?.role !== "assistant") return null;
-                const liveChanged = extractChangedFiles((sm as AssistantMessage).content ?? []);
-                if (liveChanged.length === 0) return null;
-                return (
-                  <div style={{ marginBottom: 16 }}>
-                    <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
-                  </div>
-                );
+                const liveBlocks = (sm as AssistantMessage).content ?? [];
+                const liveChanged = extractChangedFiles(liveBlocks, messageCwd);
+                const liveGenerated = extractGeneratedFiles(liveBlocks, messageCwd);
+                const cards: ReactNode[] = [];
+                if (liveChanged.length > 0) {
+                  cards.push(
+                    <div key="changed" style={{ marginBottom: 16 }}>
+                      <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
+                    </div>,
+                  );
+                }
+                if (liveGenerated.length > 0) {
+                  cards.push(
+                    <div key="generated" style={{ marginBottom: 16 }}>
+                      <GeneratedFilesCard files={liveGenerated} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
+                    </div>,
+                  );
+                }
+                return cards.length > 0 ? <>{cards}</> : null;
               })()}
               </>
             )}

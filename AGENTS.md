@@ -2,7 +2,7 @@
 
 > 本项目是 **Pi Studio**（`@aacs111/pi-studio` v0.8.6），基于 [agegr/pi-web](https://github.com/agegr/pi-web)
 > 二次开发：保留原 Web UI 的全部能力，新增 **Electron 桌面壳**、**原生右侧浏览器控制（Semantic Browser V2）**、
-> **Univer 表格深度集成**（查看/在线编辑/worktree/写回/加密解密/压缩）、**browser-use 侧车**、**上传管理器**、
+> **Univer 表格深度集成**（查看/在线编辑/worktree/写回/加密解密/压缩）、**上传管理器**、
 > **i18n（en/zh-CN）**、**PWA**、**Git 集成**、**项目信任**、**skill 安装/更新/锁定**、**模型目录/发现/测试**、
 > **视觉描述**、**安全加固**（CSRF/Host/路径/可选 Basic Auth）、**性能优化**（聊天懒加载、undici 空闲超时）等。
 
@@ -51,7 +51,7 @@ Pi Studio.exe (Electron main)
   ├─ WebContentsView 池（右侧浏览器：每个网页标签一个 WebContentsView，仅一个可见）
   │    └─ bridge.cjs 启动 HTTP 桥（127.0.0.1 随机端口）暴露语义接口 /snapshot /execute /open ...
   ├─ CDP 远程调试端口（默认 9222，仅 127.0.0.1；PI_WEB_CDP_PORT 可改，设 0 关闭）
-  └─ 退出时结束服务子进程（含其 worker 树 / univer daemon / 侧车）
+  └─ 退出时结束服务子进程（含其 worker 树 / univer daemon）
 ```
 
 ### 请求链路（与 pi 一致，浏览器/桌面通用）
@@ -119,6 +119,11 @@ cwd/validate/route.ts            POST 校验/选择一个 cwd
 default-cwd/route.ts             POST 创建 ~/pi-cwd-YYYYMMDD
 files/[...path]/route.ts         GET 文件内容（受允许根列表限制，见下）
 files/save/route.ts              POST 写回文件（base64，25MB 上限）
+files/reveal/route.ts            POST 在系统文件管理器中打开文件所在文件夹（Explorer /select，spawn 分离不等待；
+                                 .univer 优先定位同名 .xlsx，见 lib/univer-paths.ts）
+files/open-external/route.ts     POST 用系统默认程序打开文件（cmd start / open / xdg-open；
+                                 .univer 优先打开同名 .xlsx）
+open-file-request/route.ts       agent 推送文件到右侧面板的标记（UI 轮询，作用一次后清除；类似 /api/browser 的文件版）
 file-index/route.ts              GET 文件模糊索引（git ls-files 优先，回退 readdir）
 open-file/route.ts               GET/POST 右侧面板激活文件标记（agent 默认编辑目标）
 git/diff/route.ts                GET 单文件 unified diff（changed-files 卡片的 +N/-M 统计）
@@ -131,10 +136,8 @@ worktrees/route.ts               GET/POST/DELETE git worktrees
 **浏览器（右面板）**
 ```
 browser/route.ts                 GET/POST/DELETE 网页预览标记（agent 推页面到面板）
-browser/proxy/route.ts           GET/POST 服务端抓取+改写代理（沙箱 iframe 用，去 X-Frame-Options/CSP）
-browser/proxy/[...path]/route.ts 路径式代理 URL（/api/browser/proxy/<b64>，目录型请求保留尾斜杠）
-browser/control/[...path]/route.ts 流式透传到浏览器控制桥（Electron 原生 WebContentsView 优先，
-                                    回退 browser-use 侧车 127.0.0.1:17865）：
+browser/control/[...path]/route.ts 流式透传到浏览器控制桥（Electron 原生 WebContentsView；
+                                    npm run dev 纯浏览器模式无桥，返回 502）：
                                     /open /url /content /snapshot /screenshot /screencast /input
                                     /click /type /fill /select /check /press /scroll /wait /assert
                                     /execute (批量) /evaluate — 语义接口仅 Electron 原生模式提供
@@ -200,11 +203,9 @@ uploads.ts            上传隔离存储（默认上限 300MB，按 mtime 从旧
 atomic-file.ts        原子写（tmp+rename）
 ```
 
-**浏览器**
+**浏览器（右面板）**
 ```
-browser-proxy.ts      代理 URL 规范化
-browser-sidecar.ts    browser-use 侧车（tools/browser-use-server/server.py，127.0.0.1:17865）自动启动；
-                      幂等 + 失败容忍；作为后台子进程（不分离，随主进程退出），stdout 落 server-console.log
+browser-proxy.ts       URL 规范化辅助（normalizeUserUrl）
 ```
 
 **Univer**
@@ -215,6 +216,7 @@ univer-cli.ts         专属 univer daemon（UNIVER_HOME=<数据目录>/.interna
 univer-db.ts          直接 SQLite 读（busy_timeout=8000ms，.univer 回滚日志模式下写锁可持 11-23s）
 univer-dims.ts        从 SQLite 快照读每表行/列数（替代 ~8s 的 inspect）
 univer-unit-id.ts     按 path+mtime 缓存 unitId（文件重建后 id 会变）
+univer-paths.ts       外部目标解析：.univer → 同名 .xlsx（reveal/open-external 用）
 univer-view-cache.ts  xlsx 导出缓存（30min TTL + 同 key 合并 + edit-commit 预热；导出文件写系统 tmpdir）
 univer-compact.ts     导入后压缩：删除已合并 worktree 的 seed/artifact 冗余行（34MB→9.8MB 量级）
 univer-user-edits.ts  「u」前缀在线编辑提交的旁路标记（<数据目录>/.internal/pi-web-univer-user-edits.json）
@@ -283,6 +285,8 @@ ProjectTrustDialog.tsx 项目信任确认弹窗
 DirectoryPicker.tsx    目录选择器（盘符/浏览）
 ExtensionStatusBar.tsx 扩展状态条（ANSI 清洗）
 ChangedFilesCard.tsx   助手消息下的变更文件摘要卡
+GeneratedFilesCard.tsx  生成文件卡（.xlsx/.univer/文档/图片等交付物，每行支持右侧打开 /
+                        打开所在文件夹 / 外部打开；.univer 的外部动作解析为同名 .xlsx）
 PwaRegistration.tsx    Service Worker 注册
 MobilePwaLayout.tsx    移动 PWA 布局
 FileIcons.tsx          文件图标
@@ -319,11 +323,10 @@ bin/pi-studio.js        CLI 入口（node 版本门禁 + next 启动 + 端口/ho
 scripts/package.mjs     打包（.next-pkg + electron-builder + 国内镜像）
 scripts/dev-electron.mjs dev 模式 Electron
 scripts/bridge-engine-test.cjs / bridge-http-test.cjs  桥测试
-tools/browser-use-server/  browser-use 侧车（FastAPI 17865，回退后端）
 .agents/skills/          项目技能：browser-control / sheet-edit / univer-cli / univer-integrate / web-preview
 docs/                    i18n.md / release.md / worktrees.md(.zh-CN.md)
-proxy.ts                 Next middleware：API 的 Origin+Host 校验、浏览器代理只校验 Host
-instrumentation.ts       启动钩子：数据目录迁移 + undici dispatcher + univer daemon 暖机 + 侧车启动
+proxy.ts                 Next middleware：API 的 Origin+Host 校验
+instrumentation.ts       启动钩子：数据目录迁移 + undici dispatcher + univer daemon 暖机
 ```
 
 ---
@@ -337,6 +340,8 @@ instrumentation.ts       启动钩子：数据目录迁移 + undici dispatcher +
 
 ### Changed-files 卡片（每轮变更摘要）
 - `extractChangedFiles()`（`lib/changed-files.ts`）扫描助手 turn 的 toolCall 块里的 `edit`/`write` 工具（input 字段是 `path` 不是 `filePath`），去重返回 `{filePath, kind}`。
+- **非项目文件不显示（2026-08-12）**：两个提取函数都接受 `cwd` 参数，绝对路径在会话 cwd 之外（Temp 脚本、其他目录产物）一律过滤；相对路径视为项目内。`extractGeneratedFiles()` 额外只保留 `write` + 交付物扩展名（.xlsx/.univer/.csv/.docx/.pdf/.png/.md/…）供生成文件卡使用。
+- **生成文件自动推右侧（2026-08-12）**：agent 生成表格后 `POST /api/open-file-request`（`{filePath,title?}`），AppShell 每 3s 轮询该标记并自动开文件 tab（作用一次后 DELETE），与 /api/browser 的网页预览同一模式。
 - 卡片由 `ChatWindow` 渲染，**不在 MessageView 内**：assistant turn 被拆成折叠的 `ProcessDetailsGroup`（思考+工具调用）和独立最终回答消息。卡片必须放在**消息 footer 层**（回答文本下方、用量统计上方），否则会被折叠进 process group。
 - 变更文件从**组内所有 assistant 消息**（`userIdx+1..endIdx`）收集，不只看最终回答。
 - 每个文件的 `+N`/`-M` diff 统计从 `/api/git/diff` 惰性拉取并用 `parseUnifiedPatch` 解析。fetch effect 依赖**稳定的 `filesKey` 字符串**，绝不依赖 `files` 数组引用（父组件每次渲染重建数组 — 依赖它会导致 fetch 风暴打崩 dev server）。
@@ -428,16 +433,14 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 ### Electron 桌面壳
 - `main.cjs` 用 `ELECTRON_RUN_AS_NODE=1` 让 exe 扮演 node 启动 `next start`（随机端口 / `PI_WEB_PORT` 固定；dev 模式 `PI_WEB_SERVER_MODE=dev` 走 10141）。子进程（含 univer daemon）继承该 env。
 - 打包后数据目录移到 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写）。
-- 右侧浏览器 = WebContentsView 池，每网页标签一个，仅一个可见；`bridge.cjs` 起 HTTP 桥暴露语义控制接口；CDP 端口 9222（`PI_WEB_CDP_PORT` 改/关）。
+- **dev 模式必须用独立 userData**：两者都 `app.setName("Pi Studio")`，userData 按 app 名惰性解析；若不重定向，dev 版会落到与 exe 版相同的 `%APPDATA%/Pi Studio`，导致单实例锁冲突（exe 在跑时 `dev:electron` 的 `requestSingleInstanceLock()` 返回 false → `app.quit()` 假死，窗口永远不出现）且数据目录互相污染。修复：`SERVER_MODE==="dev"` 时 `app.setPath("userData", ...)` 重定向到 `%APPDATA%/Pi Studio Dev`，**顺序必须是先 setName 再 setPath**（首次访问 `getPath` 会缓存路径，setName 会改写它）。
+- 右侧浏览器 = WebContentsView 池，每网页标签一个，仅一个可见；`bridge.cjs` 起 HTTP 桥暴露语义控制接口；CDP 端口 9222（`PI_WEB_CDP_PORT` 改/关，dev 脚本默认 9223 避开 exe）。
 - 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
 
 ### 浏览器控制桥（Semantic Browser V2）
-- **原生模式优先**：Electron 内嵌 WebContentsView，`bridge.cjs` 用 `executeJavaScript` + CDP 落到同一页面，语义接口（/snapshot /execute /select /fill /check /wait /assert）只在此模式提供。snapshot 返回 ref/role/name/value；评分定位器顺序 精确文本 > aria > placeholder > testid > contains，歧义返回 409 + 候选。
-- **回退**：browser-use 侧车（FastAPI 17865，`tools/browser-use-server/server.py`），无头 Chrome 兜底。侧车由 `instrumentation.ts` → `lib/browser-sidecar.ts` 自动拉起：幂等（17865 已监听则跳过）、失败容忍、后台子进程不分离（Windows 上 detached 子进程会丢 console session，socket 报 WinError 64）。
-- `/api/browser/control/[...path]` 把请求流式透传到桥/侧车，agent 通过它观察并操作右侧页面。
-
-### 服务端网页代理
-沙箱 iframe（无 `allow-same-origin`）加载跨站子资源时 Origin 是 `null`，会被 CSRF 校验拦截；`proxy.ts` 对 `/api/browser/proxy` 只校验 Host（必须在允许主机上），跳过 Origin — 它是纯内容代理，设计上就该被跨源调用。`skipTrailingSlashRedirect: true` 保证目录型代理 URL 不被 308 重定向搞坏相对解析。
+- **仅 Electron 模式**：右侧浏览器由 Electron 内嵌 WebContentsView 渲染，`bridge.cjs` 用 `executeJavaScript` + CDP 落到同一页面，语义接口（/snapshot /execute /select /fill /check /wait /assert）只在此模式提供。snapshot 返回 ref/role/name/value；评分定位器顺序 精确文本 > aria > placeholder > testid > contains，歧义返回 409 + 候选。
+- **npm run dev 纯浏览器模式不支持右侧浏览器**：无桥时 `/api/browser/control/*` 返回 502（提示改用 dev:electron / 打包应用），面板显示「仅 Electron 支持」。
+- `/api/browser/control/[...path]` 把请求流式透传到桥，agent 通过它观察并操作右侧页面。桥地址从 `PI_WEB_BROWSER_BRIDGE_URL` env 或数据目录 `pi-web-browser-bridge.json` 标记读取（Electron 主进程启动 bridge 时写入）。
 
 ### 安全模型（proxy.ts）
 - `/api/*` 请求校验 Origin（同源或可信列表）+ Host；非 API 页面只校验 Host。
@@ -505,4 +508,4 @@ pi-studio 相关临时产物都落在系统 Temp（`%TEMP%` / `os.tmpdir()`）�
 | `PI_WEB_PASSWORD` / `PI_WEB_AUTH_USERNAME` | 可选 Basic Auth（用户名默认 `pi`） |
 | `PI_WEB_ALLOWED_HOSTS` | 可信反代外部 hostname（逗号分隔） |
 | `PI_WEB_UNIVER_HOME` | univer daemon 运行时根（默认 `<数据目录>/.internal/univer`） |
-| `PI_BROWSER_USE_PORT` | browser-use 侧车端口（默认 17865） |
+| `PI_WEB_BROWSER_BRIDGE_URL` | Electron 原生浏览器控制桥地址（主进程启动 bridge 时设置/写入标记） |

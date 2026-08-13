@@ -25,13 +25,6 @@ export async function register(): Promise<void> {
     /* best-effort */
   }
 
-  // Auto-start the browser-use sidecar (127.0.0.1:17865) so the agent can drive
-  // a real headless Chrome (open/click/type/screenshot). Idempotent — skips when
-  // the port is already served — and failure-tolerant, so boot never blocks on it.
-  try {
-    const { ensureBrowserSidecar } = await import("./lib/browser-sidecar");
-    void ensureBrowserSidecar();
-  } catch {
-    /* best-effort */
-  }
+  // 右侧浏览器由 Electron 原生 WebContentsView + 控制桥提供（electron/main.cjs 启动
+  // bridge.cjs），npm run dev 纯浏览器模式不支持右端浏览器——无需任何后台侧车。
 }

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
+import { getGitExecutable } from "./git-exec";
 import type {
   SkillInstallInfo,
   SkillUpdateResult,
@@ -124,10 +125,11 @@ async function resolveGitTreeHash(install: SkillInstallInfo): Promise<string> {
   const gitDir = await mkdtemp(join(tmpdir(), "pi-web-skill-check-"));
 
   try {
-    await execFileAsync("git", ["init", "--bare", gitDir], {
+    await execFileAsync(getGitExecutable(), ["init", "--bare", gitDir], {
       timeout: GIT_CHECK_TIMEOUT_MS,
+      windowsHide: true,
     });
-    await execFileAsync("git", [
+    await execFileAsync(getGitExecutable(), [
       `--git-dir=${gitDir}`,
       "fetch",
       "--depth=1",
@@ -135,12 +137,12 @@ async function resolveGitTreeHash(install: SkillInstallInfo): Promise<string> {
       "--no-tags",
       repository,
       ref,
-    ], { timeout: GIT_CHECK_TIMEOUT_MS });
+    ], { timeout: GIT_CHECK_TIMEOUT_MS, windowsHide: true });
     const revision = folder ? `FETCH_HEAD:${folder}` : "FETCH_HEAD^{tree}";
     const { stdout } = await execFileAsync(
-      "git",
+      getGitExecutable(),
       [`--git-dir=${gitDir}`, "rev-parse", revision],
-      { timeout: GIT_CHECK_TIMEOUT_MS },
+      { timeout: GIT_CHECK_TIMEOUT_MS, windowsHide: true },
     );
     const hash = stdout.trim();
     if (!/^[0-9a-f]{40}$/i.test(hash)) throw new Error("Invalid Git tree hash");

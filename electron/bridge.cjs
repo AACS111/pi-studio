@@ -3,10 +3,13 @@
 /**
  * 原生浏览器控制桥（Electron 主进程内嵌 WebContentsView）— Semantic Browser V2。
  *
- * 提供与 browser-use 侧车兼容的 HTTP 接口（127.0.0.1，随机端口），
+ * 提供 Electron 原生模式专用的 HTTP 语义接口（127.0.0.1，随机端口），
  * 让 Next 服务 / agent 用同一套 /api/browser/control/* 语义控制右侧
  * 原生浏览器。页面由 Electron 直接合成，控制命令通过
  * webContents.executeJavaScript / CDP 落到同一个页面。
+ *
+ * 右侧浏览器仅在 Electron 桌面模式（dev:electron / 打包应用）可用；
+ * npm run dev 纯浏览器模式不启动本桥，控制接口返回 502。
  *
  * 相比 V1 的新增能力（Agent-facing 语义层）：
  *   GET  /snapshot              → 高价值交互元素快照（ref/role/name/value/state）
@@ -33,6 +36,9 @@ const { URL } = require("url");
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const LOAD_TIMEOUT_MS = 15000;
 const DEFAULT_CONDITION_TIMEOUT_MS = 10000;
+// 语义动作（click/fill/select/check/press）执行前的 auto-wait 超时：
+// 等待元素可交互且几何稳定（Playwright actionability 的轻量版）。
+const DEFAULT_ACTIONABLE_WAIT_MS = 4000;
 const SNAPSHOT_MAX = 300;
 const SNAPSHOT_REGISTRY_CAP = 80;
 
@@ -63,8 +69,43 @@ function pageEngine(maxElements) {
       if (rect.width === 0 && rect.height === 0) return false;
       const s = getComputedStyle(el);
       if (s.visibility === 'hidden' || s.display === 'none') return false;
+      const op = s.opacity;
+      if (op !== '' && Number(op) === 0) return false; // 透明（动画前/渐隐）不可交互
       return true;
     } catch (e) { return false; }
+  };
+  // auto-wait 辅助：元素是否可交互（可见 + 未禁用 + 可接收指针事件）
+  const $isActionable = function (el) {
+    if (!el || !$isVisible(el)) return false;
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    try {
+      const pe = getComputedStyle(el).pointerEvents;
+      if (pe === 'none') return false;
+    } catch (e) {}
+    return true;
+  };
+  // auto-wait 辅助：元素是否几何稳定（两次布局一致 —— 动画/懒加载中的元素会移动）
+  const $isStable = async function (el) {
+    try {
+      const r1 = el.getBoundingClientRect();
+      await $sleep(60);
+      const r2 = el.getBoundingClientRect();
+      const drift = Math.abs(r1.x - r2.x) + Math.abs(r1.y - r2.y);
+      const sizeDelta = Math.abs(r1.width - r2.width) + Math.abs(r1.height - r2.height);
+      return drift <= 0.5 && sizeDelta <= 0.5;
+    } catch (e) { return false; }
+  };
+  // auto-wait 核心：轮询等待元素可交互且稳定（Playwright actionability 的轻量版）。
+  // 超时后返回最后一次状态（乐观返回，由调用方决定是否继续），避免死等。
+  const $waitActionable = async function (el, timeoutMs) {
+    const deadline = Date.now() + (timeoutMs > 0 ? timeoutMs : ${DEFAULT_ACTIONABLE_WAIT_MS});
+    let ready = false;
+    while (Date.now() < deadline) {
+      if ($isActionable(el) && await $isStable(el)) { ready = true; break; }
+      await $sleep(80);
+    }
+    if (!ready) ready = $isActionable(el);
+    return ready;
   };
   const $inferRole = function (el) {
     const tag = el.tagName.toLowerCase();
@@ -135,6 +176,14 @@ function pageEngine(maxElements) {
   const $elName = function (el) {
     const aria = el.getAttribute('aria-label');
     if (aria && aria.trim()) return aria.trim();
+    // 图标按钮：无文本但带 title（antd/el 的图标按钮通常有 title）
+    const titleAttr = el.getAttribute('title');
+    if (titleAttr && titleAttr.trim()) return titleAttr.trim();
+    // svg 内部的 <title> 标签（纯图标按钮的语义名）
+    try {
+      const svgTitle = el.querySelector('svg title, svg > title');
+      if (svgTitle && svgTitle.textContent && svgTitle.textContent.trim()) return svgTitle.textContent.trim();
+    } catch (e) {}
     const text = (el.innerText || el.textContent || '').trim();
     if (text && text.length > 0 && text.length <= 120) return text;
     const ph = el.getAttribute('placeholder');
@@ -211,6 +260,8 @@ function pageEngine(maxElements) {
       if (needle) {
         if (testId === needle) score += 200;
         if (aria === needle) score += 150;
+        const titleAttr = el.getAttribute('title') || ''; // 图标按钮的 title
+        if (titleAttr === needle) score += 130;
         if (placeholder === needle) score += 120;
         if (nameAttr === needle) score += 100;
         if (elId === needle) score += 100;
@@ -452,7 +503,8 @@ function pageEngine(maxElements) {
   return {
     $collect: $collect, $collectLive: $collectLive, $signature: $signature, $findBest: $findBest, $resolve: $resolve,
     $doSelect: $doSelect, $setValue: $setValue, $waitFor: $waitFor, $assert: $assert,
-    $sleep: $sleep, $elName: $elName, $isVisible: $isVisible, $topCandidates: $topCandidates
+    $sleep: $sleep, $elName: $elName, $isVisible: $isVisible, $topCandidates: $topCandidates,
+    $isActionable: $isActionable, $isStable: $isStable, $waitActionable: $waitActionable
   };
 })()`;
 }
@@ -525,6 +577,21 @@ function executeScript(actions, snapshotId, snapshotMeta, maxElements) {
             continue;
           }
           const el = resolved.el;
+          // ---- auto-wait（Playwright actionability 的轻量版）----
+          // 确定性交互动作前，等待元素可交互（可见+未禁用+可接收指针）且几何稳定
+          // （动画/懒加载中的元素会移动）。超时后乐观继续（由调用方看结果决定重试）。
+          if (action.type === 'click' || action.type === 'fill' || action.type === 'select'
+              || action.type === 'check' || action.type === 'press' || action.type === 'focus') {
+            const waitMs = Number(action.wait != null ? action.wait : ${DEFAULT_ACTIONABLE_WAIT_MS});
+            const ready = await E.$waitActionable(el, waitMs);
+            entry.waited = ready;
+            if (!ready) {
+              entry.error = 'NOT_ACTIONABLE:元素未就绪（不可见/未稳定/被禁用/指针不可达）';
+              results.push(entry);
+              if (action.stopOnError !== false) break;
+              continue;
+            }
+          }
           if (action.type === 'click') {
             try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
             el.click();
@@ -1253,7 +1320,9 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
         }
 
         if (method === "POST" && pathname === "/evaluate") {
-          // 低层逃生舱：任意 JS 求值（agent 正常流程不需要，调试/自研组件适配时用）
+          // 低层逃生舱：任意 JS 求值（agent 主力工具——canvas 应用/Univer 内部状态读取）。
+          // 支持 {"expression":"(a,b) => ..."|"function(a,b){...}"|普通表达式, "args":[...]} 传参，
+          // 以及 {"timeoutMs": 5000} 限制执行时长（防死循环/长轮询卡住桥）。
           const body = await readBody(req);
           const wc = requireActive(getActiveView);
           const expr = body.expression || body.script;
@@ -1262,7 +1331,31 @@ function startBridge({ getActiveView, getDownloads, dataDir }) {
             err.status = 400;
             throw err;
           }
-          const value = await evaluate(wc, expr);
+          const args = Array.isArray(body.args) ? body.args : [];
+          const timeoutMs = Math.min(Number(body.timeoutMs) || 15000, 120000);
+          const wrapExpr = (() => {
+            const src = String(expr);
+            const argsJson = JSON.stringify(args);
+            // 形如 (a,b) => … 或 function(a,b){…} 的函数式表达式：带参调用
+            if (/^\s*(\([^)]*\)|function\b[^({]*)\(?\s*=>/.test(src) || /^\s*function\b/.test(src)) {
+              return `(async () => { const fn = (${src}); return await fn.apply(null, ${argsJson}); })()`;
+            }
+            return `(async () => { const out = (${src}); return (typeof out === 'function') ? await out.apply(null, ${argsJson}) : out; })()`;
+          })();
+          let value;
+          try {
+            value = await Promise.race([
+              evaluate(wc, wrapExpr),
+              new Promise((_, reject) => setTimeout(() => reject(new Error("evaluate timeout")), timeoutMs)),
+            ]);
+          } catch (err) {
+            // 页面 JS 抛错 / 超时：把信息透传（别让整个请求 500）
+            const msg = err && err.message ? err.message : String(err);
+            return sendJson(res, 200, {
+              ok: false,
+              error: msg.includes("evaluate timeout") ? "evaluate timeout (" + timeoutMs + "ms)" : msg.slice(0, 500),
+            });
+          }
           return sendJson(res, 200, { ok: true, value });
         }
 

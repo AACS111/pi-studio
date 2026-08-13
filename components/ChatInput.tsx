@@ -72,6 +72,12 @@ interface Props {
   cwd?: string | null;
   /** 视觉代理状态：当前模型不支持图片时，图片由视觉模型识别（recognizing / error） */
   visionProxyStatus?: VisionProxyStatus;
+  /** 可选的视觉代理（附属）模型列表，来自 models.json 自定义提供商 */
+  visionModels?: { provider: string; providerName: string; modelId: string; modelName: string }[];
+  /** 当前选中的附属模型（null = 自动选择第一个视觉模型） */
+  visionModelSelected?: { provider: string; modelId: string } | null;
+  /** 用户改选附属模型；传 null 恢复自动选择 */
+  onVisionModelChange?: (selection: { provider: string; modelId: string } | null) => void;
   /** 手动上传 .xlsx/.univer 表格附件（上传后由上层在右侧打开） */
   onUploadSpreadsheets?: (files: File[]) => void;
   spreadsheetUploadBusy?: boolean;
@@ -346,6 +352,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   draftKey,
   cwd,
   visionProxyStatus,
+  visionModels = [],
+  visionModelSelected,
+  onVisionModelChange,
   onUploadSpreadsheets,
   spreadsheetUploadBusy,
   spreadsheetUploadError,
@@ -1103,6 +1112,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? (modelOptions.find((o) => o.modelId === model.modelId && o.provider === model.provider)?.name ?? model.modelId)
     : null;
   const currentName = displayModelName;
+
+  // 附属模型（视觉代理）显示名：主模型不支持图片时图片会交给它识别
+  const visionModelDisplayName = visionModelSelected
+    ? (visionModels.find((m) => m.provider === visionModelSelected.provider && m.modelId === visionModelSelected.modelId)?.modelName
+      ?? `${visionModelSelected.provider}/${visionModelSelected.modelId}`)
+    : null;
 
   const compactSavedTokens = compactResult
     ? Math.max(0, compactResult.tokensBefore - compactResult.estimatedTokensAfter)
@@ -2011,7 +2026,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       e.currentTarget.style.background = modelDropdownOpen ? "var(--bg-hover)" : "none";
                       e.currentTarget.style.color = "var(--text-muted)";
                     }}
-                    title={modelOptions.length > 0 ? "Change model" : "No available models"}
+                    title={modelOptions.length > 0
+                      ? (visionModelDisplayName ? `Change model · Vision proxy: ${visionModelDisplayName}` : "Change model")
+                      : "No available models"}
                   >
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="4" y="4" width="16" height="16" rx="2" />
@@ -2024,6 +2041,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                       {currentName ?? (modelOptions.length > 0 ? "Select model" : "No models")}
                     </span>
+                    {visionModelSelected && (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.75 }} aria-hidden="true">
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <circle cx="9" cy="9" r="2" />
+                        <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                      </svg>
+                    )}
                   </button>
                   {modelDropdownOpen && modelDropdownRect && (() => {
                     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -2124,6 +2148,74 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                             })}
                           </div>
                         ))}
+                        {onVisionModelChange && (
+                          <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
+                            <div style={{
+                              padding: "6px 12px 4px",
+                              fontSize: 10, fontWeight: 600, color: "var(--text-dim)",
+                              textTransform: "uppercase", letterSpacing: "0.07em",
+                              display: "flex", alignItems: "center", gap: 5,
+                            }}>
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <rect x="3" y="3" width="18" height="18" rx="2" />
+                                <circle cx="9" cy="9" r="2" />
+                                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                              </svg>
+                              {t("chat.auxVisionModel")}
+                            </div>
+                            <button
+                              onClick={() => { onVisionModelChange(null); }}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8,
+                                width: "100%", padding: "7px 12px",
+                                background: visionModelSelected === null ? "var(--bg-selected)" : "none",
+                                border: "none",
+                                color: visionModelSelected === null ? "var(--text)" : "var(--text-muted)",
+                                cursor: "pointer", fontSize: 12, textAlign: "left",
+                                fontWeight: visionModelSelected === null ? 600 : 400,
+                                whiteSpace: "nowrap",
+                              }}
+                              onMouseEnter={(e) => { if (visionModelSelected !== null) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                              onMouseLeave={(e) => { if (visionModelSelected !== null) e.currentTarget.style.background = "none"; }}
+                            >
+                              {visionModelSelected === null
+                                ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                                : <span style={{ width: 10, flexShrink: 0 }} />}
+                              {t("chat.auxVisionAuto")}
+                            </button>
+                            {visionModels.length === 0 ? (
+                              <div style={{ padding: "2px 12px 8px", color: "var(--text-dim)", fontSize: 11, whiteSpace: "nowrap" }}>
+                                {t("chat.auxVisionNone")}
+                              </div>
+                            ) : visionModels.map((vm) => {
+                              const isActive = visionModelSelected?.provider === vm.provider && visionModelSelected?.modelId === vm.modelId;
+                              return (
+                                <button
+                                  key={`${vm.provider}:${vm.modelId}`}
+                                  onClick={() => { onVisionModelChange({ provider: vm.provider, modelId: vm.modelId }); }}
+                                  style={{
+                                    display: "flex", alignItems: "center", gap: 8,
+                                    width: "100%", padding: "7px 12px",
+                                    background: isActive ? "var(--bg-selected)" : "none",
+                                    border: "none",
+                                    color: isActive ? "var(--text)" : "var(--text-muted)",
+                                    cursor: "pointer", fontSize: 12, textAlign: "left",
+                                    fontWeight: isActive ? 600 : 400,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                  onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "var(--bg-hover)"; }}
+                                  onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "none"; }}
+                                >
+                                  {isActive
+                                    ? <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><polyline points="1.5 5 4 7.5 8.5 2.5" /></svg>
+                                    : <span style={{ width: 10, flexShrink: 0 }} />}
+                                  {vm.modelName}
+                                  <span style={{ color: "var(--text-dim)", fontWeight: 400, marginLeft: "auto", paddingLeft: 8 }}>{vm.providerName}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     </div>
                     );

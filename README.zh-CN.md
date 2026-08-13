@@ -6,21 +6,22 @@ Pi Studio 是 [pi 编程智能体](https://github.com/badlogic/pi-mono) 的本�
 
 在保留原版 pi-web UI 全部能力的基础上，Pi Studio 新增：
 
-- **Electron 桌面应用** — 打包的桌面壳，右侧浏览器是原生 `WebContentsView` 池，通过语义控制桥（Semantic Browser V2）驱动
+- **Electron 桌面应用** — 打包的桌面壳，右侧浏览器是原生 `WebContentsView` 池，通过语义控制桥（Semantic Browser V2）驱动。右侧浏览器仅在 Electron 模式可用。
 - **Univer 表格深度集成** — 查看、在线编辑、git worktree 草稿、写回原 `.xlsx`、加密文件支持（WPS KET 桥）、导入压缩
 - **安全加固** — Origin/Host 校验、可选 HTTP Basic Auth、路径防穿越、文件访问允许列表、上传文件名消毒
-- **browser-use 侧车** — 非 Electron 环境下右侧面板自动回退到无头 Chrome
 - **还有更多**：上传管理器、PWA、i18n（en/zh-CN）、Git worktrees、项目信任、skill 安装/更新/锁定、模型目录/发现/测试、视觉描述、聊天懒加载
 
-中文微信群：请查看 [GitHub Discussions 帖子](https://github.com/AACS111/pi-studio/discussions/271)。
 
-![CLI 与 Pi Studio 显示同一 pi 会话：结构化工具调用、可读 Markdown、会话浏览、更清爽的结果](https://raw.githubusercontent.com/AACS111/pi-studio/main/docs/screenshot2.png)
+
+![CLI 与 Pi Studio 显示同一 pi 会话：结构化工具调用、可读 Markdown、会话浏览、更清爽的结果](public\icons\icon-514.png)
+![网页问题总结并写入Excel](public\icons\icon-516.png)
+![支持全程留痕、随时回滚](public\icons\icon-515.png)
 
 ## 功能特性
 
 ### 两种运行形态
 
-**浏览器模式** — 原版 pi-web 的 Web 体验。右侧浏览器通过服务端沙箱 iframe 代理（`/api/browser/proxy`）渲染，自动去除 `X-Frame-Options` / CSP，因此禁止 iframe 的页面也能正常显示。
+**浏览器模式** — 原版 pi-web 的 Web 体验。**该模式下右侧浏览器不可用**（没有原生 WebContentsView，也没有控制桥），面板显示「仅 Electron 支持」提示。
 
 **Electron 桌面模式** — 打包的桌面应用（Windows）。内置 Next 服务作为子进程运行在随机 `127.0.0.1` 端口；右侧浏览器是原生 `WebContentsView` 池（每个网页标签一个，仅一个可见），支持：
 
@@ -29,7 +30,7 @@ Pi Studio 是 [pi 编程智能体](https://github.com/badlogic/pi-mono) 的本�
 - **高级动作**：原生 `<select>` 下拉 + Ant Design / Element Plus combobox，条件等待与断言。
 - **CDP 远程调试**：默认 `127.0.0.1:9222`（`PI_WEB_CDP_PORT` 可改，设 `0` 关闭）。
 
-在浏览器模式下，同一套控制 API 自动回退到 **browser-use 侧车**（FastAPI，`127.0.0.1:17865`，自动启动、失败容忍），因此智能体驱动浏览在任何形态下都可用。
+智能体驱动的浏览仅在 Electron 模式下可用（`npm run dev` 下 `/api/browser/control/*` 返回 502）。
 
 ### 表格编辑（基于 Univer）
 
@@ -209,7 +210,7 @@ components/
   FileViewer.tsx        # 源码、diff、图片、音频、PDF、DOCX 预览
   XlsxViewer.tsx        # Univer 表格引擎（懒加载）查看 .xlsx
   UniverFileViewer.tsx  # .univer worktree 就地 diff 应用查看器
-  WebViewer.tsx         # 右侧浏览器标签（WebContentsView / 侧车）
+  WebViewer.tsx         # 右侧浏览器标签（仅 Electron WebContentsView）
   UploadsManager.tsx    # 上传存储面板
   PwaRegistration.tsx   # Service Worker 注册
 lib/
@@ -222,8 +223,7 @@ lib/
   univer-cli.ts         # univer daemon + CLI 集成
   univer-db.ts          # 直接 SQLite 读 worktree/提交状态
   ket-bridge.ts         # 加密 .xlsx 的 WPS KET COM 解密桥
-  browser-proxy.ts      # 服务端网页预览代理工具
-  browser-sidecar.ts    # browser-use 侧车启动（FastAPI 回退）
+  browser-proxy.ts      # URL 规范化辅助（normalizeUserUrl）
   http-dispatcher.ts    # 全局 undici dispatcher（空闲超时）
   request-security.ts   # API 请求的 Origin/Host 校验
   web-auth.ts           # 可选 HTTP Basic Auth

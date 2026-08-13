@@ -51,8 +51,9 @@ files:
   # 注意：不要在这里加 !node_modules/proper-lockfile/** 或任何 @earendil-works/pi-* 的
   # 运行时依赖排除项（见上方注释，运行时从 node_modules 加载）。
   - "!node_modules/@univerjs/presets/**"                            # 前端查看器，已打进 client chunk
-  - "!node_modules/@univerjs-pro/doc-typst-native-binding-win32-x64-msvc/**"  # 文档 native ~43MB，pi-studio 只用 sheet
-  - "!node_modules/@univerjs-pro/uexcli-windows-x64/**"                       # Base/CLI native ~38MB，同上
+  # ⚠️ 以下两个 @univerjs-pro native 包绝不能排除：univer-cli 的 import/export 运行时需要
+  # （@univerjs-pro/uexcli → uexcli-windows-x64 的 exe；doc 转换 → doc-typst-native-binding）。
+  # 此前误排除导致 AI 编辑报 Cannot find module '@univerjs-pro/uexcli-windows-x64/uexcli-windows.exe'
 
   # 项目目录里的开发/临时内容
   - "!**/.next/**"
@@ -64,7 +65,10 @@ files:
   - "!**/release/**"
   - "!**/*.xlsx"
   - "!**/*.univer"
-  - "!**/*.html"
+  # ⚠️ 只排除 next 构建产物的 html；绝不能全局排除 *.html —— univer-cli 的 daemon
+  # 启动需要 view/index.html 与 view/machine/index.html（之前全局排除导致
+  # AI 编辑报 ENOENT: view/index.html，daemon 起不来）
+  - "!**/.next-pkg/**/*.html"
   - "!**/*.log"
   - "!**/测试模板*"
 

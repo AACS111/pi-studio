@@ -839,7 +839,10 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
       .then((r) => r.json())
       .then((d: FileData & { error?: string }) => {
         if (d.error) {
-          setError(d.error);
+          // The file may have been created and then deleted by the agent
+          // (e.g. a temp script it cleaned up) — surface that instead of a
+          // bare server-side "Not found".
+          setError(d.error === "Not found" ? t("files.fileNotFound") : d.error);
           return null;
         }
         setError(null);
@@ -850,7 +853,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
         setError(String(e));
         return null;
       });
-  }, [sourceSessionId]);
+  }, [sourceSessionId, t]);
 
   const fetchGitDiff = useCallback(async (targetPath: string) => {
     const requestId = ++gitDiffRequestRef.current;
@@ -1012,7 +1015,12 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [displayMode, mentionLineRange, onMentionLines]);
 
-  if (loading || (initialDisplayMode === "diff" && !hasGitDiff && (gitDiffLoading || gitDiff === null))) {
+  // Only block while the diff request is actually in flight. If the file was
+  // deleted / is not tracked / the repo has no diff (gitDiff resolves null or
+  // supported:false), fall back to the source view instead of spinning on
+  // "加载中" forever — a common case when the agent wrote a file and then
+  // cleaned it up (rm -f) before the user clicks the changed-files card.
+  if (loading || (initialDisplayMode === "diff" && gitDiffLoading)) {
     return (
       <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
         {t("i18n.loading")}

@@ -1,72 +1,102 @@
 import { NextResponse } from "next/server";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { validateAgentImages } from "@/lib/image-attachments";
+import {
+  resolveVisionModel,
+  type VisionModelInfo,
+  type VisionModelSelection,
+} from "@/lib/vision-model";
 
 export const dynamic = "force-dynamic";
 
 const VISION_TIMEOUT_MS = 90_000;
 const VISION_MAX_TOKENS = 2048;
-
-interface VisionModelConfig {
-  providerId: string;
-  providerName: string;
-  modelId: string;
-  modelName: string;
-  baseUrl: string;
-  apiKey: string;
-}
-
 /**
- * Find the first vision-capable model across custom providers in models.json.
- * A model counts as vision-capable when its `input` array includes "image"
- * and its provider has a baseUrl + apiKey.
+ * ModelScope 等免费推理的首次请求常因模型冷启动返回 200 + 空 choices，
+ * 稍等重试一次可显著提高成功率。
  */
-function findVisionModel(): VisionModelConfig | null {
-  const path = join(getAgentDir(), "models.json");
-  if (!existsSync(path)) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
-    return null;
+const VISION_RETRY_DELAY_MS = 3_000;
+
+type VisionResult =
+  | { ok: true; description: string }
+  | { ok: false; error: string };
+
+/** 调用视觉模型；对空 choices / 5xx / 429 做一次延迟重试（冷启动兜底）。 */
+async function callVisionModel(
+  vision: VisionModelInfo,
+  promptText: string,
+  imageList: Array<{ type: "image"; data: string; mimeType: string }>,
+): Promise<VisionResult> {
+  const content: unknown[] = [{ type: "text", text: promptText }];
+  for (const img of imageList) {
+    content.push({
+      type: "image_url",
+      image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+    });
   }
-  if (!raw || typeof raw !== "object") return null;
-  const providers = (raw as { providers?: Record<string, unknown> }).providers;
-  if (!providers) return null;
+  const endpoint = `${vision.baseUrl}/chat/completions`;
+  const payload = JSON.stringify({
+    model: vision.modelId,
+    messages: [{ role: "user", content }],
+    max_tokens: VISION_MAX_TOKENS,
+    stream: false,
+  });
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${vision.apiKey}`,
+  };
 
-  for (const [providerId, entry] of Object.entries(providers)) {
-    if (!entry || typeof entry !== "object") continue;
-    const provider = entry as {
-      baseUrl?: unknown;
-      apiKey?: unknown;
-      name?: unknown;
-      models?: unknown;
-    };
-    if (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim()) continue;
-    if (typeof provider.apiKey !== "string" || !provider.apiKey.trim()) continue;
-    if (!Array.isArray(provider.models)) continue;
+  let lastError = "视觉模型没有返回识别结果";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: payload,
+        signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+      });
+    } catch (e) {
+      lastError = e instanceof Error && e.name === "TimeoutError"
+        ? "视觉模型识别超时"
+        : "无法连接到视觉模型服务";
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, VISION_RETRY_DELAY_MS));
+        continue;
+      }
+      return { ok: false, error: lastError };
+    }
 
-    for (const modelEntry of provider.models) {
-      if (!modelEntry || typeof modelEntry !== "object") continue;
-      const model = modelEntry as { id?: unknown; name?: unknown; input?: unknown };
-      if (typeof model.id !== "string" || !model.id.trim()) continue;
-      const input = Array.isArray(model.input)
-        ? model.input.filter((x): x is string => typeof x === "string")
-        : [];
-      if (!input.includes("image")) continue;
-      return {
-        providerId,
-        providerName: typeof provider.name === "string" && provider.name ? provider.name : providerId,
-        modelId: model.id,
-        modelName: typeof model.name === "string" && model.name ? model.name : model.id,
-        baseUrl: provider.baseUrl.replace(/\/+$/, ""),
-        apiKey: provider.apiKey,
-      };
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      lastError = `视觉模型请求失败 (HTTP ${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`;
+      // 429 / 5xx 可能是免费额度排队，等 3s 重试一次。
+      if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+        await new Promise((resolve) => setTimeout(resolve, VISION_RETRY_DELAY_MS));
+        continue;
+      }
+      return { ok: false, error: lastError };
+    }
+
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch {
+      return { ok: false, error: "视觉模型返回了无效响应" };
+    }
+    const choices = (data as { choices?: unknown } | null)?.choices;
+    const description = Array.isArray(choices) && choices.length > 0
+      ? (choices[0] as { message?: { content?: unknown } })?.message?.content
+      : undefined;
+    if (typeof description === "string" && description.trim()) {
+      return { ok: true, description: description.trim() };
+    }
+    // 200 但 choices 为空：多半是模型冷启动/排队中，稍等重试一次。
+    lastError = "视觉模型没有返回识别结果";
+    if (attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, VISION_RETRY_DELAY_MS));
     }
   }
-  return null;
+  return { ok: false, error: lastError };
 }
 
 export async function POST(req: Request) {
@@ -79,7 +109,11 @@ export async function POST(req: Request) {
   if (!body || typeof body !== "object") {
     return NextResponse.json({ error: "请求体必须是 JSON" }, { status: 400 });
   }
-  const { text, images } = body as { text?: unknown; images?: unknown };
+  const { text, images, model } = body as {
+    text?: unknown;
+    images?: unknown;
+    model?: unknown;
+  };
 
   const imageError = validateAgentImages(images);
   if (imageError) return NextResponse.json({ error: imageError }, { status: 400 });
@@ -88,73 +122,35 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "没有收到图片" }, { status: 400 });
   }
 
-  const vision = findVisionModel();
+  // 显式选择（客户端左下角「附属模型」）优先，其次持久化选择，最后自动扫描。
+  let explicit: VisionModelSelection | null = null;
+  if (model && typeof model === "object") {
+    const candidate = model as Partial<VisionModelSelection>;
+    if (
+      typeof candidate.provider === "string" && candidate.provider
+      && typeof candidate.modelId === "string" && candidate.modelId
+    ) {
+      explicit = { provider: candidate.provider, modelId: candidate.modelId };
+    }
+  }
+  const { model: vision } = resolveVisionModel(explicit);
   if (!vision) {
     return NextResponse.json(
-      { error: "未配置支持图片输入的视觉模型：请在 models.json 中添加 input 包含 image 的模型（并配置 baseUrl 和 apiKey）" },
+      { error: "未配置支持图片输入的视觉模型：请在左下角模型菜单的「附属模型」中选择视觉模型，或在 models.json 中添加 input 包含 image 的模型（并配置 baseUrl 和 apiKey）" },
       { status: 400 },
     );
   }
 
   const promptText = typeof text === "string" && text.trim() ? text.trim() : "请描述图片内容。";
-  const content: unknown[] = [{ type: "text", text: promptText }];
-  for (const img of imageList) {
-    content.push({
-      type: "image_url",
-      image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-    });
-  }
-
-  const endpoint = `${vision.baseUrl}/chat/completions`;
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${vision.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: vision.modelId,
-        messages: [{ role: "user", content }],
-        max_tokens: VISION_MAX_TOKENS,
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
-    });
-  } catch (e) {
-    const message = e instanceof Error && e.name === "TimeoutError"
-      ? "视觉模型识别超时"
-      : "无法连接到视觉模型服务";
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
-
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    return NextResponse.json(
-      { error: `视觉模型请求失败 (HTTP ${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}` },
-      { status: 502 },
-    );
-  }
-
-  let data: unknown;
-  try {
-    data = await response.json();
-  } catch {
-    return NextResponse.json({ error: "视觉模型返回了无效响应" }, { status: 502 });
-  }
-  const choices = (data as { choices?: unknown } | null)?.choices;
-  const description = Array.isArray(choices) && choices.length > 0
-    ? (choices[0] as { message?: { content?: unknown } })?.message?.content
-    : undefined;
-  if (typeof description !== "string" || !description.trim()) {
-    return NextResponse.json({ error: "视觉模型没有返回识别结果" }, { status: 502 });
+  const result = await callVisionModel(vision, promptText, imageList);
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 502 });
   }
 
   return NextResponse.json({
-    description: description.trim(),
+    description: result.description,
     modelId: vision.modelId,
     modelName: vision.modelName,
-    providerId: vision.providerId,
+    providerId: vision.provider,
   });
 }

@@ -568,6 +568,14 @@ export function AppShell() {
     });
   }, [handleOpenFile, selectedSession?.id]);
 
+  // Opened from a generated-files card: show the file in the right panel in
+  // normal view mode (generated deliverables are not diff targets).
+  const handleOpenGeneratedFile = useCallback((filePath: string) => {
+    handleOpenFile(filePath, getFileName(filePath), {
+      sourceSessionId: selectedSession?.id ?? null,
+    });
+  }, [handleOpenFile, selectedSession?.id]);
+
   // "AI 编辑" flow for a plain .xlsx file (button in the spreadsheet viewer):
   // 1) convert the .xlsx into a .univer via /api/univer/from-xlsx,
   // 2) open the .univer in the right panel (also updates the open-file marker
@@ -751,6 +759,40 @@ export function AppShell() {
       clearInterval(timer);
     };
   }, [openWebTab]);
+
+  // Poll the agent-facing open-file-request marker (/api/open-file-request).
+  // When a new marker appears, open that file in the right panel (the agent
+  // pushes a file it just generated, e.g. a spreadsheet it wrote via univer),
+  // then clear the marker so it only applies once.
+  const lastOpenFileRequestIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetch("/api/open-file-request");
+        const data = (await response.json()) as {
+          id?: string | null;
+          filePath?: string | null;
+          title?: string | null;
+        };
+        if (cancelled || !data.id || !data.filePath) return;
+        if (data.id === lastOpenFileRequestIdRef.current) return;
+        lastOpenFileRequestIdRef.current = data.id;
+        handleOpenFile(data.filePath, data.title ?? getFileName(data.filePath), {
+          sourceSessionId: selectedSession?.id ?? null,
+        });
+        void fetch("/api/open-file-request", { method: "DELETE" }).catch(() => {});
+      } catch {
+        /* transient — next poll retries */
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [handleOpenFile, selectedSession?.id]);
 
   const activeTab = fileTabs.find((t) => t.id === activeFileTabId) ?? null;
 
@@ -1679,6 +1721,7 @@ export function AppShell() {
               onOpenFile={handleOpenLinkedFile}
               onOpenWebUrl={handleOpenWebUrl}
               onOpenChangedFile={handleOpenChangedFile}
+              onOpenGeneratedFile={handleOpenGeneratedFile}
             />
           ) : initialCwdStatus === "validating" ? (
             <div

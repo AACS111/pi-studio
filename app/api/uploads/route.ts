@@ -85,15 +85,15 @@ export async function POST(request: NextRequest) {
         // 注意：explorer 不认正斜杠路径（只打开文件管理器却不跳转到目标目录），
         // 必须先转成 Windows 原生反斜杠路径。
         const winDir = dir.replace(/\//g, "\\");
-        const child = spawn("explorer", [winDir], { detached: true, stdio: "ignore" });
+        const child = spawn("explorer", [winDir], { detached: true, stdio: "ignore", windowsHide: true });
         child.on("error", () => {
           // spawn 本身失败（如找不到 explorer）——响应已返回 ok，无需处理
         });
         child.unref();
       } else if (process.platform === "darwin") {
-        await execFileAsync("open", [dir]);
+        await execFileAsync("open", [dir], { windowsHide: true });
       } else {
-        await execFileAsync("xdg-open", [dir]);
+        await execFileAsync("xdg-open", [dir], { windowsHide: true });
       }
       return NextResponse.json({ ok: true, dir });
     } catch (error) {

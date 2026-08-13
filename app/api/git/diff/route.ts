@@ -1,3 +1,4 @@
+import fs from "fs";
 import { NextRequest, NextResponse } from "next/server";
 import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed, isWindowsAbsolutePath } from "@/lib/file-access";
 import { getGitFileDiff } from "@/lib/git-changes";
@@ -24,7 +25,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    return NextResponse.json(await getGitFileDiff(cwd, filePath));
+    const diff = await getGitFileDiff(cwd, filePath);
+    // Report whether the file still exists so the changed-files card can hide
+    // scratch scripts the agent wrote and then deleted (they are not in git
+    // status and would otherwise linger as empty rows).
+    let exists = true;
+    try {
+      exists = fs.existsSync(filePath);
+    } catch {
+      exists = false;
+    }
+    return NextResponse.json({ ...diff, exists });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }

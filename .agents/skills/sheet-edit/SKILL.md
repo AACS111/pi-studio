@@ -117,10 +117,26 @@ univer worktree ready <file> --worktree wt-xxxx
 ### 建新 sheet / 总结页配方（2026-08-08 实测，API 全签名在此，别再 api find/show）
 
 ```js
-// 建 sheet（返回 FWorksheet，成为活动页）：同名先删再建
+// ⚠️ 2026-08-12 修正：同名「先删再建」在同一 execute 里会冲突（deleteSheet 不生效 + create 静默改名
+//   为「X1」，merge 报重叠、整单回滚）。正确姿势：**改名复用现有 sheet** + 新表用全新名字。
+//
+// 建新 sheet（返回 FWorksheet，成为活动页）：用全新名字直接 create；
+// 若名字可能已存在 → 先 getSheetByName 拿到旧表 setName('旧名X') 腾名字，再 create 同名；
+// 或直接把现有空表 setName 成目标名复用（推荐，避免删到 0 个 sheet 的坑）。
 const sh = workbook.create('进度总结', 150, 26);   // create(name, rows, cols)
-// 删除旧：workbook.deleteSheet(workbook.getSheetByName('进度总结'))
+// 改名复用：workbook.getSheetByName('总结1')?.setName('总结')
+// 读表名用 getSheetName()（没有 getName）；设置才是 setName()
 
+// 合并一行（A1 风格）：先给整行写样式再 merge（样式只写首个单元格即可，整行写更稳）
+function mergeRow(sh, r, endCol, style) {
+  sh.getRange(`A${r + 1}:${String.fromCharCode(65 + endCol)}${r + 1}`).setValue({ s: style });
+  sh.getRange(`A${r + 1}:${String.fromCharCode(65 + endCol)}${r + 1}`).merge();
+}
+
+// 列宽/行高（像素）：
+//   sh.setColumnWidth(c, 96); sh.setRowHeight(r, 34); sh.setRowHeights(startRow, numRows, h)
+// 自动换行：样式里带 tb: 3（WrapStrategy.WRAP）；ht:2 居中 / vt:1 顶部 / vt:2 垂直居中
+```
 // 写格 helper：R 从 0 开始！（R=1 会把第一行留空，导出后才发现返工过）
 function put(r, c, v, t, s) { sh.getRange(r, c, 1, 1).setValue({ v, t, ...(s ? { s } : {}) }); }
 
@@ -253,6 +269,26 @@ workbook.getActiveSheet().getRange(4,4,1,1).setValue({ v: 45301.000497685185, t:
 用 Facade：`getRange(...).delete()` / `getMerges()` 等 —— 以 `univer skills get sheet` 的 API 为准。
 > 注意：**查看器在线编辑只捕获单元格 v/t/f 的改动**；样式、合并、行列增删不会被自动保存捕获，这类操作要用路径 B（agent execute）完成。
 
+## 生成新表格文件（agent 交付约定 2026-08-12）
+
+用户明确要求：**生成表格文件后，右侧要自动打开；非项目文件不显示变更；临时脚本用完即删；交付时附带可点击卡片**（右侧打开 / 打开文件夹 / 外部打开）。
+
+1. **生成完就推右侧打开**：文件创建 + 内容写入完成后，`POST /api/open-file-request`（body `{filePath, title?}`）把文件推给右侧面板（AppShell 轮询该标记自动开文件 tab，作用一次后自动清除）：
+   ```bash
+   curl -s -X POST http://127.0.0.1:10141/api/open-file-request \
+     -H 'Content-Type: application/json' \
+     -d '{"filePath":"C:/proj/报表.univer","title":"销售报表"}'
+   ```
+   （浏览器模式端口 10141；Electron 模式用内置服务随机端口。文件必须在允许根内且存在，否则 403/404。）
+2. **临时脚本用完即删（不留垃圾）**：
+   - `univer execute --script <临时脚本>` 执行成功后，**立即删除该脚本文件**（以及任何生成的中间模板 xlsx/验证产物）：`rm -f <脚本>`。
+   - 脚本一律放系统 Temp（如 `C:/Users/.../AppData/Local/Temp/univer-work/`），**绝不放在项目目录**（会污染 eslint / git status）。
+   - 执行前后对比确认目录不再残留本任务产物。
+3. **非项目文件不显示变更**：changed-files / generated-files 卡片只显示**会话 cwd（项目）内**的文件；Temp 里的临时脚本、导出文件天然被过滤。所以脚本放 Temp 既能自愈又能保持卡片干净。
+4. **交付卡片动作语义**：生成的 .univer 文件会出现在「生成了 N 个文件」卡片上：
+   - **右侧打开** → 打开 .univer（查看器原生支持 worktree/写回）
+   - **打开所在文件夹 / 外部打开** → 后端自动解析为**同名 .xlsx**（`lib/univer-paths.ts`：`.univer` → 同目录同名 `.xlsx`，存在才用；没有 xlsx 才回退 .univer）——用户拿到的是可直接双击的真实表格。
+
 ## 工作区生命周期速查
 
 ```bash
@@ -355,6 +391,20 @@ univer worktree rollback <file> --worktree <id>        # 回滚最新一条提�
 - **绿三角「数字以文本形式存储」提示的中文依赖 `components/XlsxViewer.tsx` 的 locale 补丁（1073 行）**：Univer 提示文案 key 是 `sheets-numfmt-ui.info.error` / `info.forceStringInfo`，而 preset-sheets-core 的 zh-CN **缺这两个键**（`grep forceStringInfo node_modules/@univerjs/preset-sheets-core/lib/locales/zh-CN.js` = 0），所以 XlsxViewer 在 `locales.zhCN` 里显式补齐 `"sheets-numfmt-ui": { info: { error: "错误", forceStringInfo: "以文本形式存储的数字" } }`。
   - 用户报“提示显示英文/接口名”时：**先查数据层**（该列是不是文本数字——文本数字才是绿三角根因，normalize 转真数字后绿三角直接消失），**再提示刷新浏览器**（旧 chunk 会显示英文/缺 key，Ctrl+F5 解决）；代码本身通常没问题，**不要删/改这段补丁**。
   - 排查链：数据层 = `univer export` + 读回看该列类型；文案层 = Univer es/index.js 里 `t("sheets-numfmt-ui.info.forceStringInfo")` 的调用点 + preset zh-CN 是否含该键。
+
+### execute 脚本事务 / Facade API 坑（2026-08-12 实测）
+
+> 背景：为「总结页内容优化」重建 sheet（delete 旧表 → create 同名新表 → 填充）时连踩 5 个坑，白跑 3 轮 execute。以下全部实测。
+
+- **同一 execute 脚本里 `deleteSheet` 后立刻 `create` 同名 sheet 会冲突**（2026-08-12）：`deleteSheet` 不生效，旧 sheet 还在，`create` 检测到同名后**静默把新表改名为「X1」**（如 `总结1`），且返回的手柄可能是旧表（带旧合并）——随后 `merge()` 报 `The ranges to be merged overlap with the existing merged cells`，**整个 execute 事务回滚**（worktree 回到原状，看起来像“什么都没发生”）。
+  - **解法 1（推荐）**：不复用名字——**把现有空 sheet 用 `setName()` 改名复用**，再建新 sheet 用全新名字（如「回答详情」），一次 execute 全搞定。
+  - **解法 2**：拆两次 execute（先 `deleteSheet` 提交，再 `create` 同名 + 填充）。
+  - 症状识别：报 merge 重叠错误但明明是新表 → 先 `univer inspect workbook ... --json` 看 sheets 列表是不是出现了 `总结1` 这种自动改名。
+- **FWorksheet 没有 `getName()`**：读取表名用 **`getSheetName()`**，设置才是 `setName()`。写错 API 会报 `xxx.getName is not a function`。
+- **脚本最后一行（返回值）也必须用可靠 API**：execute 的返回值语句一旦抛错，**整个脚本 `success:false` 不提交，前面全白做**。调试性语句（console.log 可见 stdout，但 `--json` 模式下 stdout 也不回显）别放在关键路径；不确定的 API 先 `univer api find/show` 确认再写进脚本。
+- **workbook 不能删到 0 个 sheet**：删掉只剩一个时，再删报 `committed:false`。要重建内容时优先「改名复用现有 sheet」，别把最后一个删掉。
+- **`execute --json` 不回显脚本返回值**：只输出 `{"committed":true,"commitSeq":N}`，脚本 return 的数组/对象看不到。验证状态一律走 `univer inspect workbook/range ... --json`。
+- **调试/复现脚本会以正式 commit 写进工作区**：execute 只要跑成功就会 commit（哪怕脚本只是探测）。**别在正式工作区里跑探测脚本**——先建个一次性的 `debug-<stamp>` 工作区跑完 discard，或接受历史里留调试 commit（内容无影响，但 log 不干净）。
 
 ### 无头浏览器（CDP）验证要点
 

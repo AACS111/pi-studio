@@ -12,8 +12,8 @@ try {
 const nextConfig = {
   // 打包桌面应用（electron-builder）时用独立目录构建，避免污染 dev 的 .next
   distDir: process.env.PI_WEB_DIST_DIR || ".next",
-  // 浏览器代理的路径式 URL（/api/browser/proxy/<b64>/）
-  // 目录型请求必须保留尾斜杠，否则 308 重定向后动态 import 相对解析又断掉
+  // 保留全局尾斜杠（原为浏览器代理路径式 URL 服务，路由已移除，配置保留以免
+  // 影响其他带尾斜杠路径的既有行为）
   skipTrailingSlashRedirect: true,
   serverExternalPackages: [
     "undici",

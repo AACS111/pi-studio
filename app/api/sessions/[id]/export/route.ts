@@ -220,6 +220,7 @@ async function exportSession(filePath: string, outputPath: string): Promise<void
     await execFileAsync(process.execPath, [cliPath, "--export", filePath, outputPath], {
       cwd: process.cwd(),
       timeout: 30_000,
+      windowsHide: true,
       env: {
         ...process.env,
         PI_OFFLINE: "1",

@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
 import { promisify } from "util";
+import { getGitExecutable } from "./git-exec";
 import { TEXT_PREVIEW_MAX_BYTES } from "./file-types";
 import type {
   GitFileDiffResponse,
@@ -19,9 +20,10 @@ const GIT_TIMEOUT_MS = 10_000;
 const GIT_STATUS_MAX_BUFFER = 8 * 1024 * 1024;
 
 async function git(cwd: string, args: string[], maxBuffer = GIT_STATUS_MAX_BUFFER): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+  const { stdout } = await execFileAsync(getGitExecutable(), ["-C", cwd, ...args], {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer,
+    windowsHide: true,
     env: { ...process.env, LC_ALL: "C" },
   });
   return stdout;

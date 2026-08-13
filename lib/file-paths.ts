@@ -41,3 +41,18 @@ export function getRelativeFilePath(filePath: string, cwd?: string): string {
 export function joinFilePath(parent: string, child: string): string {
   return `${normalizeFilePathSlashes(parent).replace(/\/$/, "")}/${child}`;
 }
+
+/**
+ * Resolve a possibly-relative tool path against a session cwd so it can be
+ * opened/served. Tool calls (`edit`/`write`) may record either an absolute
+ * path or one relative to the session cwd; the file API only accepts absolute
+ * paths inside an allowed root, so relative paths must be joined here before
+ * they reach `/api/files/...` (otherwise the server resolves them against the
+ * process root and answers "Access denied").
+ */
+export function resolveFilePath(filePath: string, cwd?: string): string {
+  const normalized = normalizeFilePathSlashes(filePath);
+  const isAbsolute = normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized);
+  if (isAbsolute || !cwd) return normalized;
+  return joinFilePath(cwd, normalized);
+}

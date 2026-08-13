@@ -58,5 +58,8 @@ export async function runNpx(args: string[], opts: RunNpxOptions = {}): Promise<
     timeout: opts.timeout,
     cwd: opts.cwd,
     env: opts.env,
+    // On Windows the app has no console; without this, every npx invocation
+    // flashes a node.exe console window.
+    windowsHide: true,
   });
 }

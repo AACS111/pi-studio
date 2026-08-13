@@ -320,6 +320,17 @@ export type VisionProxyStatus =
   | { phase: "recognizing" }
   | { phase: "error"; message: string }
   | null;
+
+type VisionModelInfo = {
+  provider: string;
+  providerName: string;
+  modelId: string;
+  modelName: string;
+};
+type VisionModelsResponse = {
+  models?: VisionModelInfo[];
+  selected?: SelectedModel | null;
+};
 type ModelsResponse = {
   models: Record<string, string>;
   modelList?: ModelEntry[];
@@ -357,6 +368,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [modelList, setModelList] = useState<ModelEntry[]>([]);
   const [modelError, setModelError] = useState<string | null>(null);
   const [visionProxyStatus, setVisionProxyStatus] = useState<VisionProxyStatus>(null);
+  const [visionModels, setVisionModels] = useState<VisionModelInfo[]>([]);
+  const [visionModelSelected, setVisionModelSelected] = useState<SelectedModel | null>(null);
   const [modelScopeWarnings, setModelScopeWarnings] = useState<string[]>([]);
   const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string[]>>({});
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
@@ -1244,6 +1257,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         body: JSON.stringify({
           text: message,
           images: images.map((img) => ({ type: "image", data: img.data, mimeType: img.mimeType })),
+          // 用户选择的附属模型；null = 服务端自动扫描 models.json
+          model: visionModelSelected,
         }),
       });
       const data = await res.json().catch(() => null) as { description?: unknown; modelName?: unknown; error?: unknown } | null;
@@ -1262,7 +1277,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setVisionProxyStatus({ phase: "error", message: e instanceof Error ? e.message : String(e) });
       throw e;
     }
-  }, [displayModel, modelList]);
+  }, [displayModel, modelList, visionModelSelected]);
 
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
     const trimmedMessage = message.trim();
@@ -1546,6 +1561,33 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     }
   }, [isNew, newSessionCwd, session?.cwd]);
+
+  // 视觉代理（附属模型）：列出 models.json 里可用的视觉模型并读取持久化选择。
+  const loadVisionModels = useCallback(async (signal?: AbortSignal) => {
+    const res = await fetch("/api/vision/models", signal ? { signal } : undefined);
+    if (!res.ok) return;
+    const d = await res.json() as VisionModelsResponse;
+    setVisionModels(d.models ?? []);
+    setVisionModelSelected(d.selected ?? null);
+  }, []);
+
+  /** 用户在下拉里改选附属模型；传 null 恢复自动选择。本地状态先生效，失败静默。 */
+  const handleVisionModelChange = useCallback(async (selection: SelectedModel | null) => {
+    setVisionModelSelected(selection);
+    try {
+      const res = await fetch("/api/vision/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(selection ?? {}),
+      });
+      if (!res.ok) return;
+      const d = await res.json() as VisionModelsResponse;
+      setVisionModels(d.models ?? []);
+      setVisionModelSelected(d.selected ?? null);
+    } catch {
+      /* 持久化失败不影响本次会话内的选择 */
+    }
+  }, []);
 
   const handleBuiltinSlashCommand = useCallback(async (text: string): Promise<BuiltinSlashCommandResult> => {
     if (!text.startsWith("/")) return { handled: false };
@@ -1861,14 +1903,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [messages.length, agentRunning, scrollToBottom, scrollUserMsgToTop]);
 
-  // Load model list
+  // Load model list + vision proxy (auxiliary) models
   useEffect(() => {
     const controller = new AbortController();
     loadModels(controller.signal).catch((e) => {
       if (e instanceof DOMException && e.name === "AbortError") return;
     });
+    loadVisionModels(controller.signal).catch(() => {});
     return () => controller.abort();
-  }, [loadModels, modelsRefreshKey]);
+  }, [loadModels, loadVisionModels, modelsRefreshKey]);
 
   useEffect(() => {
     if (!compactResult) return;
@@ -1902,6 +1945,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     data, loading, error, activeLeafId, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
     visionProxyStatus,
+    visionModels, visionModelSelected, handleVisionModelChange,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
     isCompacting, compactError, compactResult, currentModel, displayModel, sessionStats,
     slashCommands, slashCommandsLoading, queuedMessages,

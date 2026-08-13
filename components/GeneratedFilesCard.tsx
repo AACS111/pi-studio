@@ -2,74 +2,79 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ChangedFile } from "@/lib/changed-files";
-import { getFileName, getRelativeFilePath, joinFilePath, resolveFilePath } from "@/lib/file-paths";
-import { parseUnifiedPatch } from "@/lib/patch";
+import { getFileName, getRelativeFilePath, resolveFilePath } from "@/lib/file-paths";
 import { useI18n } from "@/hooks/useI18n";
 
 const MAX_COLLAPSED = 8;
 
-const KIND_COLORS: Record<ChangedFile["kind"], string> = {
-  edit: "#d6a84b",   // matches FileExplorer "modified"
-  write: "#4ade80",  // matches FileExplorer "added"
-};
+const DIM = "var(--text-dim)";
 
-const KIND_LABEL: Record<ChangedFile["kind"], string> = {
-  edit: "M",
-  write: "A",
-};
-
-type ActionKey = "reveal" | "external";
-
-interface DiffStatEntry {
-  added: number;
-  removed: number;
-  exists: boolean;
+function getExt(filePath: string): string {
+  const base = filePath.split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
 
-function isAbsolutePath(filePath: string): boolean {
-  return filePath.startsWith("/") || /^[a-zA-Z]:[\/]/.test(filePath);
-}
+/** Small flat type icon for generated deliverables. */
+function GeneratedFileTypeIcon({ filePath, size = 15 }: { filePath: string; size?: number }) {
+  const ext = getExt(filePath);
+  const isSpreadsheet = ["xlsx", "xls", "univer", "csv", "tsv"].includes(ext);
+  const isDoc = ["docx", "doc", "md", "txt", "html", "htm", "json"].includes(ext);
+  const isSlide = ["pptx", "ppt"].includes(ext);
+  const isPdf = ext === "pdf";
+  const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"].includes(ext);
+  const isArchive = ["zip", "rar", "7z", "tar", "gz"].includes(ext);
 
-function countDiffStats(patch: string): { added: number; removed: number } {
-  const files = parseUnifiedPatch(patch);
-  if (!files) return { added: 0, removed: 0 };
-  let added = 0;
-  let removed = 0;
-  for (const file of files) {
-    for (const row of file.rows) {
-      if (row.type !== "line") continue;
-      if (row.right.type === "added") added += 1;
-      if (row.left.type === "removed") removed += 1;
-    }
+  if (isSpreadsheet) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <rect x="2" y="1.5" width="12" height="13" rx="1.2" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" />
+        <path d="M2 5.5h12M5.5 5.5v9M8.5 5.5v9M11.5 5.5v9" stroke={DIM} strokeWidth="0.8" />
+      </svg>
+    );
   }
-  return { added, removed };
-}
-
-async function fetchDiffStats(
-  cacheKey: string,
-  cwd: string,
-  absPath: string,
-): Promise<DiffStatEntry | null> {
-  try {
-    const params = new URLSearchParams({ cwd, path: absPath });
-    const response = await fetch(`/api/git/diff?${params.toString()}`);
-    const data = await response.json() as { supported?: boolean; patch?: string; exists?: boolean };
-    // `exists` defaults to true on transport/API errors so a transient failure
-    // never hides a real file. Only an explicit `exists: false` (the file was
-    // written and later deleted — a scratch script) removes the row.
-    const exists = data?.exists !== false;
-    if (data?.supported && typeof data.patch === "string") {
-      return { ...countDiffStats(data.patch), exists };
-    }
-    return { added: 0, removed: 0, exists };
-  } catch {
-    // No git repo or transient failure — row simply shows no stats.
-  } finally {
-    // Keep failed entries cached too so a repeated render doesn't retry
-    // immediately; the TTL below bounds staleness.
-    setTimeout(() => diffStatsCache.delete(cacheKey), 60_000);
+  if (isSlide) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <rect x="2" y="2" width="12" height="9.5" rx="1.2" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" />
+        <path d="M5.5 14.5h5M8 11.5v3" stroke={DIM} strokeWidth="1" />
+      </svg>
+    );
   }
-  return null;
+  if (isPdf) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <path d="M3 1.5h7l3 3v10H3V1.5Z" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" strokeLinejoin="round" />
+        <path d="M10 1.5v3h3" stroke={DIM} strokeWidth="1" fill="none" strokeLinejoin="round" />
+        <text x="8" y="12" textAnchor="middle" fontSize="3.6" fontFamily="var(--font-mono), monospace" fontWeight="700" fill={DIM}>PDF</text>
+      </svg>
+    );
+  }
+  if (isImage) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <rect x="2" y="2.5" width="12" height="11" rx="1.2" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" />
+        <circle cx="5.5" cy="6" r="1.1" stroke={DIM} strokeWidth="0.9" />
+        <path d="m3.5 12.5 3.2-3.2 2.2 2.2 1.6-1.6 2 2.6" stroke={DIM} strokeWidth="0.9" fill="none" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (isArchive) {
+    return (
+      <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+        <rect x="2.5" y="1.5" width="11" height="13" rx="1.2" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" />
+        <path d="M5.5 4.5h5M5.5 7h5M5.5 9.5h5M5.5 12h2" stroke={DIM} strokeWidth="0.9" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  // doc / text fallback
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+      <path d="M3 1.5h7l3 3v10H3V1.5Z" stroke={DIM} strokeWidth="1" fill={DIM} fillOpacity="0.08" strokeLinejoin="round" />
+      <path d="M10 1.5v3h3" stroke={DIM} strokeWidth="1" fill="none" strokeLinejoin="round" />
+      {isDoc && <path d="M5.5 9.5h5M5.5 12h3.5" stroke={DIM} strokeWidth="0.9" strokeLinecap="round" />}
+    </svg>
+  );
 }
 
 interface Props {
@@ -78,90 +83,22 @@ interface Props {
   onOpenFile?: (filePath: string) => void;
 }
 
-const DIFF_STATS_FETCH_DELAY_MS = 250;
-const DIFF_STATS_MAX_CONCURRENCY = 3;
-
-// Module-level cache: the same file often appears in several cards across a
-// session; each diff is expensive (spawns git), so fetch once per (cwd, path).
-const diffStatsCache = new Map<string, Promise<DiffStatEntry | null>>();
+type ActionKey = "reveal" | "external";
 
 /**
- * Compact card shown under an assistant message listing the files the turn
- * edited/wrote. Each row opens the file in the right-hand viewer in diff mode
- * (the same git diff view used by the explorer's Changes list) and offers
- * reveal-in-folder / open-external actions. Files the agent wrote and then
- * deleted (scratch scripts) are hidden once the server confirms they are gone.
+ * Card shown after an assistant turn listing files the agent *generated*
+ * (spreadsheets, docs, images, data exports, …). Each row offers three ways
+ * to use the file: open it in the right-hand viewer, reveal its folder in the
+ * OS file manager, or open it with the default external app.
  */
-export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
+export function GeneratedFilesCard({ files, cwd, onOpenFile }: Props) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  const [stats, setStats] = useState<Record<string, { added: number; removed: number }>>({});
-  const [missing, setMissing] = useState<Set<string>>(new Set());
   const [feedback, setFeedback] = useState<Record<string, { action: ActionKey; ok: boolean }>>({});
   const [actionError, setActionError] = useState<{ filePath: string; message: string } | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showToggle = files.length > MAX_COLLAPSED;
-  const visible = (showToggle && !expanded ? files.slice(0, MAX_COLLAPSED) : files)
-    .filter((file) => !missing.has(file.filePath));
-
-  // Stable key so the fetch below only re-runs when the file set actually
-  // changes (the `files` prop reference changes on every parent render).
-  const filesKey = files.map((f) => `${f.kind}:${f.filePath}`).join("\u0000");
-
-  // Lazily fetch per-file git diff stats (+N / -M) and existence for display.
-  // Fetching is delayed (first paint wins), concurrency-capped, and memoised
-  // per (cwd, path) so repeated cards for the same file cost one request.
-  useEffect(() => {
-    let cancelled = false;
-    setStats({});
-    setMissing(new Set());
-    if (!cwd) return;
-
-    const entries = files.map((file) => ({
-      file,
-      absPath: isAbsolutePath(file.filePath) ? file.filePath : joinFilePath(cwd, file.filePath),
-      cacheKey: `${cwd}\u0000${file.filePath}`,
-    }));
-
-    (async () => {
-      await new Promise((resolve) => setTimeout(resolve, DIFF_STATS_FETCH_DELAY_MS));
-      if (cancelled) return;
-
-      const results: Record<string, { added: number; removed: number }> = {};
-      const missingSet = new Set<string>();
-      let next = 0;
-      const worker = async (): Promise<void> => {
-        while (!cancelled) {
-          const entry = entries[next++];
-          if (!entry) return;
-          const cached = diffStatsCache.get(entry.cacheKey);
-          const promise = cached ?? fetchDiffStats(entry.cacheKey, cwd, entry.absPath);
-          if (!diffStatsCache.has(entry.cacheKey)) diffStatsCache.set(entry.cacheKey, promise);
-          const value = await promise;
-          if (cancelled || !value) continue;
-          if (!value.exists) {
-            missingSet.add(entry.file.filePath);
-            // Don't memoize "missing": a file that appears gone during
-            // streaming may just be mid-write. Re-check on the next card
-            // mount (the completed turn) so it can reappear.
-            diffStatsCache.delete(entry.cacheKey);
-          } else if (value.added > 0 || value.removed > 0) {
-            results[entry.file.filePath] = { added: value.added, removed: value.removed };
-          }
-        }
-      };
-      await Promise.all(
-        Array.from({ length: Math.min(DIFF_STATS_MAX_CONCURRENCY, entries.length) }, worker),
-      );
-      if (!cancelled) {
-        setStats(results);
-        setMissing(missingSet);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, filesKey]);
+  const visible = showToggle && !expanded ? files.slice(0, MAX_COLLAPSED) : files;
 
   useEffect(() => () => {
     if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
@@ -181,6 +118,8 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
       });
       ok = response.ok;
       if (!ok) {
+        // Surface the server error (e.g. "File not found" when the agent
+        // deleted the file after generating it) instead of a silent flash.
         const data = (await response.json().catch(() => ({}))) as { error?: string };
         message = data.error ?? `HTTP ${response.status}`;
       }
@@ -226,12 +165,10 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
         }}
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
-          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-          <polyline points="14 2 14 8 20 8" />
-          <path d="m9 13 6 0" />
-          <path d="m9 17 6 0" />
+          <path d="M12 2v4m0 12v4M2 12h4m12 0h4" />
+          <circle cx="12" cy="12" r="3.5" />
         </svg>
-        <span>{t("files.changedFiles", { count: files.length })}</span>
+        <span>{t("files.generatedFiles", { count: files.length })}</span>
         <span style={{ marginLeft: "auto" }} />
         {showToggle && (
           <button
@@ -286,17 +223,15 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
       <div style={{ borderTop: "1px solid var(--border)" }}>
         {visible.map((file) => {
           const rowFeedback = feedback[file.filePath];
-          const fileStats = stats[file.filePath];
-          const showStats = fileStats && (fileStats.added > 0 || fileStats.removed > 0);
           return (
             <div
               key={file.filePath}
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: 4,
+                gap: 8,
                 width: "100%",
-                padding: "2px 10px",
+                padding: "4px 10px",
                 color: "var(--text)",
                 fontSize: 12,
               }}
@@ -313,37 +248,19 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
                   gap: 8,
                   flex: 1,
                   minWidth: 0,
-                  padding: "2px 0",
+                  padding: 0,
                   background: "none",
                   border: "none",
                   cursor: onOpenFile ? "pointer" : "default",
                   color: "var(--text)",
                   fontSize: 12,
                   textAlign: "left",
+                  overflow: "hidden",
                 }}
                 onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
                 onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text)"; }}
               >
-                <span
-                  title={file.kind === "edit" ? t("files.modified") : t("files.added")}
-                  style={{
-                    width: 16,
-                    height: 16,
-                    flexShrink: 0,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: 3,
-                    fontSize: 10,
-                    fontWeight: 700,
-                    fontFamily: "var(--font-mono)",
-                    color: KIND_COLORS[file.kind],
-                    background: `${KIND_COLORS[file.kind]}1a`,
-                    border: `1px solid ${KIND_COLORS[file.kind]}40`,
-                  }}
-                >
-                  {KIND_LABEL[file.kind]}
-                </span>
+                <GeneratedFileTypeIcon filePath={file.filePath} />
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",
@@ -358,27 +275,11 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
                 >
                   {getRelativeFilePath(file.filePath, cwd)}
                 </span>
-                {showStats && (
-                  <span
-                    style={{
-                      flexShrink: 0,
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11,
-                      fontVariantNumeric: "tabular-nums",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {fileStats.added > 0 && (
-                      <span style={{ color: "#4ade80" }}>+{fileStats.added}</span>
-                    )}
-                    {fileStats.removed > 0 && (
-                      <span style={{ color: "#f87171" }}>{fileStats.added > 0 ? " " : ""}-{fileStats.removed}</span>
-                    )}
-                  </span>
-                )}
+                <span style={{ color: "var(--text-dim)", fontSize: 10, flexShrink: 0 }}>{getExt(file.filePath) || "file"}</span>
               </button>
 
               <span style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+                {/* Reveal in folder */}
                 <button
                   type="button"
                   title={t("files.revealInFolder")}
@@ -400,6 +301,7 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h16a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-8l-2-2H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1Z" /></svg>
                   )}
                 </button>
+                {/* Open with external app */}
                 <button
                   type="button"
                   title={t("files.openExternal")}

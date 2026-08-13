@@ -47,6 +47,15 @@ const recentBrowserDownloads = [];
 
 app.setName("Pi Studio");
 
+// 开发版（npm run dev:electron）必须用独立的 userData，不能与已安装的桌面版共用 %APPDATA%/Pi Studio：
+// 两者都会 setName("Pi Studio")，userData 按 app 名惰性解析后落到同一目录，导致：
+//   1. 单实例锁互相冲突 —— exe 版在运行时，dev 版 requestSingleInstanceLock() 返回 false，app.quit() 假死；
+//   2. 数据目录（open-file 标记 / user-edits / univer home / 上传）被两边同时读写、互相污染。
+// 注意顺序：必须 setPath 在 setName 之后（首次访问 getPath 会缓存路径，setName 会改写它）。
+if (SERVER_MODE === "dev") {
+  app.setPath("userData", path.join(app.getPath("appData"), "Pi Studio Dev"));
+}
+
 // CDP 远程调试端口：让 agent 能直接操作右侧 WebContentsView（点击/输入/截图）。
 // 默认 9222（仅监听 127.0.0.1）；可用 PI_WEB_CDP_PORT 改端口，设为 0 关闭。
 const cdpPort = process.env.PI_WEB_CDP_PORT;
@@ -179,6 +188,37 @@ function killServer() {
     } catch {
       /* ignore */
     }
+  }
+}
+
+/**
+ * Kill pi-studio's own univer daemon on exit.
+ *
+ * The daemon is started detached (`univer daemon start` spawns `daemon.js serve`
+ * as a separate process, reparented away from the next server), so it survives
+ * killServer()'s process-tree kill and would keep running after the app closes.
+ * The daemon writes its pid at startup to
+ * `<dataDir>/.internal/univer/daemon/daemon.pid` (UNIVER_HOME/daemon, see
+ * lib/univer-cli.ts / lib/storage-config.ts) — read it and hard-kill the tree,
+ * so closing the app leaves no services behind.
+ */
+function killUniverDaemon() {
+  let pid;
+  try {
+    const pidFile = path.join(resolveDataDir(), ".internal", "univer", "daemon", "daemon.pid");
+    pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+  } catch {
+    return; // no pid file — nothing to kill
+  }
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, timeout: 8000 });
+    } else {
+      process.kill(pid, "SIGTERM");
+    }
+  } catch {
+    /* already dead */
   }
 }
 
@@ -549,6 +589,7 @@ if (!gotLock) {
   app.on("will-quit", () => {
     quitForReal = true;
     killServer();
+    killUniverDaemon();
     if (bridgeServer) {
       try {
         bridgeServer.close();
@@ -569,9 +610,9 @@ if (!gotLock) {
         const bridge = await startBridge({ getActiveView: getActiveViewContents, getDownloads: getRecentBrowserDownloads, dataDir });
         bridgeServer = bridge.server;
         bridgeBaseUrl = bridge.baseUrl;
-        extraEnv.PI_BROWSER_USE_BASE_URL = bridgeBaseUrl;
+        extraEnv.PI_WEB_BROWSER_BRIDGE_URL = bridgeBaseUrl;
       } catch (bridgeErr) {
-        console.error("[pi-studio] 原生浏览器控制桥启动失败，回退到 browser-use 侧车:", bridgeErr.message);
+        console.error("[pi-studio] 原生浏览器控制桥启动失败（右侧浏览器不可用）:", bridgeErr.message);
       }
       serverProc = startServer(extraEnv);
       if (!serverProc) return;

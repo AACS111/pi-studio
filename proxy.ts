@@ -11,15 +11,8 @@ import {
 export function proxy(request: NextRequest) {
   const isApiRequest = request.nextUrl.pathname === "/api"
     || request.nextUrl.pathname.startsWith("/api/");
-  // 右侧面板的网页代理：沙箱 iframe（无 allow-same-origin）加载它的子资源时
-  // 请求是跨站的（Origin: null / Sec-Fetch-Site: cross-site），会被下面的 CSRF
-  // 校验拦截。它是纯内容代理（只抓取公开网页），设计上就要被跨源调用，
-  // 因此只校验 Host（必须在允许的主机上），跳过 Origin 校验。
-  const isBrowserContentProxy = request.nextUrl.pathname.startsWith("/api/browser/proxy");
   const isTrustedRequest = isApiRequest
-    ? (isBrowserContentProxy
-        ? isApiRequestHostAllowed(request)
-        : isApiRequestAllowed(request))
+    ? isApiRequestAllowed(request)
     : isApiRequestHostAllowed(request);
 
   if (!isTrustedRequest) {

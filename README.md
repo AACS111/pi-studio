@@ -6,13 +6,14 @@ Pi Studio is a local web workspace for the [pi coding agent](https://github.com/
 
 On top of the original pi-web UI, Pi Studio adds:
 
-- **Electron desktop app** — a packaged desktop shell whose right-side browser is a pool of native `WebContentsView`s, controlled through a semantic HTTP bridge (Semantic Browser V2)
+- **Electron desktop app** — a packaged desktop shell whose right-side browser is a pool of native `WebContentsView`s, controlled through a semantic HTTP bridge (Semantic Browser V2). The right-panel browser works only in Electron mode.
 - **Deep Univer integration** — view, online-edit, git-worktree drafts, write back to the original `.xlsx`, encrypted-file support (WPS KET bridge), and post-import compression
 - **Security hardening** — Origin/Host validation, optional HTTP Basic Auth, path-traversal guards, an allow-list for file access, and sanitized upload names
-- **browser-use sidecar** — automatic headless-Chrome fallback for the right panel when not running in Electron
 - **And more**: upload manager, PWA, i18n (en/zh-CN), Git worktrees, project trust, skill install/update/lock, model catalog/discovery/test, vision describe, chat lazy-loading
 
-![Pi Studio shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](https://raw.githubusercontent.com/AACS111/pi-studio/main/docs/screenshot2.png)
+![Pi Studio shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](public\icons\icon-514.png)
+![网页问题总结并写入Excel](public\icons\icon-516.png)
+![支持全程留痕、随时回滚](public\icons\icon-515.png)
 
 The same pi session in CLI and Pi Studio: structured tool calls, readable Markdown, session browsing, and cleaner results.
 
@@ -20,7 +21,7 @@ The same pi session in CLI and Pi Studio: structured tool calls, readable Markdo
 
 ### Two run modes
 
-**Browser mode** — the original pi-web web experience. The right-side browser renders through a server-side sandboxed-iframe proxy (`/api/browser/proxy`) that strips `X-Frame-Options` / CSP, so pages that forbid iframes still display.
+**Browser mode** — the original pi-web web experience. **The right-panel browser is not available in this mode** (no native WebContentsView, no control bridge); the panel shows an “Electron desktop only” hint.
 
 **Electron desktop mode** — a packaged desktop app (Windows). The built-in Next service runs as a child process on a random `127.0.0.1` port; the right-side browser is a pool of native `WebContentsView`s (one per tab, only one visible) with:
 
@@ -29,7 +30,7 @@ The same pi session in CLI and Pi Studio: structured tool calls, readable Markdo
 - **Advanced actions**: native `<select>` plus Ant Design / Element Plus combobox support, conditional waits and assertions.
 - **CDP remote debugging** on `127.0.0.1:9222` by default (`PI_WEB_CDP_PORT` to change, `0` to disable).
 
-In browser mode the same control API falls back to a **browser-use sidecar** (FastAPI on `127.0.0.1:17865`, automatically started and failure-tolerant), so agent-driven browsing works everywhere.
+Agent-driven browsing is available only in Electron mode (`/api/browser/control/*` returns `502` otherwise).
 
 ### Spreadsheet editing (built on Univer)
 
@@ -209,7 +210,7 @@ components/
   FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
   XlsxViewer.tsx      # Univer sheet engine (lazy-loaded) for .xlsx
   UniverFileViewer.tsx# in-place diff-applied viewer for .univer worktrees
-  WebViewer.tsx       # right-panel browser tab (WebContentsView / sidecar)
+  WebViewer.tsx       # right-panel browser tab (Electron WebContentsView only)
   UploadsManager.tsx  # upload storage panel
   PwaRegistration.tsx # Service Worker registration
 lib/
@@ -222,8 +223,7 @@ lib/
   univer-cli.ts       # univer daemon + CLI integration
   univer-db.ts        # direct SQLite reads for worktree/commit state
   ket-bridge.ts       # WPS KET COM decryption bridge for encrypted .xlsx
-  browser-proxy.ts    # server-side web preview proxy helpers
-  browser-sidecar.ts  # browser-use sidecar bootstrap (FastAPI fallback)
+  browser-proxy.ts    # URL normalization helper (normalizeUserUrl)
   http-dispatcher.ts  # global undici dispatcher with idle timeouts
   request-security.ts # Origin/Host validation for API requests
   web-auth.ts         # optional HTTP Basic Auth

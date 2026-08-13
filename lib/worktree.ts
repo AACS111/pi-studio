@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, realpathSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { promisify } from "util";
 import { allowFileRoot } from "./allowed-roots";
+import { getGitExecutable } from "./git-exec";
 
 const execFileAsync = promisify(execFile);
 
@@ -49,9 +50,10 @@ export function invalidateProjectCache(): void {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+  const { stdout } = await execFileAsync(getGitExecutable(), ["-C", cwd, ...args], {
     timeout: 10_000,
     maxBuffer: 1024 * 1024,
+    windowsHide: true,
     // Pin the message locale so error-text matching (e.g. the dirty-worktree
     // detection in the DELETE route) works regardless of system language.
     env: { ...process.env, LC_ALL: "C" },

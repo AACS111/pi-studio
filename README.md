@@ -1,131 +1,131 @@
 # Pi Studio
 
-[中文文档](./README.zh-CN.md)
+[English](./README.md)
 
-Pi Studio is a local web workspace for the [pi coding agent](https://github.com/badlogic/pi-mono), forked from [agegr/pi-web](https://github.com/agegr/pi-web). It reads your local pi session files and provides a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview — plus things the CLI alone can't do: a **full spreadsheet engine** for viewing and editing `.xlsx` / `.univer` files in place, and a **built-in browser** the agent can drive and push pages to.
+Pi Studio 是 [pi 编程智能体](https://github.com/badlogic/pi-mono) 的本地 Web 工作台，源自 [agegr/pi-web](https://github.com/agegr/pi-web)。它会读取本机的 pi 会话文件，在浏览器里提供会话管理、实时对话、模型配置、技能管理和项目文件预览——此外还提供了 CLI 做不到的两件事：内置**完整表格引擎**（就地查看/编辑 `.xlsx` / `.univer` 文件），以及**内置浏览器**（可被智能体驱动、推送页面）。
 
-On top of the original pi-web UI, Pi Studio adds:
+在保留原版 pi-web UI 全部能力的基础上，Pi Studio 新增：
 
-- **Electron desktop app** — a packaged desktop shell whose right-side browser is a pool of native `WebContentsView`s, controlled through a semantic HTTP bridge (Semantic Browser V2). The right-panel browser works only in Electron mode.
-- **Deep Univer integration** — view, online-edit, git-worktree drafts, write back to the original `.xlsx`, encrypted-file support (WPS KET bridge), and post-import compression
-- **Security hardening** — Origin/Host validation, optional HTTP Basic Auth, path-traversal guards, an allow-list for file access, and sanitized upload names
-- **And more**: upload manager, PWA, i18n (en/zh-CN), Git worktrees, project trust, skill install/update/lock, model catalog/discovery/test, vision describe, chat lazy-loading
+- **Electron 桌面应用** — 打包的桌面壳，右侧浏览器是原生 `WebContentsView` 池，通过语义控制桥（Semantic Browser V2）驱动。右侧浏览器仅在 Electron 模式可用。
+- **Univer 表格深度集成** — 查看、在线编辑、git worktree 草稿、写回原 `.xlsx`、加密文件支持（WPS KET 桥）、导入压缩
+- **安全加固** — Origin/Host 校验、可选 HTTP Basic Auth、路径防穿越、文件访问允许列表、上传文件名消毒
+- **还有更多**：上传管理器、PWA、i18n（en/zh-CN）、Git worktrees、项目信任、skill 安装/更新/锁定、模型目录/发现/测试、视觉描述、聊天懒加载
 
-![Pi Studio shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](public\icons\icon-514.png)
+
+
+![CLI 与 Pi Studio 显示同一 pi 会话：结构化工具调用、可读 Markdown、会话浏览、更清爽的结果](public\icons\icon-514.png)
 ![网页问题总结并写入Excel](public\icons\icon-516.png)
 ![支持全程留痕、随时回滚](public\icons\icon-515.png)
 
-The same pi session in CLI and Pi Studio: structured tool calls, readable Markdown, session browsing, and cleaner results.
+## 功能特性
 
-## Features
+### 两种运行形态
 
-### Two run modes
+**浏览器模式** — 原版 pi-web 的 Web 体验。**该模式下右侧浏览器不可用**（没有原生 WebContentsView，也没有控制桥），面板显示「仅 Electron 支持」提示。
 
-**Browser mode** — the original pi-web web experience. **The right-panel browser is not available in this mode** (no native WebContentsView, no control bridge); the panel shows an “Electron desktop only” hint.
+**Electron 桌面模式** — 打包的桌面应用（Windows）。内置 Next 服务作为子进程运行在随机 `127.0.0.1` 端口；右侧浏览器是原生 `WebContentsView` 池（每个网页标签一个，仅一个可见），支持：
 
-**Electron desktop mode** — a packaged desktop app (Windows). The built-in Next service runs as a child process on a random `127.0.0.1` port; the right-side browser is a pool of native `WebContentsView`s (one per tab, only one visible) with:
+- **Semantic Browser V2 控制桥**（`electron/bridge.cjs`）：`/snapshot` 返回每个元素的 `ref/role/name/value`；评分定位器（精确文本 > aria > placeholder > testid > contains）解析元素，歧义时返回 `409` + 候选。
+- **批量执行**：`/execute` 在单个 JS 上下文中完成多步动作（fill / select / click / check / wait / assert）。
+- **高级动作**：原生 `<select>` 下拉 + Ant Design / Element Plus combobox，条件等待与断言。
+- **CDP 远程调试**：默认 `127.0.0.1:9222`（`PI_WEB_CDP_PORT` 可改，设 `0` 关闭）。
 
-- **Semantic Browser V2 control bridge** (`electron/bridge.cjs`): `/snapshot` returns `ref/role/name/value` per element; a scored locator (exact text > aria > placeholder > testid > contains) resolves elements, with ambiguous matches returning `409` + candidates.
-- **Batch execution**: `/execute` runs multi-step actions (fill / select / click / check / wait / assert) in a single JS context.
-- **Advanced actions**: native `<select>` plus Ant Design / Element Plus combobox support, conditional waits and assertions.
-- **CDP remote debugging** on `127.0.0.1:9222` by default (`PI_WEB_CDP_PORT` to change, `0` to disable).
+智能体驱动的浏览仅在 Electron 模式下可用（`npm run dev` 下 `/api/browser/control/*` 返回 502）。
 
-Agent-driven browsing is available only in Electron mode (`/api/browser/control/*` returns `502` otherwise).
+### 表格编辑（基于 Univer）
 
-### Spreadsheet editing (built on Univer)
+- **浏览器里查看和编辑 Excel 文件**：在完整的 Univer 表格引擎中打开 `.xlsx` / `.univer` ——公式、条件格式、数据验证、筛选、排序、表格、超链接、批注、话题评论全部就地可用。
+- **AI 编辑你打开的表格**：一键把上传的 `.xlsx` 转成 `.univer` 草稿，告诉智能体要改什么，右侧面板实时查看结果。
+- **Worktree 安全保障**：表格草稿放在 git worktree 里——随时创建、提交、丢弃或合并回主干。未经你明确同意，绝不自动写回。
+- **写回 / 导出**：把编辑提交回原 `.xlsx`（经 SheetJS 重建），或导出为 `.xlsx` / `.csv`。
+- **加密工作簿**：标准 OOXML / WPS TSD / WPS 结构加密的 `.xlsx` 通过 WPS KET COM 桥解密并安全缓存。
+- **导入压缩**：34 MB 的 `.univer` 导入后通常可压缩到约 10 MB。
 
-- **View and edit Excel files in the browser**: open `.xlsx` / `.univer` in a full Univer sheet engine — formulas, conditional formatting, data validation, filters, sort, tables, hyperlinks, notes, and thread comments all work in place.
-- **AI-edit your open spreadsheet**: convert an uploaded `.xlsx` into a `.univer` draft with one click, tell the agent what to change, and review the result live in the right panel.
-- **Worktree-based safety**: spreadsheet drafts live in git worktrees — create, commit, discard, or merge them back to the main trunk whenever you're ready. Nothing is ever written back automatically without your say-so.
-- **Write back / export**: commit edits back over the original `.xlsx` (rebuilt via SheetJS), or export the workbook as `.xlsx` / `.csv`.
-- **Encrypted workbooks**: standard OOXML / WPS TSD / WPS structure-encrypted `.xlsx` are decrypted through the WPS KET COM bridge and cached safely.
-- **Import compression**: a 34 MB imported `.univer` is typically reduced to ~10 MB.
+### 会话与聊天工作台（核心）
 
-### Chat & session workspace (core)
+- **随时接着干**：按项目浏览历史 pi 对话，不必翻终端历史或会话路径。
+- **安全尝试不同方向**：从更早的消息继续，或把会话 fork 成独立路线。
+- **跨分支工作**：在侧栏切换 Git worktree，新会话和文件资源管理器跟随所选 checkout。
+- **一边聊天一边看代码**：左侧浏览文件，右侧预览源码、文档、图片、音频和 PDF。
+- **会话状态一目了然**：上下文用量、成本、压缩状态、系统提示详情都在顶栏可见。
+- **变更文件卡片**：每轮智能体回合结束后，汇总卡片列出所有编辑/写入的文件及 `+N`/`-M` 逐文件 diff 统计。
+- **少在终端配配置**：模型、登录/API key、模型测试、插件、skill 开关都在 Web UI 里管理。
+- **用你的语言**：顶栏在英文和中文（zh-CN）之间切换；通过 i18n 注册表很容易新增语言。
 
-- **Pick work back up**: browse previous pi conversations by project without digging through terminal history or session paths.
-- **Try different directions safely**: continue from an earlier message or fork a session into a separate route.
-- **Work across branches**: switch Git worktrees from the sidebar so new sessions and the Explorer follow the checkout you choose.
-- **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
-- **See session state clearly**: context usage, cost, compaction state, and system prompt details are visible from the top bar.
-- **Changed-files card**: after each agent turn, a summary card lists every edited/written file with per-file `+N`/`-M` diff stats.
-- **Configure less from the terminal**: manage models, login/API keys, model tests, plugins, and skill switches from the web UI.
-- **Use the interface in your language**: switch between English and Chinese (zh-CN) from the top bar; other languages are easy to add via the i18n registry.
+### 上传、视觉与文件工具
 
-### Uploads, vision, and file tooling
+- **上传管理器**：把 `.xlsx` / `.univer` / 图片放入隔离存储区，可切换存储位置并查看容量统计。
+- **视觉描述**：让智能体描述图片；视觉模型（从你的自定义提供商自动检测）生成描述。
+- **文件索引**：快速项目文件搜索，快速把智能体和资源管理器指到正确的文件。
+- **打开文件标记**：右侧面板当前打开的文件会暴露给智能体，所以只说「编辑这张表」就能对上号。
+- **PWA**：移动端和桌面端都可把 Pi Studio 安装为离线可用的应用。
 
-- **Upload manager**: attach `.xlsx` / `.univer` / images into an isolated storage area with a storage-location picker and capacity stats.
-- **Vision**: ask the agent to describe an image; a vision-capable model (auto-detected from your custom providers) produces the description.
-- **File index**: fast project file search to point the agent and the Explorer at the right file quickly.
-- **Open-file marker**: the file currently open in the right panel is exposed to the agent, so "edit the table" without naming a file just works.
-- **PWA**: install Pi Studio as an offline-capable app on mobile and desktop.
+### 安全
 
-### Security
+- **Origin/Host 校验**：每个 API 请求都校验（CSRF 防护）；非 API 页面校验 Host。
+- **可选 HTTP Basic Auth**：设置 `PI_WEB_PASSWORD` 即可保护 Web 界面和所有 API 端点（用户名固定 `pi`，timing-safe 哈希比较）。
+- **路径防穿越** + `/api/files` 严格允许列表（会话 cwd、解析出的项目根、`~/pi-cwd-*`、显式允许的根）。
+- **上传文件名消毒**、bash 输出符号链接防护、上传配额上限（默认 300 MB，按 LRU 清理）。
+- **项目信任门控**：项目级 skill（`.agents/skills`）只在项目被信任后加载（`~/.pi/agent/trust.json`，与 pi CLI 共享）。
 
-- **Origin/Host validation** on every API request (CSRF protection); non-API pages validate the Host.
-- **Optional HTTP Basic Auth**: set `PI_WEB_PASSWORD` to protect the web interface and all API endpoints (username is always `pi`, compared with a timing-safe hash).
-- **Path-traversal guards** and a strict allow-list for `/api/files` (session cwds, resolved project roots, `~/pi-cwd-*`, and explicitly allowed roots).
-- **Sanitized upload names**, symlink-safe bash-output reads, and a bounded upload quota (default 300 MB with LRU cleanup).
-- **Project trust gating**: project-level skills (`.agents/skills`) load only after the project is trusted (`~/.pi/agent/trust.json`, shared with the pi CLI).
+## 快速开始
 
-## Quick Start
+Pi Studio 要求 Node.js 22.19.0 或更高版本。可通过 `node --version` 检查当前版本。
 
-Pi Studio requires Node.js 22.19.0 or newer. Check your version with `node --version`.
-
-**Run without installing:**
+**无需安装，直接运行：**
 
 ```bash
 npx @aacs111/pi-studio@latest
 ```
 
-**Or install globally:**
+**或全局安装后使用：**
 
 ```bash
 npm install -g @aacs111/pi-studio
 pi-studio
 ```
 
-Then open [http://127.0.0.1:30141](http://127.0.0.1:30141). The CLI will try to open the browser automatically after the server is ready. Pi Studio listens on `127.0.0.1` by default.
+启动后打开 [http://127.0.0.1:30141](http://127.0.0.1:30141)。命令行版本会在服务就绪后尝试自动打开浏览器。Pi Studio 默认仅监听 `127.0.0.1`。
 
-**Options:**
+**可选参数：**
 
 ```bash
-pi-studio --port 8080              # custom port
-pi-studio --hostname 0.0.0.0       # expose on a trusted network
-pi-studio -p 8080 -H 0.0.0.0       # combine options
-pi-studio --no-open                # do not open the browser automatically
+pi-studio --port 8080              # 自定义端口
+pi-studio --hostname 0.0.0.0       # 在可信网络中开放访问
+pi-studio -p 8080 -H 0.0.0.0       # 组合使用
+pi-studio --no-open                # 不自动打开浏览器
 
-PORT=8080 pi-studio                # environment variable is also supported
-PI_WEB_HOSTNAME=0.0.0.0 pi-studio  # explicit network exposure
-PI_WEB_ALLOWED_HOSTS=pi-studio.internal pi-studio  # allow an exact proxy/custom hostname
-PI_WEB_PASSWORD='a-long-random-password' pi-studio  # require Basic Auth (username: pi)
-PI_WEB_NO_OPEN=1 pi-studio         # useful when running as a background service
+PORT=8080 pi-studio                # 也支持环境变量
+PI_WEB_HOSTNAME=0.0.0.0 pi-studio  # 显式开放网络访问
+PI_WEB_ALLOWED_HOSTS=pi-studio.internal pi-studio  # 允许指定的代理或自定义主机名
+PI_WEB_PASSWORD='足够长的随机密码' pi-studio  # 启用 Basic Auth（用户名固定为 pi）
+PI_WEB_NO_OPEN=1 pi-studio         # 适用于后台服务或开机自启
 ```
 
-Set `PI_WEB_PASSWORD` to protect the web interface and every API endpoint with HTTP Basic Auth. The username is always `pi`. Leaving the variable unset or empty disables authentication.
+设置 `PI_WEB_PASSWORD` 可为 Web 界面和所有 API 端点启用 HTTP Basic Auth。用户名固定为 `pi`。不设置或留空即关闭认证。
 
-Pi Studio can invoke a high-privilege agent. Basic Auth does not encrypt the password in transit, so do not expose plain HTTP to the internet. Use HTTPS through a trusted reverse proxy or a trusted VPN for remote access.
-API requests accept loopback names, IP literals, the selected bind hostname, and exact comma-separated names in `PI_WEB_ALLOWED_HOSTS`. Configure that variable when a trusted reverse proxy uses a different external hostname.
+Pi Studio 可以调用高权限智能体。Basic Auth 不会加密传输中的密码，请勿把纯 HTTP 暴露到公网。远程访问请通过可信反向代理的 HTTPS 或可信 VPN。
+API 请求接受回环名称、IP 字面量、选定的绑定 hostname，以及 `PI_WEB_ALLOWED_HOSTS` 中以逗号分隔的精确名称。当可信反向代理使用了不同的外部 hostname 时，请配置该变量。
 
-## Desktop App (Electron)
+## 桌面应用（Electron）
 
-Pi Studio ships as a Windows desktop application with the right-side browser backed by native `WebContentsView`s (see [Features](#features)). Build it from source:
+Pi Studio 以 Windows 桌面应用形式发布，右侧浏览器由原生 `WebContentsView` 驱动（见[功能特性](#功能特性)）。从源码构建：
 
 ```bash
-npm run pack:dir       # unpacked folder under release/ (fastest for verification)
-npm run pack:portable  # single-file portable .exe
-npm run pack:nsis      # installer .exe
+npm run pack:dir       # release/ 下的未打包目录（最快验证）
+npm run pack:portable  # 单文件便携版 .exe
+npm run pack:nsis      # 安装版 .exe
 npm run pack:msi       # .msi
-npm run pack           # installer + portable
+npm run pack           # 安装版 + 便携版
 ```
 
-Packaging uses a separate build directory (`.next-pkg`) so it never interferes with `npm run dev`. The packaged app runs the built-in Next service on a random localhost port, keeps its data in `%APPDATA%/Pi Studio/pi-web-uploads` (Program Files is not writable), and tears down the whole child-process tree on exit.
+打包使用独立构建目录（`.next-pkg`），与 `npm run dev` 互不干扰。打包后的应用把内置 Next 服务跑在随机 localhost 端口，数据存放在 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写），退出时清理整棵子进程树。
 
-## HTTP Proxy
+## HTTP 代理
 
-Pi Studio reads the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables for server-side model and API requests.
+Pi Studio 读取标准 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 环境变量用于服务端模型和 API 请求。
 
-On macOS or Linux:
+macOS / Linux：
 
 ```bash
 HTTP_PROXY=http://127.0.0.1:7890 \
@@ -134,7 +134,7 @@ NO_PROXY=localhost,127.0.0.1 \
 npx @aacs111/pi-studio@latest
 ```
 
-On Windows PowerShell:
+Windows PowerShell：
 
 ```powershell
 $env:HTTP_PROXY = "http://127.0.0.1:7890"
@@ -143,107 +143,107 @@ $env:NO_PROXY = "localhost,127.0.0.1"
 npx @aacs111/pi-studio@latest
 ```
 
-## Notes
+## 说明
 
-- **Data directory**: uploads and internal state live in a configurable data dir — default `<project>/pi-web-uploads/` (override with `PI_WEB_UPLOADS_DIR`, `.pi-web-config.json`, or the uploads manager UI). Legacy data from `~/.pi/agent/pi-web-*` is migrated once on startup.
-- **Session files**: Pi Studio reads `~/.pi/agent/sessions` by default. Files are stored as `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
-- **Model config**: the Models panel reads and writes `models.json` in the pi agent directory, and merges provider auth from pi's `AuthStorage`.
-- **File access**: file browsing and preview are scoped to the selected project directory and working directories that appear in sessions.
-- **Git worktrees**: see [Worktrees in Pi Studio](./docs/worktrees.md) for when the switcher appears, how new worktrees are created, and what removal does.
-- **Forks vs in-session branches**: Fork creates a new `.jsonl` file. "Edit from here" creates another branch inside the same session file.
-- **Internationalization**: see [Internationalization](./docs/i18n.md) for using translations and adding languages or UI text.
+- **数据目录**：上传文件和内部状态存放在可配置数据目录——默认 `<项目>/pi-web-uploads/`（可用 `PI_WEB_UPLOADS_DIR`、`.pi-web-config.json` 或上传管理器 UI 覆盖）。旧数据从 `~/.pi/agent/pi-web-*` 启动时迁移一次。
+- **会话文件**：Pi Studio 默认读取 `~/.pi/agent/sessions`，文件存为 `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`。设置 `PI_CODING_AGENT_DIR` 可指向其他 pi agent 目录。
+- **模型配置**：模型面板读写 pi agent 目录下的 `models.json`，并与 pi 的 `AuthStorage` 提供商认证合并展示。
+- **文件访问**：文件浏览和预览限定在所选项目目录与会话中出现的工作目录。
+- **Git worktrees**：切换器何时出现、新 worktree 如何创建、删除会做什么，见 [Pi Studio 中的 Worktrees](./docs/worktrees.zh-CN.md)。
+- **Fork vs 会话内分支**：Fork 创建新的 `.jsonl` 文件；「从这里编辑」在同一会话文件内另开分支。
+- **国际化**：见 [国际化](./docs/i18n.md) 了解翻译使用与新增语言/界面文案。
 
-## Development
+## 开发
 
 ```bash
 npm install
 npm run dev
 ```
 
-The local dev server runs at [http://127.0.0.1:10141](http://127.0.0.1:10141).
+本地开发服务器运行在 [http://127.0.0.1:10141](http://127.0.0.1:10141)。
 
-Common checks:
+常用检查：
 
 ```bash
 node_modules/.bin/tsc --noEmit
 npm run lint
 ```
 
-Avoid running `next build` / `npm run build` during local development. It writes to `.next/` and can interfere with the dev server; leave builds for release work.
+开发期间不要运行 `next build` / `npm run build`——它会写 `.next/` 并干扰 dev server；构建留给发布流程。
 
-## Project Structure
+## 项目结构
 
 ```text
 app/
   api/
-    agent/          # creates/drives AgentSession and exposes SSE events
-    auth/           # OAuth and API key management
-    browser/        # right-panel web preview marker + server-side proxy + control bridge
-    cwd/            # browsable/validatable working directory picker
-    default-cwd/    # pi default working directory lookup
-    file-index/     # project file search index
-    files/          # file listing, reading, preview, watching, saving
-    git/            # diff and status endpoints (changed-files card)
-    home/           # current user home directory
-    models/         # available models, default model, thinking levels
-    models-config/  # read/write models.json, model catalog/discovery/test
-    open-file/      # right-panel active file marker (agent default target)
-    plugins/        # package plugin management
-    project-trust/  # project trust gating for .agents/skills
-    sessions/       # session reads, rename, delete, context, HTML export
-    skills/         # skill listing, search, install, check/update, enable/disable
-    univer/         # .univer view/export/writeback + worktree lifecycle (merge/discard)
-    uploads/        # isolated upload storage management
-    vision/         # image description via vision-capable model
-    worktrees/      # git worktree create/remove
+    agent/          # 创建/驱动 AgentSession 并暴露 SSE 事件
+    auth/           # OAuth 与 API key 管理
+    browser/        # 右侧网页预览标记 + 服务端代理 + 控制桥
+    cwd/            # 可浏览/可校验的工作目录选择器
+    default-cwd/    # pi 默认工作目录查询
+    file-index/     # 项目文件搜索索引
+    files/          # 文件列出、读取、预览、监听、保存
+    git/            # diff 与 status 端点（变更文件卡片）
+    home/           # 当前用户主目录
+    models/         # 可用模型、默认模型、思考级别
+    models-config/  # 读写 models.json、模型目录/发现/测试
+    open-file/      # 右侧面板活动文件标记（agent 默认编辑目标）
+    plugins/        # 包插件管理
+    project-trust/  # 项目信任门控（.agents/skills）
+    sessions/       # 会话读取、重命名、删除、上下文、HTML 导出
+    skills/         # skill 列出、搜索、安装、更新检查/更新、启停
+    univer/         # .univer 查看/导出/写回 + worktree 生命周期（合并/丢弃）
+    uploads/        # 隔离上传存储管理
+    vision/         # 视觉模型描述图片
+    worktrees/      # git worktree 创建/删除
 components/
-  AppShell.tsx        # main layout, URL state, top panels, file tabs
-  SessionSidebar.tsx  # project selector, session tree, Explorer
-  ChatWindow.tsx      # messages, SSE, image drag/drop, minimap, lazy loading
-  ChatInput.tsx       # input bar, model/tools/thinking/compact/slash controls
-  MessageView.tsx     # message, thinking, tool call/result rendering
-  ModelsConfig.tsx    # model and auth configuration panel
-  PluginsConfig.tsx   # installed package plugins panel
-  SkillsConfig.tsx    # skill management panel
-  ProjectTrustDialog.tsx # project trust confirmation dialog
-  FileExplorer.tsx    # file tree
-  FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
-  XlsxViewer.tsx      # Univer sheet engine (lazy-loaded) for .xlsx
-  UniverFileViewer.tsx# in-place diff-applied viewer for .univer worktrees
-  WebViewer.tsx       # right-panel browser tab (Electron WebContentsView only)
-  UploadsManager.tsx  # upload storage panel
-  PwaRegistration.tsx # Service Worker registration
+  AppShell.tsx          # 主布局、URL 状态、顶部面板、文件标签
+  SessionSidebar.tsx    # 项目选择、会话树、Explorer
+  ChatWindow.tsx        # 消息区、SSE、拖拽图片、minimap、懒加载
+  ChatInput.tsx         # 输入栏、模型/工具/thinking/compact/slash 控件
+  MessageView.tsx       # 消息、thinking、工具调用/结果渲染
+  ModelsConfig.tsx      # 模型和认证配置面板
+  PluginsConfig.tsx     # 已安装包插件面板
+  SkillsConfig.tsx      # skill 管理面板
+  ProjectTrustDialog.tsx # 项目信任确认弹窗
+  FileExplorer.tsx      # 文件树
+  FileViewer.tsx        # 源码、diff、图片、音频、PDF、DOCX 预览
+  XlsxViewer.tsx        # Univer 表格引擎（懒加载）查看 .xlsx
+  UniverFileViewer.tsx  # .univer worktree 就地 diff 应用查看器
+  WebViewer.tsx         # 右侧浏览器标签（仅 Electron WebContentsView）
+  UploadsManager.tsx    # 上传存储面板
+  PwaRegistration.tsx   # Service Worker 注册
 lib/
-  rpc-manager.ts      # AgentSessionWrapper lifecycle and global registry
-  session-reader.ts   # parses .jsonl session files and branch contexts
-  normalize.ts        # normalizes toolCall field names
-  file-access.ts      # file read safety boundary
-  file-paths.ts       # path encoding and relative path helpers
-  storage-config.ts   # uploads/data directory resolution
-  univer-cli.ts       # univer daemon + CLI integration
-  univer-db.ts        # direct SQLite reads for worktree/commit state
-  ket-bridge.ts       # WPS KET COM decryption bridge for encrypted .xlsx
-  browser-proxy.ts    # URL normalization helper (normalizeUserUrl)
-  http-dispatcher.ts  # global undici dispatcher with idle timeouts
-  request-security.ts # Origin/Host validation for API requests
-  web-auth.ts         # optional HTTP Basic Auth
+  rpc-manager.ts        # AgentSessionWrapper 生命周期与全局 registry
+  session-reader.ts     # 解析 .jsonl 会话文件与分支上下文
+  normalize.ts          # 规范化 toolCall 字段名
+  file-access.ts        # 文件读取安全边界
+  file-paths.ts         # 文件路径编码/相对路径工具
+  storage-config.ts     # 上传/数据目录解析
+  univer-cli.ts         # univer daemon + CLI 集成
+  univer-db.ts          # 直接 SQLite 读 worktree/提交状态
+  ket-bridge.ts         # 加密 .xlsx 的 WPS KET COM 解密桥
+  browser-proxy.ts      # URL 规范化辅助（normalizeUserUrl）
+  http-dispatcher.ts    # 全局 undici dispatcher（空闲超时）
+  request-security.ts   # API 请求的 Origin/Host 校验
+  web-auth.ts           # 可选 HTTP Basic Auth
 hooks/
-  useAgentSession.ts  # session loading, command sending, SSE state machine
-  useAudio.ts         # completion sound
-  useDragDrop.ts      # image drag/drop
-  useTheme.ts         # theme switching
-  useI18n.tsx         # i18n context (en / zh-CN)
+  useAgentSession.ts    # 会话加载、发送命令、SSE 状态机
+  useAudio.ts           # 完成提示音
+  useDragDrop.ts        # 图片拖拽
+  useTheme.ts           # 主题切换
+  useI18n.tsx           # i18n context（en / zh-CN）
 electron/
-  main.cjs            # desktop main process: next child + WebContentsView pool + CDP
-  bridge.cjs          # Semantic Browser V2 control bridge (HTTP)
-  preload.cjs         # preload for WebContentsView pages
+  main.cjs              # 桌面主进程：next 子进程 + WebContentsView 池 + CDP
+  bridge.cjs            # Semantic Browser V2 控制桥（HTTP）
+  preload.cjs           # WebContentsView 页面的 preload
 bin/
-  pi-studio.js        # npm CLI entrypoint
+  pi-studio.js          # npm CLI 入口
 scripts/
-  package.mjs         # electron-builder packaging (.next-pkg, mirrors)
-  dev-electron.mjs    # dev-mode Electron shell
+  package.mjs           # electron-builder 打包（.next-pkg、镜像）
+  dev-electron.mjs      # dev 模式 Electron 壳
 ```
 
 ## License
 
-MIT — see [LICENSE](./LICENSE). Built on [pi-web](https://github.com/agegr/pi-web) by [agegr](https://github.com/agegr), which in turn builds on [pi](https://github.com/badlogic/pi) by [badlogic](https://github.com/badlogic).
+MIT — 见 [LICENSE](./LICENSE)。基于 [pi-web](https://github.com/agegr/pi-web)（作者 [agegr](https://github.com/agegr)）二次开发，后者又构建于 [pi](https://github.com/badlogic/pi)（作者 [badlogic](https://github.com/badlogic)）。

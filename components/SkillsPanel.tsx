@@ -1,53 +1,308 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import type { SkillInfo } from "@/lib/api-types";
+import type {
+  SkillInfo,
+  SkillSearchResult,
+  PluginPackageInfo,
+  PluginsResponse,
+} from "@/lib/api-types";
 
 interface Props {
   cwd: string | null;
+  onPluginsChanged?: () => void;
 }
 
-export function SkillsPanel({ cwd }: Props) {
-  const { t } = useI18n();
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState("");
-  const reqRef = useRef(0);
+type Tab = "skills" | "plugins";
 
-  const load = useCallback(async () => {
+function packageKey(pkg: Pick<PluginPackageInfo, "source" | "scope">): string {
+  return `${pkg.scope}\0${pkg.source}`;
+}
+
+function resourceSummary(pkg: PluginPackageInfo, t: ReturnType<typeof useI18n>["t"]): string {
+  if (pkg.disabled) return t("i18n.disabled");
+  const parts = [
+    pkg.counts.extensions ? t("i18n.resourceCount", { count: pkg.counts.extensions, label: t("i18n.extensionShort") }) : "",
+    pkg.counts.skills ? t("i18n.resourceCount", { count: pkg.counts.skills, label: t("i18n.skillShort") }) : "",
+    pkg.counts.prompts ? t("i18n.resourceCount", { count: pkg.counts.prompts, label: t("i18n.promptShort") }) : "",
+    pkg.counts.themes ? t("i18n.resourceCount", { count: pkg.counts.themes, label: t("i18n.themeShort") }) : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : t("i18n.noResources");
+}
+
+function statusColor(status: PluginPackageInfo["status"]): string {
+  if (status === "loaded") return "var(--accent)";
+  if (status === "installed") return "#f59e0b";
+  if (status === "disabled") return "var(--text-dim)";
+  return "#ef4444";
+}
+
+function normalizePluginSourceInput(value: string): string {
+  const match = value.trim().match(/^\$?\s*pi\s+install\s+(\S+)\s*$/);
+  return match?.[1] ?? value;
+}
+
+/** Skill install scope: user/global vs project. */
+function skillScopeOf(skill: SkillInfo): "global" | "project" {
+  const src = skill.sourceInfo?.source;
+  const scope = skill.sourceInfo?.scope;
+  if (scope === "project" || src === "project") return "project";
+  return "global";
+}
+
+/** Clamp description to a few lines; expand on demand. */
+function SkillDescription({ text, expanded, onToggle }: { text: string; expanded: boolean; onToggle: () => void }) {
+  const { t } = useI18n();
+  if (!text) return null;
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text-muted)",
+          lineHeight: 1.5,
+          display: "-webkit-box",
+          WebkitLineClamp: expanded ? undefined : 2,
+          WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}
+      >
+        {text}
+      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          marginTop: 2,
+          padding: 0,
+          background: "none",
+          border: "none",
+          color: "var(--accent)",
+          cursor: "pointer",
+          fontSize: 10,
+        }}
+      >
+        {expanded ? t("activity.collapseDetail") : t("activity.viewDetail")}
+      </button>
+    </div>
+  );
+}
+
+export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
+  const { t } = useI18n();
+  const [tab, setTab] = useState<Tab>("skills");
+
+  // ── Skills state ──
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(true);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<Set<string>>(new Set());
+  const [expandedSkill, setExpandedSkill] = useState<Set<string>>(new Set());
+  const skillsReqRef = useRef(0);
+
+  // ── Skill search (hub) state ──
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SkillSearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [installingSkill, setInstallingSkill] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [skillScope, setSkillScope] = useState<"global" | "project">("global");
+  const [projectResourcesLoaded, setProjectResourcesLoaded] = useState(true);
+
+  // ── Plugins state ──
+  const [packages, setPackages] = useState<PluginPackageInfo[]>([]);
+  const [totals, setTotals] = useState<PluginsResponse["totals"] | null>(null);
+  const [diagnostics, setDiagnostics] = useState<PluginsResponse["diagnostics"]>([]);
+  const [pluginsLoading, setPluginsLoading] = useState(false);
+  const [pluginsError, setPluginsError] = useState<string | null>(null);
+  const [installSource, setInstallSource] = useState("");
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  const loadSkills = useCallback(async () => {
     if (!cwd) return;
-    const id = ++reqRef.current;
-    setLoading(true);
-    setError(null);
+    const id = ++skillsReqRef.current;
+    setSkillsLoading(true);
+    setSkillsError(null);
     try {
       const res = await fetch(`/api/skills?cwd=${encodeURIComponent(cwd)}`);
-      const data = (await res.json().catch(() => ({}))) as { skills?: SkillInfo[]; error?: string };
-      if (id !== reqRef.current) return;
+      const data = (await res.json().catch(() => ({}))) as { skills?: SkillInfo[]; error?: string; projectResourcesLoaded?: boolean };
+      if (id !== skillsReqRef.current) return;
       if (data.error || !data.skills) {
-        setError(data.error ?? "load failed");
+        setSkillsError(data.error ?? "load failed");
         return;
       }
       setSkills(data.skills);
+      setProjectResourcesLoaded(data.projectResourcesLoaded ?? true);
     } catch (e) {
-      if (id !== reqRef.current) return;
-      setError(e instanceof Error ? e.message : String(e));
+      if (id !== skillsReqRef.current) return;
+      setSkillsError(e instanceof Error ? e.message : String(e));
     } finally {
-      if (id === reqRef.current) setLoading(false);
+      if (id === skillsReqRef.current) setSkillsLoading(false);
+    }
+  }, [cwd]);
+
+  const loadPlugins = useCallback(async () => {
+    if (!cwd) return;
+    setPluginsLoading(true);
+    setPluginsError(null);
+    try {
+      const res = await fetch(`/api/plugins?cwd=${encodeURIComponent(cwd)}`);
+      const data = (await res.json().catch(() => ({}))) as PluginsResponse & { error?: string };
+      if (data.error || !data.packages) {
+        setPluginsError(data.error ?? "load failed");
+        return;
+      }
+      setPackages(data.packages);
+      setTotals(data.totals);
+      setDiagnostics(data.diagnostics ?? []);
+      setProjectResourcesLoaded(data.projectResourcesLoaded ?? true);
+    } catch (e) {
+      setPluginsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPluginsLoading(false);
     }
   }, [cwd]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadSkills();
+    void loadPlugins();
+  }, [loadSkills, loadPlugins]);
 
-  const visible = filter.trim()
-    ? skills.filter((s) => `${s.name} ${s.description}`.toLowerCase().includes(filter.trim().toLowerCase()))
-    : skills;
+  // ── Skill search (hub) ──
+  const runSearch = useCallback(async (q: string) => {
+    const query = q.trim();
+    if (!query) { setSearchResults([]); return; }
+    setSearching(true);
+    setSearchError(null);
+    try {
+      const res = await fetch("/api/skills/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query }),
+      });
+      const d = (await res.json().catch(() => ({}))) as { results?: SkillSearchResult[]; error?: string };
+      if (d.error) { setSearchError(d.error); setSearchResults([]); return; }
+      setSearchResults(d.results ?? []);
+      if ((d.results ?? []).length === 0) setSearchError(t("i18n.noResults"));
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : String(e));
+      setSearchResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }, [t]);
+
+  const installSkill = useCallback(async (pkg: string) => {
+    if (!cwd) return;
+    setInstallingSkill(pkg);
+    setInstallError(null);
+    try {
+      const res = await fetch("/api/skills/install", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ package: pkg, scope: skillScope, cwd }),
+      });
+      const d = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || d.error) { setInstallError(d.error ?? `HTTP ${res.status}`); return; }
+      await loadSkills();
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setInstallingSkill(null);
+    }
+  }, [cwd, skillScope, loadSkills]);
+
+  const toggleSkill = useCallback(async (skill: SkillInfo) => {
+    const next = !skill.disableModelInvocation;
+    setToggling((s) => new Set(s).add(skill.filePath));
+    try {
+      const res = await fetch("/api/skills", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath: skill.filePath, disableModelInvocation: next }),
+      });
+      const d = (await res.json().catch(() => ({}))) as { success?: boolean; error?: string };
+      if (!res.ok || d.error) { setSkillsError(d.error ?? `HTTP ${res.status}`); return; }
+      setSkills((prev) => prev.map((s) => s.filePath === skill.filePath ? { ...s, disableModelInvocation: next } : s));
+    } catch (e) {
+      setSkillsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setToggling((s) => { const n = new Set(s); n.delete(skill.filePath); return n; });
+    }
+  }, []);
+
+  // ── Plugin actions ──
+  const runPluginAction = useCallback(async (action: string, pkg: PluginPackageInfo) => {
+    const key = packageKey(pkg);
+    setBusyKey(`${action}:${key}`);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/plugins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, source: pkg.source, scope: pkg.scope, cwd }),
+      });
+      const next = (await res.json().catch(() => ({}))) as PluginsResponse & { error?: string };
+      if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+      setPackages(next.packages);
+      setTotals(next.totals);
+      setDiagnostics(next.diagnostics ?? []);
+      setActionMessage(t(`i18n.${action}Done`));
+      onPluginsChanged?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }, [cwd, onPluginsChanged, t]);
+
+  const installPlugin = useCallback(async () => {
+    const source = normalizePluginSourceInput(installSource).trim();
+    if (!source) return;
+    setInstallSource(source);
+    setBusyKey(`install:${source}`);
+    setActionError(null);
+    setActionMessage(null);
+    try {
+      const res = await fetch("/api/plugins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "install", source, scope: "global", cwd }),
+      });
+      const next = (await res.json().catch(() => ({}))) as PluginsResponse & { error?: string };
+      if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+      setPackages(next.packages);
+      setTotals(next.totals);
+      setDiagnostics(next.diagnostics ?? []);
+      setInstallSource("");
+      setActionMessage(t("i18n.installDone"));
+      onPluginsChanged?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyKey(null);
+    }
+  }, [cwd, installSource, onPluginsChanged, t]);
+
+  const installedSkillPackages = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of skills) if (s.install?.package) set.add(s.install.package);
+    return set;
+  }, [skills]);
+
+  const visibleSkills = useMemo(
+    () => skills.filter((s) => skillScopeOf(s) === skillScope),
+    [skills, skillScope],
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {/* Header */}
       <div style={{ padding: "14px 12px 8px", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", letterSpacing: "-0.01em" }}>
@@ -55,20 +310,13 @@ export function SkillsPanel({ cwd }: Props) {
           </span>
           <button
             type="button"
-            onClick={() => void load()}
+            onClick={() => { void loadSkills(); void loadPlugins(); }}
             title={t("i18n.refresh")}
             style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 26,
-              height: 26,
-              padding: 0,
-              background: "var(--bg-hover)",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              color: "var(--text-muted)",
-              cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              width: 26, height: 26, padding: 0,
+              background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 6,
+              color: "var(--text-muted)", cursor: "pointer",
             }}
           >
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -79,65 +327,383 @@ export function SkillsPanel({ cwd }: Props) {
         </div>
       </div>
 
+      {/* Tabs */}
       <div style={{ padding: "0 12px 8px", flexShrink: 0 }}>
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder={t("i18n.search")}
-          style={{
-            width: "100%",
-            boxSizing: "border-box",
-            fontSize: 12,
-            fontFamily: "inherit",
-            padding: "6px 9px",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            outline: "none",
-            background: "var(--bg)",
-            color: "var(--text)",
-          }}
-        />
+        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 7, overflow: "hidden", height: 30 }}>
+          {(["skills", "plugins"] as Tab[]).map((id) => {
+            const active = tab === id;
+            const count = id === "skills" ? skills.length : packages.length;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                style={{
+                  flex: 1, border: "none",
+                  borderRight: id === "skills" ? "1px solid var(--border)" : "none",
+                  background: active ? "var(--bg-selected)" : "none",
+                  color: active ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer", fontSize: 12, fontWeight: active ? 600 : 450,
+                }}
+              >
+                {t(id === "skills" ? "activity.skillsTab" : "activity.pluginsTab")}
+                <span style={{ marginLeft: 5, fontSize: 10, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 8px 8px" }}>
         {!cwd && <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("workspace.selectProject")}</div>}
-        {cwd && loading && <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("sidebar.loading")}</div>}
-        {error && <div style={{ padding: "12px 10px", color: "#f87171", fontSize: 12 }}>{error}</div>}
-        {cwd && !loading && !error && visible.length === 0 && (
-          <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>
-            {filter.trim() ? t("i18n.noResults") : t("i18n.noSkills")}
-          </div>
-        )}
-        {visible.map((s) => (
-          <div
-            key={s.filePath || s.name}
-            style={{ padding: "8px 10px", borderRadius: 8, marginBottom: 2 }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
-                {s.name}
-              </span>
-              {s.disableModelInvocation && (
-                <span style={{ flexShrink: 0, fontSize: 10, color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 5px" }}>
-                  {t("activity.modelDisabled")}
-                </span>
-              )}
+
+        {/* ═══ Skills tab ═══ */}
+        {cwd && tab === "skills" && (
+          <>
+            {/* Search box: queries the skills.sh hub */}
+            <div style={{ padding: "0 4px 8px", flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void runSearch(searchQuery); }}
+                  placeholder={t("i18n.skillSearchPlaceholder")}
+                  style={{
+                    flex: 1, minWidth: 0, boxSizing: "border-box",
+                    fontSize: 12, fontFamily: "inherit", padding: "6px 9px",
+                    border: "1px solid var(--border)", borderRadius: 6,
+                    outline: "none", background: "var(--bg)", color: "var(--text)",
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void runSearch(searchQuery)}
+                  disabled={searching || !searchQuery.trim()}
+                  style={{
+                    flexShrink: 0, height: 29, padding: "0 10px",
+                    background: "var(--accent)", border: "none", borderRadius: 6,
+                    color: "#fff", cursor: searching || !searchQuery.trim() ? "default" : "pointer",
+                    fontSize: 11, fontWeight: 600, opacity: searching || !searchQuery.trim() ? 0.5 : 1,
+                  }}
+                >
+                  {searching ? t("i18n.searching") : t("i18n.search")}
+                </button>
+              </div>
+              {/* errors */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                {searchError && <span style={{ flex: 1, fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{searchError}</span>}
+                {installError && <span style={{ flex: 1, fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{installError}</span>}
+              </div>
             </div>
-            {s.description && (
-              <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.45 }}>
-                {s.description}
+
+            {/* scope tabs */}
+            <div style={{ padding: "0 4px 8px", flexShrink: 0 }}>
+              <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 7, overflow: "hidden", height: 28 }}>
+                {(["global", "project"] as const).map((scope) => {
+                  const active = skillScope === scope;
+                  const disabled = scope === "project" && !projectResourcesLoaded;
+                  const count = scope === "global"
+                    ? skills.filter((s) => skillScopeOf(s) === "global").length
+                    : skills.filter((s) => skillScopeOf(s) === "project").length;
+                  return (
+                    <button
+                      key={scope}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => { if (!disabled) setSkillScope(scope); }}
+                      title={disabled ? t("trust.projectScopeUnavailable") : undefined}
+                      style={{
+                        flex: 1, border: "none",
+                        borderRight: scope === "global" ? "1px solid var(--border)" : "none",
+                        background: active ? "var(--bg-selected)" : "none",
+                        color: active ? "var(--text)" : "var(--text-muted)",
+                        cursor: disabled ? "not-allowed" : "pointer",
+                        opacity: disabled ? 0.45 : 1,
+                        fontSize: 12, fontWeight: active ? 600 : 450,
+                      }}
+                    >
+                      {scope}
+                      <span style={{ marginLeft: 5, fontSize: 10, color: "var(--text-dim)", fontVariantNumeric: "tabular-nums" }}>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Online results (above the divider) — capped so local skills stay visible */}
+            {searchResults.length > 0 && (
+              <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 8, background: "var(--bg-panel)" }}>
+                <div style={{ padding: "6px 8px 4px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", position: "sticky", top: 0, background: "var(--bg-panel)" }}>
+                  {t("activity.onlineResults")}
+                </div>
+                {searchResults.map((r) => {
+                  const isInstalled = installedSkillPackages.has(r.package);
+                  const isInstalling = installingSkill === r.package;
+                  const atIdx = r.package.indexOf("@");
+                  const repoPart = atIdx > -1 ? r.package.slice(0, atIdx) : r.package;
+                  const skillPart = atIdx > -1 ? r.package.slice(atIdx + 1) : null;
+                  return (
+                    <div key={r.package} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", borderBottom: "1px solid var(--hairline)" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {skillPart ?? repoPart}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, minWidth: 0 }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {repoPart}
+                          </span>
+                          <span style={{ fontSize: 10, color: "var(--text-muted)", flexShrink: 0 }}>{r.installs}</span>
+                          {r.url && (
+                            <a href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0 }}>
+                              skills.sh ↗
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { if (!isInstalled && !isInstalling) void installSkill(r.package); }}
+                        disabled={isInstalled || isInstalling}
+                        style={{
+                          flexShrink: 0, height: 24, padding: "0 10px",
+                          background: isInstalled ? "rgba(34,197,94,0.1)" : "none",
+                          border: "1px solid var(--border)", borderRadius: 5,
+                          color: isInstalled ? "#16a34a" : isInstalling ? "var(--accent)" : "var(--text-muted)",
+                          cursor: isInstalled || isInstalling ? "default" : "pointer",
+                          fontSize: 11, fontWeight: 500,
+                        }}
+                      >
+                        {isInstalled ? `✓ ${t("i18n.installed")}` : isInstalling ? t("i18n.installing") : t("i18n.install")}
+                      </button>
+                    </div>
+                  );
+                })}
+                {/* Divider between online and local */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 4px", color: "var(--text-dim)" }}>
+                  <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                  <span style={{ fontSize: 10 }}>{skillScope === "global" ? t("activity.globalScope") : t("activity.projectScope")}</span>
+                  <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
+                </div>
               </div>
             )}
-            {s.sourceInfo?.source && (
-              <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
-                {s.sourceInfo.source}
+
+            {/* Local skills */}
+            {skillsLoading && <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.loading")}</div>}
+            {skillsError && <div style={{ padding: "12px 10px", color: "#f87171", fontSize: 12 }}>{skillsError}</div>}
+            {!skillsLoading && !skillsError && visibleSkills.length === 0 && (
+              <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>
+                {t("i18n.noSkills")}
               </div>
             )}
-          </div>
-        ))}
+            {visibleSkills.map((s) => {
+              const enabled = !s.disableModelInvocation;
+              const isToggling = toggling.has(s.filePath);
+              const expanded = expandedSkill.has(s.filePath);
+              return (
+                <div key={s.filePath || s.name} style={{ padding: "8px 6px", borderRadius: 8, borderBottom: "1px solid var(--hairline)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={enabled ? "var(--accent)" : "var(--text-dim)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                    </svg>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: enabled ? "var(--text)" : "var(--text-dim)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                      {s.name}
+                    </span>
+                    {s.disableModelInvocation && (
+                      <span style={{ flexShrink: 0, fontSize: 10, color: "var(--text-dim)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 5px" }}>
+                        {t("activity.modelDisabled")}
+                      </span>
+                    )}
+                    {/* enable/disable toggle */}
+                    <button
+                      type="button"
+                      onClick={() => void toggleSkill(s)}
+                      disabled={isToggling}
+                      title={enabled ? t("i18n.hiddenFromPrompt") : t("i18n.visibleInPrompt")}
+                      style={{
+                        flexShrink: 0, width: 36, height: 20, borderRadius: 10,
+                        border: "none", padding: 0, cursor: isToggling ? "wait" : "pointer",
+                        background: enabled ? "var(--accent)" : "var(--border)",
+                        position: "relative", transition: "background 0.18s", opacity: isToggling ? 0.6 : 1,
+                      }}
+                    >
+                      <span style={{
+                        position: "absolute", top: 2, left: enabled ? 18 : 2,
+                        width: 16, height: 16, borderRadius: "50%",
+                        background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+                        transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
+                      }} />
+                    </button>
+                  </div>
+                  <SkillDescription
+                    text={s.description}
+                    expanded={expanded}
+                    onToggle={() => setExpandedSkill((prev) => {
+                      const n = new Set(prev);
+                      if (n.has(s.filePath)) n.delete(s.filePath); else n.add(s.filePath);
+                      return n;
+                    })}
+                  />
+                  {s.sourceInfo?.source && (
+                    <div style={{ marginTop: 3, fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                      {s.sourceInfo.source}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        )}
+
+        {/* ═══ Plugins tab ═══ */}
+        {cwd && tab === "plugins" && (
+          <>
+            {pluginsLoading && <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.loading")}</div>}
+            {pluginsError && <div style={{ padding: "12px 10px", color: "#f87171", fontSize: 12 }}>{pluginsError}</div>}
+
+            {!projectResourcesLoaded && (
+              <div style={{ padding: "8px 10px", margin: "4px 0", fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+                {t("trust.pluginsNotLoaded")}
+              </div>
+            )}
+
+            {!pluginsLoading && !pluginsError && (
+              <div style={{ padding: "4px 2px 8px" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <input
+                    value={installSource}
+                    onChange={(e) => setInstallSource(e.target.value)}
+                    onBlur={(e) => setInstallSource(normalizePluginSourceInput(e.currentTarget.value))}
+                    onKeyDown={(e) => { if (e.key === "Enter" && installSource.trim()) void installPlugin(); }}
+                    placeholder="npm:@scope/package · git:https://… · /path"
+                    style={{
+                      flex: 1, minWidth: 0, boxSizing: "border-box",
+                      fontSize: 11, fontFamily: "var(--font-mono)", padding: "6px 9px",
+                      border: "1px solid var(--border)", borderRadius: 6,
+                      outline: "none", background: "var(--bg)", color: "var(--text)",
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void installPlugin()}
+                    disabled={!installSource.trim() || busyKey?.startsWith("install:")}
+                    title={t("i18n.install")}
+                    style={{
+                      flexShrink: 0, height: 29, padding: "0 10px",
+                      background: "var(--accent)", border: "none", borderRadius: 6,
+                      color: "#fff", cursor: installSource.trim() ? "pointer" : "default",
+                      fontSize: 11, fontWeight: 600, opacity: installSource.trim() ? 1 : 0.5,
+                    }}
+                  >
+                    {busyKey?.startsWith("install:") ? t("i18n.installing") : t("i18n.install")}
+                  </button>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                  <a
+                    href="https://pi.dev/packages"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0 }}
+                  >
+                    pi.dev/packages ↗
+                  </a>
+                  {actionError && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{actionError}</span>}
+                  {actionMessage && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#16a34a", overflowWrap: "anywhere" }}>{actionMessage}</span>}
+                </div>
+              </div>
+            )}
+
+            {!pluginsLoading && !pluginsError && packages.map((pkg) => {
+              const key = packageKey(pkg);
+              const busy = busyKey?.endsWith(key) ?? false;
+              const enabled = !pkg.disabled;
+              return (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 8px", borderRadius: 6, borderBottom: "1px solid var(--hairline)" }}>
+                  <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: statusColor(pkg.status) }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pkg.source}>
+                        {pkg.source}
+                      </span>
+                      <span
+                        style={{
+                          flexShrink: 0, fontSize: 9, padding: "1px 4px", borderRadius: 3,
+                          background: pkg.scope === "project" ? "rgba(99,102,241,0.12)" : "rgba(120,120,120,0.12)",
+                          color: pkg.scope === "project" ? "rgba(99,102,241,0.85)" : "var(--text-dim)",
+                        }}
+                      >
+                        {pkg.scope}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}>
+                      {resourceSummary(pkg, t)}
+                    </div>
+                  </div>
+                      <button
+                        type="button"
+                        onClick={() => void runPluginAction(pkg.disabled ? "enable" : "disable", pkg)}
+                        disabled={busy}
+                        title={pkg.disabled ? t("i18n.enablePackage") : t("i18n.disablePackage")}
+                        style={{
+                          flexShrink: 0, width: 36, height: 20, borderRadius: 10,
+                          border: "none", padding: 0, cursor: busy ? "wait" : "pointer",
+                          background: enabled ? "var(--accent)" : "var(--border)",
+                          position: "relative", transition: "background 0.18s", opacity: busy ? 0.6 : 1,
+                        }}
+                      >
+                        <span style={{
+                          position: "absolute", top: 2, left: enabled ? 18 : 2,
+                          width: 16, height: 16, borderRadius: "50%",
+                          background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+                          transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
+                        }} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void runPluginAction("remove", pkg)}
+                        disabled={busy}
+                        title={t("i18n.remove")}
+                        style={{
+                          flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                          width: 22, height: 22, padding: 0, background: "none", border: "none",
+                          borderRadius: 4, color: "var(--text-dim)", cursor: "pointer", opacity: busy ? 0.5 : 1,
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                          <path d="M3 6h18" />
+                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
+                  );
+                })}
+
+            {!pluginsLoading && !pluginsError && packages.length === 0 && (
+              <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.noPlugins")}</div>
+            )}
+
+            {!pluginsLoading && !pluginsError && (
+              <div style={{ padding: "6px 8px", fontSize: 10, color: "var(--text-dim)", borderTop: "1px solid var(--border)", marginTop: 4 }}>
+                {diagnostics.length > 0 && (
+                  <div style={{ color: diagnostics.some((d) => d.type === "error") ? "#f87171" : "#d97706", marginBottom: 4 }}>
+                    {diagnostics.map((d, i) => (
+                      <div key={i} style={{ overflowWrap: "anywhere" }}>
+                        {d.type}: {d.source ? `${d.source}: ` : ""}{d.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {totals && (
+                  <div>
+                    {totals.extensions} ext · {totals.skills} skills · {totals.prompts} prompts · {totals.themes} themes
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

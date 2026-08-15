@@ -15,7 +15,6 @@ import { UploadsManager } from "./UploadsManager";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { ActivityBar, type Activity } from "./ActivityBar";
 import { CommandPalette, type PaletteMode } from "./CommandPalette";
-import { GitPanel } from "./GitPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -992,7 +991,6 @@ export function AppShell() {
         onUnreadSessionsChange={setUnreadSessionCount}
       />
       </div>
-      {activeActivity === "git" && <GitPanel cwd={secondColumnCwd} onCwdChange={handleCwdChange} />}
       {activeActivity === "skills" && <SkillsPanel cwd={secondColumnCwd} />}
       {activeActivity === "terminal" && <TerminalPanel cwd={secondColumnCwd} />}
       {activeActivity === "settings" && (

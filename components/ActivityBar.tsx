@@ -6,7 +6,7 @@ import { useI18n } from "@/hooks/useI18n";
 
 /** First-level capability entries (一级导航). File is deliberately NOT here —
  *  the file explorer lives in the second column. */
-export type Activity = "sessions" | "git" | "skills" | "terminal" | "settings";
+export type Activity = "sessions" | "skills" | "terminal" | "settings";
 
 interface ActivityItem {
   id: Activity;
@@ -72,18 +72,6 @@ const ITEMS: ActivityItem[] = [
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-      </IconSvg>
-    ),
-  },
-  {
-    id: "git",
-    titleKey: "activity.git",
-    icon: (active) => (
-      <IconSvg active={active}>
-        <line x1="6" y1="3" x2="6" y2="15" />
-        <circle cx="18" cy="6" r="3" />
-        <circle cx="6" cy="18" r="3" />
-        <path d="M18 9a9 9 0 0 1-9 9" />
       </IconSvg>
     ),
   },

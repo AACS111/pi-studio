@@ -20,6 +20,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { WindowControls } from "./WindowControls";
 import { useTheme } from "@/hooks/useTheme";
+import { useAccentColor } from "@/hooks/useAccentColor";
 import { useI18n } from "@/hooks/useI18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useViewportHeight } from "@/hooks/useViewportHeight";
@@ -100,6 +101,8 @@ export function AppShell() {
   const searchParams = useSearchParams();
   const [initialNavigation] = useState(() => getInitialNavigation(searchParams));
   const { isDark, toggleTheme } = useTheme();
+  // Apply the persisted accent color (preset or custom) as CSS variables.
+  useAccentColor();
   // Electron window controls (— □ ×) are rendered by <WindowControls/> inside
   // the center top bar — there is no separate title-bar layer.
   const { locale, setLocale, t: translate, supportedLocales } = useI18n();

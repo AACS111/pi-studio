@@ -653,5 +653,9 @@ export const enLocale: LocalePlugin = {
     "settings.pluginsDesc": "Package plugins",
     "settings.uploadsDesc": "Uploaded files storage",
     "settings.darkModeDesc": "Toggle light / dark theme",
+    "settings.accentColor": "Accent color",
+    "settings.accentColorDesc": "Preset palette or pick any color",
+    "settings.customAccent": "Custom color",
+    "settings.resetAccent": "Reset",
   },
 };

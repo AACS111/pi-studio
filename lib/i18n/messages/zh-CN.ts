@@ -653,5 +653,9 @@ export const zhCNLocale: LocalePlugin = {
     "settings.pluginsDesc": "包插件",
     "settings.uploadsDesc": "上传文件存储",
     "settings.darkModeDesc": "切换浅色 / 深色主题",
+    "settings.accentColor": "主题色",
+    "settings.accentColorDesc": "预设色板或自由选择任意颜色",
+    "settings.customAccent": "自定义颜色",
+    "settings.resetAccent": "重置",
   },
 };

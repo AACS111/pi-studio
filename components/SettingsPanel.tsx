@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
+import { useAccentColor, normalizeHex } from "@/hooks/useAccentColor";
 import { BranchNavigator } from "./BranchNavigator";
 import type { SessionTreeNode } from "@/lib/types";
 
@@ -35,8 +36,23 @@ interface Row {
 export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branchActiveLeafId, onBranchLeafChange, onOpenModels, onOpenSkills, onOpenPlugins, onOpenUploads, onViewHistory, onAutoName }: Props) {
   const { t, locale, setLocale, supportedLocales } = useI18n();
   const { isDark, toggleTheme } = useTheme();
+  const { accent, setAccentColor, resetAccentColor, presets } = useAccentColor({ apply: false });
+  const [customColor, setCustomColor] = useState(accent);
   const [version, setVersion] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
+  // Dragging the color picker fires onChange continuously; debounce the actual
+  // theme application so the page only re-renders after the pointer pauses.
+  const accentDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (accentDebounceRef.current) clearTimeout(accentDebounceRef.current);
+  }, []);
+
+  const handleAccentPick = useCallback((color: string) => {
+    setCustomColor(color); // instant local preview (lightweight)
+    if (accentDebounceRef.current) clearTimeout(accentDebounceRef.current);
+    accentDebounceRef.current = setTimeout(() => setAccentColor(color), 500);
+  }, [setAccentColor]);
 
   const sessionRows: Row[] = [
     {
@@ -181,6 +197,128 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         {divider}
         {sectionTitle(t("settings.appearance"))}
         {appearanceRows.map(renderRow)}
+
+        {/* Accent color: preset palette + free-form picker */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "8px 10px",
+            borderRadius: 8,
+          }}
+        >
+          <span
+            style={{
+              flexShrink: 0,
+              width: 14,
+              height: 14,
+              borderRadius: 4,
+              background: accent,
+              boxShadow: "0 0 0 1px var(--border), 0 0 0 3px var(--accent-soft)",
+            }}
+          />
+          <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>
+              {t("settings.accentColor")}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>
+              {t("settings.accentColorDesc")}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={resetAccentColor}
+            title={t("settings.resetAccent")}
+            style={{
+              flexShrink: 0,
+              height: 24,
+              padding: "0 9px",
+              background: "var(--bg-hover)",
+              border: "1px solid var(--border)",
+              borderRadius: 5,
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            {t("settings.resetAccent")}
+          </button>
+          {/* free-form color picker */}
+          <label
+            title={t("settings.customAccent")}
+            style={{
+              flexShrink: 0,
+              position: "relative",
+              width: 30,
+              height: 30,
+              borderRadius: 8,
+              overflow: "hidden",
+              cursor: "pointer",
+              border: "1px solid var(--border)",
+              background: "conic-gradient(red, yellow, lime, cyan, blue, magenta, red)",
+            }}
+          >
+            <input
+              type="color"
+              value={normalizeHex(customColor) ?? "#5BAF68"}
+              onChange={(e) => handleAccentPick(e.target.value)}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                border: "none",
+                padding: 0,
+                opacity: 0,
+                cursor: "pointer",
+              }}
+            />
+            <span
+              style={{
+                position: "absolute",
+                inset: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                pointerEvents: "none",
+                color: "#fff",
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 22a10 10 0 1 1 10-10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+            </span>
+          </label>
+        </div>
+        {/* preset swatches */}
+        <div style={{ display: "flex", gap: 8, padding: "4px 10px 10px", flexWrap: "wrap" }}>
+          {presets.map((preset) => {
+            const selected = accent.toLowerCase() === preset.value.toLowerCase();
+            return (
+              <button
+                key={preset.name}
+                type="button"
+                title={preset.name}
+                onClick={() => handleAccentPick(preset.value)}
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: 7,
+                  padding: 0,
+                  background: preset.value,
+                  border: selected ? "2px solid var(--text)" : "1px solid var(--border)",
+                  boxShadow: selected ? `0 0 0 2px var(--accent-soft)` : "none",
+                  cursor: "pointer",
+                  transition: "transform 0.1s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.12)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
+              />
+            );
+          })}
+        </div>
 
         {divider}
         {sectionTitle(t("common.language"))}

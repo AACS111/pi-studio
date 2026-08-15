@@ -549,7 +549,7 @@ type ThinkingLevel = typeof THINKING_LEVELS[number];
 const LEVEL_COLORS: Record<ThinkingLevel, string> = {
   off:     "var(--text-dim)",
   minimal: "#6b7280",
-  low:     "#60a5fa",
+  low:     "#409cff",
   medium:  "#a78bfa",
   high:    "#f472b6",
   xhigh:   "#fb923c",

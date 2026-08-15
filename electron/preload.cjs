@@ -15,6 +15,19 @@ ipcRenderer.on("pi-webview-navigated", (_event, info) => {
 
 contextBridge.exposeInMainWorld("piElectron", {
   isElectron: true,
+  openUploadsDir: () => ipcRenderer.invoke("pi-open-uploads-dir"),
+  // 自定义窗口控制（WindowControls 组件使用，原生控件已通过 titleBarOverlay:false 关闭）。
+  window: {
+    minimize: () => ipcRenderer.send("pi-window-minimize"),
+    toggleMaximize: () => ipcRenderer.invoke("pi-window-maximize-toggle"),
+    close: () => ipcRenderer.send("pi-window-close"),
+    isMaximized: () => ipcRenderer.invoke("pi-window-is-maximized"),
+    onMaximizedChange: (listener) => {
+      const wrapped = (_event, maximized) => listener(Boolean(maximized));
+      ipcRenderer.on("pi-window-maximized", wrapped);
+      return () => ipcRenderer.removeListener("pi-window-maximized", wrapped);
+    },
+  },
   webview: {
     create: (tabId) => ipcRenderer.invoke("pi-webview-create", tabId),
     destroy: (tabId) => ipcRenderer.invoke("pi-webview-destroy", tabId),

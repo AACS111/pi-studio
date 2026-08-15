@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { DirectoryPicker } from "./DirectoryPicker";
 
 interface UploadEntry {
   name: string;
@@ -38,7 +39,7 @@ function kindLabel(kind: UploadEntry["kind"]): string {
 }
 
 function KindIcon({ kind }: { kind: UploadEntry["kind"] }) {
-  const color = kind === "sheet" ? "#4ade80" : kind === "image" ? "#60a5fa" : "var(--text-dim)";
+  const color = kind === "sheet" ? "#4ade80" : kind === "image" ? "#409cff" : "var(--text-dim)";
   return (
     <span
       style={{
@@ -72,6 +73,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
   const [dirInput, setDirInput] = useState("");
   const [dirBusy, setDirBusy] = useState(false);
   const [dirMessage, setDirMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -110,6 +112,16 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
   const handleOpenDir = useCallback(async () => {
     setError(null);
     try {
+      // Electron 桌面模式：让主进程（前台窗口）用 shell.openPath 打开目录，
+      // 资源管理器窗口才会可靠地出现在前台；后端 spawn explorer 属后台进程，
+      // 会被 Windows 前台锁盖住（表现为“点了没反应”）。
+      const openUploadsDir = window.piElectron?.openUploadsDir;
+      if (openUploadsDir) {
+        const result = await openUploadsDir();
+        if (!result.ok) throw new Error(result.error ?? "Failed to open directory");
+        return;
+      }
+      // 浏览器模式回退：走后端 spawn explorer。
       const res = await fetch("/api/uploads?open=1", { method: "POST" });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
@@ -118,11 +130,12 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
     }
   }, []);
 
-  const handleSaveDir = useCallback(async () => {
+  const handleSaveDir = useCallback(async (pathOverride?: string) => {
+    const target = pathOverride ?? dirInput;
     setDirBusy(true);
     setDirMessage(null);
     try {
-      const res = await fetch(`/api/uploads?dir=${encodeURIComponent(dirInput)}`, { method: "POST" });
+      const res = await fetch(`/api/uploads?dir=${encodeURIComponent(target)}`, { method: "POST" });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       setDirMessage({ ok: true, text: t("uploads.dirSaved") });
@@ -324,6 +337,24 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               />
               <button
                 type="button"
+                onClick={() => setPickerOpen(true)}
+                disabled={dirBusy}
+                title={t("uploads.dirBrowse")}
+                style={{
+                  background: "none",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  color: "var(--text)",
+                  cursor: dirBusy ? "not-allowed" : "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                {t("uploads.dirBrowse")}
+              </button>
+              <button
+                type="button"
                 onClick={() => void handleSaveDir()}
                 disabled={dirBusy}
                 style={{
@@ -386,6 +417,18 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               </div>
             )}
           </div>
+        )}
+
+        {pickerOpen && (
+          <DirectoryPicker
+            busy={dirBusy}
+            onCancel={() => setPickerOpen(false)}
+            onSelect={(path) => {
+              setPickerOpen(false);
+              setDirInput(path);
+              void handleSaveDir(path);
+            }}
+          />
         )}
 
         {/* Quota bar */}

@@ -322,7 +322,6 @@ preload.cjs WebContentsView 的 preload（网页侧桥接）
 bin/pi-studio.js        CLI 入口（node 版本门禁 + next 启动 + 端口/host/自动开浏览器）
 scripts/package.mjs     打包（.next-pkg + electron-builder + 国内镜像）
 scripts/dev-electron.mjs dev 模式 Electron
-scripts/bridge-engine-test.cjs / bridge-http-test.cjs  桥测试
 .agents/skills/          项目技能：browser-control / sheet-edit / univer-cli / univer-integrate / web-preview
 docs/                    i18n.md / release.md / worktrees.md(.zh-CN.md)
 proxy.ts                 Next middleware：API 的 Origin+Host 校验

@@ -8,6 +8,7 @@ declare global {
   interface Window {
     piElectron?: {
       isElectron?: boolean;
+      openUploadsDir?: () => Promise<{ ok: boolean; error?: string }>;
       webview?: {
         create: (tabId: string) => Promise<void>;
         destroy: (tabId: string) => Promise<void>;
@@ -92,31 +93,41 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
   const [consoleTitle, setConsoleTitle] = useState<string | null>(null);
   const [consoleOnline, setConsoleOnline] = useState(false);
   const frameAreaRef = useRef<HTMLDivElement | null>(null);
-  // 镜像区域是否已收起（面板关闭/宽度过小）：收起时原生 WebContentsView 必须隐藏，
-  // 否则它会以最后一份 bounds 悬浮在聊天区之上（它是 DOM 外的覆盖层，不随面板 CSS 收窄）。
-  const [frameTiny, setFrameTiny] = useState(false);
 
-  // ---- 测量镜像区域尺寸（ResizeObserver）——只影响原生 WebContentsView 的 bounds ----
+  // ---- 同步原生 WebContentsView 的可见性 / 位置 / 尺寸（ResizeObserver） ----
+  // 原生视图是 DOM 外的覆盖层，不随面板 CSS 自动收窄/变宽，必须按镜像区域的
+  // 实际可见尺寸显式 setBounds。观察容器（而非内层：收起时 CSS 保持内层固定
+  // 宽度，仅容器 width→0 裁剪，观察内层永远等不到 resize 事件），在拖拽调宽、
+  // 开合面板动画、最大化、窗口缩放等所有尺寸变化时实时更新 bounds；面板收起
+  // 或过窄时隐藏视图，避免它以最后一份 bounds 悬浮在聊天区上方。
   useEffect(() => {
-    if (!active) return;
+    if (!nativeApi || !nativeReady) return;
+    if (!active) {
+      nativeApi.setVisible(tabId, false);
+      return;
+    }
     const el = frameAreaRef.current;
     if (!el) return;
-    const measure = () => {
+    const sync = () => {
       const vs = visibleFrameSize(el);
       if (!vs.visible) {
-        setFrameTiny(true);
+        nativeApi.setVisible(tabId, false);
         return;
       }
-      setFrameTiny(false);
+      nativeApi.setVisible(tabId, true);
+      nativeApi.setBounds(tabId, {
+        x: Math.round(el.getBoundingClientRect().left),
+        y: Math.round(el.getBoundingClientRect().top),
+        width: vs.w,
+        height: vs.h,
+      });
     };
-    measure();
-    // 观察容器而非内层：收起时 CSS 保持内层固定宽度（仅容器 width→0 裁剪），
-    // 观察内层永远等不到 resize 事件，frameTiny 就不会更新。
+    sync();
     const observeTarget = el.closest(".right-panel-container") || el;
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(sync);
     ro.observe(observeTarget);
     return () => ro.disconnect();
-  }, [active]);
+  }, [active, nativeApi, nativeReady, tabId]);
 
   // ---- Electron 原生模式：WebContentsView 生命周期 + 状态同步 ----
   useEffect(() => {
@@ -139,12 +150,6 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
       void nativeApi.destroy(tabId);
     };
   }, [nativeApi, t, tabId]);
-
-  useEffect(() => {
-    if (!nativeApi || !nativeReady) return;
-    // 面板收起（frameTiny）时强制隐藏：原生视图是 DOM 外的覆盖层，必须显式隐藏。
-    nativeApi.setVisible(tabId, Boolean(active) && !frameTiny);
-  }, [nativeApi, nativeReady, tabId, active, frameTiny]);
 
   useEffect(() => {
     if (!nativeApi || !nativeReady) return;
@@ -176,25 +181,6 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
       offNavigate();
     };
   }, [nativeApi, nativeReady, tabId, inputValue, onNavigate]);
-
-  useEffect(() => {
-    if (!nativeMode || !nativeReady || !nativeApi) return;
-    if (!active || frameTiny) return;
-    const el = frameAreaRef.current;
-    if (!el) return;
-    const vs = visibleFrameSize(el);
-    if (!vs.visible) {
-      // 兜底：激活瞬间面板仍处于收起状态（frameTiny 尚未更新）时先隐藏
-      nativeApi.setVisible(tabId, false);
-      return;
-    }
-    nativeApi.setBounds(tabId, {
-      x: Math.round(el.getBoundingClientRect().left),
-      y: Math.round(el.getBoundingClientRect().top),
-      width: vs.w,
-      height: vs.h,
-    });
-  }, [nativeMode, nativeReady, nativeApi, active, frameTiny, tabId]);
 
   // 原生模式的导航：直接驱动 WebContentsView
   const consoleNavigate = useCallback(async (raw: string): Promise<boolean> => {

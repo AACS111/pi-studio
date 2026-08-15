@@ -18,7 +18,8 @@ import { normalizeSlashes } from "./allowed-roots";
  *   { "uploadsDir": "data/files" }          // 相对路径（相对项目根，正/反斜杠均可）
  *
  * 删除该字段（或通过 UI「恢复默认」）即回到默认的项目目录。
- * 优先级：环境变量 PI_WEB_UPLOADS_DIR > 配置文件 uploadsDir > 默认项目目录。
+ * 优先级：环境变量 PI_WEB_UPLOADS_DIR（显式覆盖）> 配置文件 uploadsDir >
+ * 环境变量 PI_WEB_UPLOADS_DEFAULT_DIR（Electron 默认）> 默认项目目录。
  */
 
 export const DEFAULT_DATA_DIR_NAME = "pi-web-uploads";
@@ -63,12 +64,18 @@ function resolveConfiguredDir(raw: string): string {
   return normalizeSlashes(isAbsolute(raw) ? raw : resolve(getProjectRoot(), raw));
 }
 
-/** 计算数据目录（不创建）。优先级：env > 配置文件 > 默认项目目录。 */
+/** 计算数据目录（不创建）。优先级：env（显式覆盖）> 配置文件 > Electron 默认 > 项目默认。 */
 export function resolveDataDir(): string {
+  // PI_WEB_UPLOADS_DIR 是运维/部署用的显式覆盖（最高优先级），
+  // 不用于 Electron 默认值——那样会盖掉用户在 UI 里「修改目录」写入的配置。
   const env = process.env.PI_WEB_UPLOADS_DIR?.trim();
   if (env) return resolveConfiguredDir(env);
   const configured = readConfig().uploadsDir;
   if (configured) return resolveConfiguredDir(configured);
+  // Electron 桌面模式的默认数据目录（userData/pi-web-uploads）：优先级低于配置，
+  // 这样用户改目录能生效；浏览器模式不设此变量，回到项目默认。
+  const defaultEnv = process.env.PI_WEB_UPLOADS_DEFAULT_DIR?.trim();
+  if (defaultEnv) return resolveConfiguredDir(defaultEnv);
   return normalizeSlashes(join(getProjectRoot(), DEFAULT_DATA_DIR_NAME));
 }
 

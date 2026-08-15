@@ -12,7 +12,9 @@
  * 环境变量（均可选）：
  *  - PI_WEB_PORT       固定端口（默认 0 = 随机空闲端口，自动探测）
  *  - PI_WEB_DIST_DIR   Next 构建目录（默认 .next-pkg，与 scripts/package.mjs 一致）
- *  - PI_WEB_UPLOADS_DIR 数据目录（默认 %APPDATA%/Pi Studio/pi-web-uploads，可写）
+ *  - PI_WEB_UPLOADS_DIR         数据目录显式覆盖（最高优先级，可选）
+ *  - PI_WEB_UPLOADS_DEFAULT_DIR 数据目录默认值（内部：userData/pi-web-uploads，可写；
+ *                               用户可在 UI「修改目录」覆盖此默认值）
  */
 
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, WebContentsView } = require("electron");
@@ -103,8 +105,8 @@ function startServer(extraEnv = {}) {
         PI_WEB_HOSTNAME: HOST,
         PI_WEB_NO_OPEN: "1", // 不弹系统默认浏览器
         // 数据目录放到用户可写的位置（安装到 Program Files 时项目目录不可写）
-        PI_WEB_UPLOADS_DIR:
-          extraEnv.PI_WEB_UPLOADS_DIR || path.join(app.getPath("userData"), "pi-web-uploads"),
+        PI_WEB_UPLOADS_DEFAULT_DIR:
+          extraEnv.PI_WEB_UPLOADS_DEFAULT_DIR || path.join(app.getPath("userData"), "pi-web-uploads"),
       },
     },
   );
@@ -177,17 +179,22 @@ function waitForReady(url, timeoutMs = 30_000) {
 
 function killServer() {
   if (!serverProc || serverProc.killed) return;
+  if (process.platform === "win32") {
+    // Kill the whole tree FIRST. taskkill /T terminates the server together
+    // with all its children (next dev 的 Turbopack worker、next start 的子进程等)
+    // atomically. If we killed the parent first, the children would be
+    // reparented to the system and /T could no longer reach them — leaving
+    // orphaned node.exe processes behind after the window closes.
+    try {
+      spawnSync("taskkill", ["/PID", String(serverProc.pid), "/T", "/F"], { windowsHide: true, timeout: 8000 });
+    } catch {
+      /* ignore */
+    }
+  }
   try {
     serverProc.kill();
   } catch {
     /* ignore */
-  }
-  if (process.platform === "win32") {
-    try {
-      spawnSync("taskkill", ["/PID", String(serverProc.pid), "/T", "/F"], { windowsHide: true });
-    } catch {
-      /* ignore */
-    }
   }
 }
 
@@ -514,6 +521,11 @@ function createWindow(url) {
     show: false,
     backgroundColor: "#0d0d0d",
     title: "Pi Studio",
+    // 自定义窗口：无原生标题栏/菜单栏（titleBarStyle:"hidden" 保留原生缩放边缘，
+    // titleBarOverlay:false 不叠加原生窗口按钮），窗口控制（— □ ×）由网页里的
+    // WindowControls 组件实现（见 pi-window-minimize / -maximize-toggle / -close IPC）。
+    titleBarStyle: "hidden",
+    titleBarOverlay: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -522,6 +534,13 @@ function createWindow(url) {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  // 最大化状态变化 → 通知渲染进程（WindowControls 切换 □/❐ 图标）。
+  mainWindow.on("maximize", () => {
+    if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("pi-window-maximized", true);
+  });
+  mainWindow.on("unmaximize", () => {
+    if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("pi-window-maximized", false);
+  });
   mainWindow.on("closed", () => {
     for (const tabId of Array.from(webViews.keys())) destroyWebView(tabId);
     webViews.clear();
@@ -532,41 +551,67 @@ function createWindow(url) {
     shell.openExternal(url);
     return { action: "deny" };
   });
+  // 无原生菜单后，重新注册几个常用快捷键（开发者工具/刷新/全屏）。
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const ctrl = input.control || input.meta;
+    if (input.key === "F12" || (ctrl && input.shift && input.key.toLowerCase() === "i")) {
+      mainWindow?.webContents.toggleDevTools();
+      event.preventDefault();
+    } else if (ctrl && input.key.toLowerCase() === "r") {
+      mainWindow?.webContents.reload();
+      event.preventDefault();
+    } else if (input.key === "F11") {
+      mainWindow?.setFullScreen(!mainWindow.isFullScreen());
+      event.preventDefault();
+    }
+  });
+  // 自定义窗口控制按钮（WindowControls 组件调用）。
+  ipcMain.on("pi-window-minimize", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+  });
+  ipcMain.handle("pi-window-maximize-toggle", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return false;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+    return mainWindow.isMaximized();
+  });
+  ipcMain.handle("pi-window-is-maximized", () => {
+    return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized());
+  });
+  ipcMain.on("pi-window-close", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+  });
   registerWebViewIpc();
   mainWindow.loadURL(url);
 }
 
 function buildMenu() {
-  const template = [
-    {
-      label: "文件",
-      submenu: [{ label: "退出", accelerator: "Alt+F4", click: () => app.quit() }],
-    },
-    {
-      label: "视图",
-      submenu: [
-        {
-          label: "刷新",
-          accelerator: "CmdOrCtrl+R",
-          click: () => mainWindow?.webContents.reload(),
-        },
-        {
-          label: "开发者工具",
-          accelerator: "F12",
-          click: () => mainWindow?.webContents.toggleDevTools(),
-        },
-        { label: "全屏", role: "togglefullscreen" },
-      ],
-    },
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  // 隐藏原生菜单栏（窗口控制见 WindowControls 组件；快捷键见 before-input-event）。
+  Menu.setApplicationMenu(null);
 }
 
 function resolveDataDir() {
-  return (
-    process.env.PI_WEB_UPLOADS_DIR
-    || path.join(app.getPath("userData"), "pi-web-uploads")
-  );
+  // 显式覆盖（最高优先级，运维/部署用）
+  const explicit = process.env.PI_WEB_UPLOADS_DIR?.trim();
+  if (explicit) return explicit;
+  // 用户配置（.pi-web-config.json）优先级高于 Electron 默认，与后端
+  // lib/storage-config.ts 的解析顺序保持一致，保证浏览器下载目录 / univer daemon
+  // 的位置与上传目录一致。
+  try {
+    const configPath = path.join(APP_ROOT, ".pi-web-config.json");
+    if (fs.existsSync(configPath)) {
+      const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const configured = parsed && typeof parsed.uploadsDir === "string" ? parsed.uploadsDir.trim() : "";
+      if (configured) {
+        return path.isAbsolute(configured) ? configured : path.resolve(APP_ROOT, configured);
+      }
+    }
+  } catch {
+    /* 配置损坏时回退默认 */
+  }
+  // Electron 默认（userData 可写位置）
+  return path.join(app.getPath("userData"), "pi-web-uploads");
 }
 
 // ---------------------------------------------------------------------------
@@ -602,10 +647,22 @@ if (!gotLock) {
 
   app.whenReady().then(async () => {
     buildMenu();
+    // 打开上传目录：用主进程（前台窗口）的 shell.openPath 打开，资源管理器窗口才能
+    // 可靠地出现在前台。后端 POST /api/uploads?open=1 用后台进程 spawn explorer，
+    // 会被 Windows 前台锁盖住（窗口开了但落在应用后面，用户以为“点了没反应”）。
+    ipcMain.handle("pi-open-uploads-dir", async () => {
+      try {
+        const dir = resolveDataDir();
+        const err = await shell.openPath(dir);
+        return err ? { ok: false, error: String(err), dir } : { ok: true, dir };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    });
     try {
       const dataDir = resolveDataDir();
       browserDownloadsDir = path.join(dataDir, "browser-downloads");
-      let extraEnv = { PI_WEB_UPLOADS_DIR: dataDir };
+      let extraEnv = { PI_WEB_UPLOADS_DEFAULT_DIR: dataDir };
       try {
         const bridge = await startBridge({ getActiveView: getActiveViewContents, getDownloads: getRecentBrowserDownloads, dataDir });
         bridgeServer = bridge.server;

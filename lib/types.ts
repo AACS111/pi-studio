@@ -300,6 +300,12 @@ export interface SessionInfo {
   worktreeBranch?: string;
 }
 
+export interface RecentFile {
+  path: string;
+  name: string;
+  openedAt: number;
+}
+
 export interface SessionContext {
   messages: AgentMessage[];
   entryIds: string[]; // parallel to messages — the session entry id for each message

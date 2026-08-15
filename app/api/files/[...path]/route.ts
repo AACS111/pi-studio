@@ -396,7 +396,7 @@ function wrapDocxPreviewHtml(bodyHtml: string, fileName: string): string {
   th, td { border: 1px solid #d1d5db; padding: 6px 9px; vertical-align: top; }
   img { max-width: 100%; height: auto; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-  a { color: #2563eb; }
+  a { color: #4EAD68; }
   @media (max-width: 720px) {
     body { padding: 0; background: #fff; }
     main { min-height: 100vh; padding: 28px 22px; box-shadow: none; }

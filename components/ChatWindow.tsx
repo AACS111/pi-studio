@@ -43,6 +43,11 @@ interface Props {
   onOpenWebUrl?: (url: string) => void;
   onOpenChangedFile?: (filePath: string) => void;
   onOpenGeneratedFile?: (filePath: string) => void;
+  /** Content-search jump target: scroll to this entry once it is rendered. */
+  jumpTarget?: { entryId: string; nonce: number } | null;
+  /** Pending sheet-edit context (set by the "AI 编辑" button). */
+  aiEditContext?: { file: string; prompt: string } | null;
+  onAiEditContextConsumed?: () => void;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -208,7 +213,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, onOpenGeneratedFile }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, onOpenGeneratedFile, jumpTarget, aiEditContext, onAiEditContextConsumed }: Props) {
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -306,6 +311,23 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     container.scrollTop = restoreScrollTop(container.scrollHeight, prevScrollDistanceRef.current);
     prevScrollDistanceRef.current = null;
   }, [visibleCount, scrollContainerRef]);
+
+  // Content-search jump: reveal and scroll to the target entry.
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const idx = entryIds.indexOf(jumpTarget.entryId);
+    if (idx === -1) return;
+    const entryId = jumpTarget.entryId;
+    setVisibleCount((cur) => Math.max(cur, messages.length * 2));
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const container = scrollContainerRef.current;
+        if (!container) return;
+        const el = container.querySelector(`[data-entry-id="${CSS.escape(entryId)}"]`);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+  }, [jumpTarget, entryIds, messages.length, scrollContainerRef]);
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = sessionStats
@@ -344,28 +366,17 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   }, [ctxKey, onContextUsageChange]);
   useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
-  const onDrop = useCallback((files: File[]) => {
-    if (sessionBusy) return;
-    chatInputRef?.current?.addImages(files);
-  }, [sessionBusy, chatInputRef]);
-
-  // Manual .xlsx / .univer attachment upload: files land in the dedicated
-  // uploads store (default <project>/pi-web-uploads, configurable), then open in the right
+  // Unified file upload: files land in the dedicated uploads store
+  // (default <project>/pi-web-uploads, configurable), then open in the right
   // panel so the user can review them (and hit "AI 编辑" on .xlsx files).
-  const [spreadsheetUploadBusy, setSpreadsheetUploadBusy] = useState(false);
-  const [spreadsheetUploadError, setSpreadsheetUploadError] = useState<string | null>(null);
-  const handleUploadSpreadsheets = useCallback(async (files: File[]) => {
-    if (!files.length || spreadsheetUploadBusy) return;
-    const spreadsheets = files.filter((file) => /\.(xlsx|xls|univer)$/i.test(file.name));
-    if (!spreadsheets.length) {
-      setSpreadsheetUploadError(t("chat.uploadSpreadsheetTypeError"));
-      return;
-    }
-
-    setSpreadsheetUploadError(null);
-    setSpreadsheetUploadBusy(true);
+  const [fileUploadBusy, setFileUploadBusy] = useState(false);
+  const [fileUploadError, setFileUploadError] = useState<string | null>(null);
+  const handleUploadFiles = useCallback(async (files: File[]) => {
+    if (!files.length || fileUploadBusy) return;
+    setFileUploadError(null);
+    setFileUploadBusy(true);
     try {
-      const { status, data } = await uploadAttachments(spreadsheets);
+      const { status, data } = await uploadAttachments(files);
       if (status < 200 || status >= 300) {
         const failed = data.errors?.[0];
         throw new Error(failed ? `${failed.name}: ${failed.error}` : (data.error ?? `Upload failed (HTTP ${status})`));
@@ -373,15 +384,22 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
       const uploaded = data.uploaded ?? [];
       for (const entry of uploaded) {
-        if (!/\.(xlsx|xls|univer)$/i.test(entry.name)) continue;
         if (entry.path) onOpenFile?.(entry.path);
       }
     } catch (error) {
-      setSpreadsheetUploadError(error instanceof Error ? error.message : String(error));
+      setFileUploadError(error instanceof Error ? error.message : String(error));
     } finally {
-      setSpreadsheetUploadBusy(false);
+      setFileUploadBusy(false);
     }
-  }, [spreadsheetUploadBusy, t, onOpenFile]);
+  }, [fileUploadBusy, onOpenFile]);
+
+  const onDrop = useCallback((files: File[]) => {
+    if (sessionBusy) return;
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    const others = files.filter((f) => !f.type.startsWith("image/"));
+    if (images.length) chatInputRef?.current?.addImages(images);
+    if (others.length) void handleUploadFiles(others);
+  }, [sessionBusy, chatInputRef, handleUploadFiles]);
 
   const { isDragOver, handleDragEnter, handleDragOver, handleDragLeave, handleDrop } = useDragDrop(onDrop);
 
@@ -414,10 +432,22 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     ? (modelThinkingLevelMaps[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
     : null;
 
+  // Prepend the pending sheet-edit context to the user's next message, so the
+  // "AI 编辑" prompt never sits in the input box (where it could be deleted).
+  const sendWithAiEditContext = useCallback((message: string, images?: Parameters<typeof handleSend>[1]) => {
+    if (aiEditContext) {
+      const combined = `${aiEditContext.prompt}\n\n${message}`;
+      onAiEditContextConsumed?.();
+      void handleSend(combined, images);
+    } else {
+      void handleSend(message, images);
+    }
+  }, [aiEditContext, handleSend, onAiEditContextConsumed]);
+
   const chatInputElement = (
     <ChatInput
       ref={chatInputRef}
-      onSend={handleSend}
+      onSend={sendWithAiEditContext}
       onAbort={handleAbort}
       onSteer={agentRunning ? handleSteer : undefined}
       onFollowUp={agentRunning ? handleFollowUp : undefined}
@@ -458,9 +488,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       visionModels={visionModels}
       visionModelSelected={visionModelSelected}
       onVisionModelChange={handleVisionModelChange}
-      onUploadSpreadsheets={handleUploadSpreadsheets}
-      spreadsheetUploadBusy={spreadsheetUploadBusy}
-      spreadsheetUploadError={spreadsheetUploadError}
+      onUploadFiles={handleUploadFiles}
+      fileUploadBusy={fileUploadBusy}
+      fileUploadError={fileUploadError}
     />
   );
 
@@ -493,24 +523,24 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       onDrop={handleDrop}
     >
       {isDragOver && !sessionBusy && (
-        <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(37,99,235,0.06)] backdrop-blur-[1px]">
+        <div className="pointer-events-none absolute inset-0 z-50 flex animate-[drop-zone-in_0.15s_ease_both] items-center justify-center bg-[rgba(78,173,104,0.06)] backdrop-blur-[1px]">
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             {[0, 0.8, 1.6].map((delay) => (
               <div
                 key={delay}
-                className="absolute h-[720px] w-[720px] rounded-full border-[1.5px] border-solid border-[rgba(37,99,235,0.5)] animate-[drop-ripple_2.4s_ease-out_infinite_backwards]"
+                className="absolute h-[720px] w-[720px] rounded-full border-[1.5px] border-solid border-[rgba(78,173,104,0.5)] animate-[drop-ripple_2.4s_ease-out_infinite_backwards]"
                 style={{ transformOrigin: "center", animationDelay: `${delay}s` }}
               />
             ))}
           </div>
           <svg
             width="280" height="280" viewBox="0 0 140 140" fill="none" xmlns="http://www.w3.org/2000/svg"
-            className="drop-shadow-[0_6px_18px_rgba(37,99,235,0.18)]"
+            className="drop-shadow-[0_6px_18px_rgba(78,173,104,0.18)]"
           >
-            <rect x="28" y="44" width="84" height="60" rx="8" fill="rgba(37,99,235,0.08)" stroke="rgba(37,99,235,0.50)" strokeWidth="1.8"/>
-            <path d="M36 100 L54 72 L68 88 L80 74 L104 100Z" fill="rgba(37,99,235,0.16)" stroke="rgba(37,99,235,0.40)" strokeWidth="1.4" strokeLinejoin="round"/>
-            <circle cx="96" cy="58" r="8" fill="rgba(37,99,235,0.22)" stroke="rgba(37,99,235,0.55)" strokeWidth="1.6"/>
-            <g stroke="rgba(37,99,235,0.45)" strokeWidth="1.4" strokeLinecap="round">
+            <rect x="28" y="44" width="84" height="60" rx="8" fill="rgba(78,173,104,0.08)" stroke="rgba(78,173,104,0.50)" strokeWidth="1.8"/>
+            <path d="M36 100 L54 72 L68 88 L80 74 L104 100Z" fill="rgba(78,173,104,0.16)" stroke="rgba(78,173,104,0.40)" strokeWidth="1.4" strokeLinejoin="round"/>
+            <circle cx="96" cy="58" r="8" fill="rgba(78,173,104,0.22)" stroke="rgba(78,173,104,0.55)" strokeWidth="1.6"/>
+            <g stroke="rgba(78,173,104,0.45)" strokeWidth="1.4" strokeLinecap="round">
               <line x1="96" y1="46" x2="96" y2="43"/>
               <line x1="96" y1="70" x2="96" y2="73"/>
               <line x1="84" y1="58" x2="81" y2="58"/>
@@ -673,7 +703,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 );
                 if (!isVisible || options.attachRef === false || currentRefIdx === undefined) return view;
                 return (
-                  <div key={`${keyPrefix}-${idx}`} ref={attachVisibleRef(idx, currentRefIdx)}>
+                  <div key={`${keyPrefix}-${idx}`} ref={attachVisibleRef(idx, currentRefIdx)} data-entry-id={entryIds[idx]}>
                     {view}
                   </div>
                 );
@@ -919,6 +949,33 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             <ExtensionWidgets widgets={belowEditorWidgets} />
           </div>
         </div>
+        {aiEditContext && (
+          <div style={{ maxWidth: 820, margin: "0 auto 8px", padding: "0 16px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, background: "rgba(78,173,104,0.08)", border: "1px solid rgba(78,173,104,0.22)", color: "var(--text)", fontSize: 12 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)", flexShrink: 0 }}>
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                <path d="M3 9h18" />
+                <path d="M3 15h18" />
+                <path d="M9 3v18" />
+              </svg>
+              <span style={{ flex: 1, minWidth: 0 }}>{t("chat.aiEditHint")}</span>
+              <button
+                type="button"
+                onClick={onAiEditContextConsumed}
+                title={t("i18n.close")}
+                aria-label={t("i18n.close")}
+                style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, padding: 0, background: "none", border: "none", borderRadius: 4, color: "var(--text-muted)", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+              >
+                <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <line x1="2" y1="2" x2="8" y2="8" />
+                  <line x1="8" y1="2" x2="2" y2="8" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
         {chatInputElement}
         <ExtensionStatusBar statuses={extensionStatuses} />
       </div>

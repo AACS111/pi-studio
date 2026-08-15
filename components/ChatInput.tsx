@@ -78,10 +78,10 @@ interface Props {
   visionModelSelected?: { provider: string; modelId: string } | null;
   /** 用户改选附属模型；传 null 恢复自动选择 */
   onVisionModelChange?: (selection: { provider: string; modelId: string } | null) => void;
-  /** 手动上传 .xlsx/.univer 表格附件（上传后由上层在右侧打开） */
-  onUploadSpreadsheets?: (files: File[]) => void;
-  spreadsheetUploadBusy?: boolean;
-  spreadsheetUploadError?: string | null;
+  /** 手动上传文件（非图片，上传后由上层在右侧打开） */
+  onUploadFiles?: (files: File[]) => void;
+  fileUploadBusy?: boolean;
+  fileUploadError?: string | null;
 }
 
 export interface ChatInputHandle {
@@ -355,9 +355,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   visionModels = [],
   visionModelSelected,
   onVisionModelChange,
-  onUploadSpreadsheets,
-  spreadsheetUploadBusy,
-  spreadsheetUploadError,
+  onUploadFiles,
+  fileUploadBusy,
+  fileUploadError,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -400,7 +400,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const controlsMenuRef = useRef<HTMLDivElement>(null);
   const historyMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const spreadsheetInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
   const slashCommandsRequestedRef = useRef(false);
@@ -1020,12 +1019,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData?.items ?? []);
-    const imageItems = items.filter((item) => item.type.startsWith("image/"));
-    if (!imageItems.length) return;
+    const fileItems = items.filter((item) => item.kind === "file");
+    if (!fileItems.length) return;
     e.preventDefault();
-    const files = imageItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
-    processImageFiles(files);
-  }, [processImageFiles]);
+    const files = fileItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
+    if (!files.length) return;
+    const images = files.filter((f) => f.type.startsWith("image/"));
+    const others = files.filter((f) => !f.type.startsWith("image/"));
+    if (images.length) processImageFiles(images);
+    if (others.length) onUploadFiles?.(others);
+  }, [processImageFiles, onUploadFiles]);
 
   useEffect(() => {
     if (slashQuery === null) {
@@ -1174,31 +1177,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         paddingRight: isMobile ? 16 : 52, // desktop: 16px base + 36px for ChatMinimap alignment
       }}
     >
-      {/* Hidden file input */}
+      {/* Hidden unified file input */}
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
         multiple
-        disabled={isStreaming}
+        disabled={isStreaming || fileUploadBusy}
         style={{ display: "none" }}
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          processImageFiles(files);
-          e.target.value = "";
-        }}
-      />
-      {/* Hidden spreadsheet upload input (.xlsx / .univer) */}
-      <input
-        ref={spreadsheetInputRef}
-        type="file"
-        accept=".xlsx,.xls,.univer"
-        multiple
-        disabled={isStreaming || spreadsheetUploadBusy}
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const files = Array.from(e.target.files ?? []);
-          onUploadSpreadsheets?.(files);
+          const images = files.filter((f) => f.type.startsWith("image/"));
+          const others = files.filter((f) => !f.type.startsWith("image/"));
+          if (images.length) processImageFiles(images);
+          if (others.length) onUploadFiles?.(others);
           e.target.value = "";
         }}
       />
@@ -1221,8 +1212,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     color: "#ef4444",
                   }
                 : {
-                    background: "rgba(59,130,246,0.08)",
-                    border: "1px solid rgba(59,130,246,0.25)",
+                    background: "rgba(78,173,104,0.08)",
+                    border: "1px solid rgba(78,173,104,0.25)",
                     color: "var(--text-muted)",
                   }),
             }}
@@ -1860,7 +1851,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 fontSize: 13,
                 fontWeight: 600,
                 letterSpacing: "-0.01em",
-                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px rgba(37,99,235,0.25)" : "none",
+                boxShadow: (value.trim() || attachedImages.length) ? "0 1px 3px rgba(78,173,104,0.25)" : "none",
                 transition: "background 0.15s, box-shadow 0.15s",
               }}
             >
@@ -1881,8 +1872,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         )}
 
-        {/* Spreadsheet upload status */}
-        {spreadsheetUploadError && (
+        {/* File upload status */}
+        {fileUploadError && (
           <div
             role="alert"
             style={{
@@ -1904,7 +1895,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{spreadsheetUploadError}</span>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{fileUploadError}</span>
           </div>
         )}
         {/* Bottom bar: left | center (context) | right */}
@@ -1920,70 +1911,37 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming}
-             title={t("chat.attachImage")}
+              disabled={isStreaming || fileUploadBusy}
+              title={fileUploadBusy ? t("chat.uploadFileBusy") : t("chat.uploadFile")}
               style={{
                 flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
                 width: 32, height: 32, padding: 0,
                 background: "none", border: "none",
                 borderRadius: 9,
-                color: attachedImages.length ? "var(--accent)" : "var(--text-muted)",
-                cursor: isStreaming ? "not-allowed" : "pointer",
+                color: (attachedImages.length || fileUploadBusy) ? "var(--accent)" : "var(--text-muted)",
+                cursor: (isStreaming || fileUploadBusy) ? "not-allowed" : "pointer",
                 opacity: isStreaming ? 0.5 : 1,
                 transition: "background 0.12s, color 0.12s",
               }}
               onMouseEnter={(e) => {
-                if (isStreaming) return;
+                if (isStreaming || fileUploadBusy) return;
                 e.currentTarget.style.background = "var(--bg-hover)";
                 e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text)";
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = attachedImages.length ? "var(--accent)" : "var(--text-muted)";
+                e.currentTarget.style.color = (attachedImages.length || fileUploadBusy) ? "var(--accent)" : "var(--text-muted)";
               }}
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                <circle cx="8.5" cy="8.5" r="1.5" />
-                <polyline points="21 15 16 10 5 21" />
-              </svg>
-            </button>
-            {/* Upload spreadsheet (.xlsx / .univer) — uploaded files open in the right panel */}
-            <button
-              onClick={() => spreadsheetInputRef.current?.click()}
-              disabled={isStreaming || spreadsheetUploadBusy}
-              title={spreadsheetUploadBusy ? t("chat.uploadSpreadsheetBusy") : t("chat.uploadSpreadsheet")}
-              style={{
-                flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                width: 32, height: 32, padding: 0,
-                background: "none", border: "none",
-                borderRadius: 9,
-                color: spreadsheetUploadBusy ? "var(--accent)" : "var(--text-muted)",
-                cursor: (isStreaming || spreadsheetUploadBusy) ? "not-allowed" : "pointer",
-                opacity: isStreaming ? 0.5 : 1,
-                transition: "background 0.12s, color 0.12s",
-              }}
-              onMouseEnter={(e) => {
-                if (isStreaming || spreadsheetUploadBusy) return;
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = "var(--text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "none";
-                e.currentTarget.style.color = spreadsheetUploadBusy ? "var(--accent)" : "var(--text-muted)";
-              }}
-            >
-              {spreadsheetUploadBusy ? (
+              {fileUploadBusy ? (
                 <span
                   style={{ width: 13, height: 13, borderRadius: "50%", border: "2px solid var(--border)", borderTopColor: "var(--accent)", animation: "spin 0.8s linear infinite", display: "inline-block" }}
                 />
               ) : (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                  <path d="M3 9h18" />
-                  <path d="M3 15h18" />
-                  <path d="M9 3v18" />
-                  <path d="M15 3v18" />
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
                 </svg>
               )}
             </button>

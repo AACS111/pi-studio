@@ -6,6 +6,7 @@
   --color-bg-hover: var(--bg-hover);
   --color-bg-selected: var(--bg-selected);
   --color-border: var(--border);
+  --color-hairline: var(--hairline);
   --color-text: var(--text);
   --color-text-muted: var(--text-muted);
   --color-text-dim: var(--text-dim);
@@ -19,37 +20,41 @@
 }
 
 :root {
-  --bg: #ffffff;
-  --bg-panel: #f5f5f5;
-  --bg-hover: #eeeeee;
-  --bg-selected: #e8e8e8;
-  --border: #e0e0e0;
-  --text: #1a1a1a;
-  --text-muted: #6b7280;
-  --text-dim: #9ca3af;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --user-bg: #eff6ff;
-  --assistant-bg: #ffffff;
-  --tool-bg: #f9fafb;
-  --bg-subtle: rgba(0,0,0,0.03);
+  --bg: #F6F6F3;
+  --bg-panel: #EDEEE7;
+  --bg-hover: #DDE7D0;
+  --bg-selected: #DDE7D0;
+  --border: #B8C4B0;
+  --hairline: rgba(46, 52, 49, 0.10);
+  --text: #2E3431;
+  --text-muted: #8E9991;
+  --text-dim: #B8C4B0;
+  --accent: #5BAF68;
+  --accent-hover: #4a9a57;
+  --accent-soft: rgba(91, 175, 104, 0.10);
+  --user-bg: #EDEEE7;
+  --assistant-bg: #F6F6F3;
+  --tool-bg: #EDEEE7;
+  --bg-subtle: rgba(46, 52, 49, 0.04);
 }
 
 html.dark {
-  --bg: #1a1a1a;
-  --bg-panel: #242424;
-  --bg-hover: #2e2e2e;
-  --bg-selected: #383838;
-  --border: #3a3a3a;
-  --text: #e8e8e8;
-  --text-muted: #9ca3af;
-  --text-dim: #6b7280;
-  --accent: #60a5fa;
-  --accent-hover: #93c5fd;
-  --user-bg: #1e293b;
-  --assistant-bg: #1a1a1a;
-  --tool-bg: #1f2937;
-  --bg-subtle: rgba(255,255,255,0.04);
+  --bg: #1B1D20;
+  --bg-panel: #222529;
+  --bg-hover: #292C31;
+  --bg-selected: #2D3136;
+  --border: #3A3E44;
+  --hairline: rgba(255, 255, 255, 0.10);
+  --text: #D0D4D9;
+  --text-muted: #8A8F97;
+  --text-dim: #585D65;
+  --accent: #76C97E;
+  --accent-hover: #96D99C;
+  --accent-soft: rgba(118, 201, 126, 0.12);
+  --user-bg: rgba(118, 201, 126, 0.10);
+  --assistant-bg: #1B1D20;
+  --tool-bg: #222529;
+  --bg-subtle: rgba(255, 255, 255, 0.05);
 }
 
 /* Theme toggle: circular wipe via View Transitions API.
@@ -81,7 +86,7 @@ html, body {
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif;
   font-size: 14px;
   overscroll-behavior: none;
 }
@@ -107,7 +112,7 @@ body {
 }
 
 :root {
-  --font-mono: var(--font-noto-mono), 'JetBrains Mono', 'Fira Code', 'Consolas', ui-monospace, 'PingFang SC', 'Microsoft YaHei', monospace;
+  --font-mono: 'SF Mono', var(--font-noto-mono), 'JetBrains Mono', 'Fira Code', 'Consolas', ui-monospace, 'PingFang SC', 'Microsoft YaHei', monospace;
 }
 
 pre, code {
@@ -593,6 +598,15 @@ pre, code {
   .mermaid-zoom-viewport {
     padding: 12px;
   }
+}
+
+/* Electron custom title bar drag region (titleBarStyle: hidden) */
+.app-region-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.app-region-no-drag {
+  -webkit-app-region: no-drag;
 }
 
 /* File viewer toolbar */

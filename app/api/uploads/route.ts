@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { execFile, spawn } from "child_process";
 import { promisify } from "util";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { parseFormDataWithinLimit } from "@/lib/bounded-form-data";
 import { setDataDir } from "@/lib/storage-config";
@@ -77,6 +77,11 @@ export async function POST(request: NextRequest) {
   if (open !== null) {
     // 在系统文件管理器中打开上传目录（Windows: explorer；macOS: open；Linux: xdg-open）。
     const dir = getUploadsDir();
+    // 目录不存在（例如配置指向了已被删除的路径）时直接报错，而不是让
+    // explorer 静默打开“文档”目录，造成“点了没反应/打开错目录”的假象。
+    if (!existsSync(dir)) {
+      return NextResponse.json({ error: "Storage directory does not exist" }, { status: 404 });
+    }
     try {
       if (process.platform === "win32") {
         // explorer.exe 是 GUI 程序：成功打开目录后也会立即以非零退出码结束，
@@ -85,7 +90,7 @@ export async function POST(request: NextRequest) {
         // 注意：explorer 不认正斜杠路径（只打开文件管理器却不跳转到目标目录），
         // 必须先转成 Windows 原生反斜杠路径。
         const winDir = dir.replace(/\//g, "\\");
-        const child = spawn("explorer", [winDir], { detached: true, stdio: "ignore", windowsHide: true });
+        const child = spawn("explorer.exe", [winDir], { detached: true, stdio: "ignore", windowsHide: true });
         child.on("error", () => {
           // spawn 本身失败（如找不到 explorer）——响应已返回 ok，无需处理
         });

@@ -191,7 +191,7 @@ function UserMessageView({ message, cwd, onOpenFile, onOpenWebUrl, entryId, onFo
             flex: 1,
             minWidth: 0,
             background: "var(--user-bg)",
-            border: "1px solid rgba(59,130,246,0.2)",
+            border: "1px solid rgba(78,173,104,0.2)",
             borderRadius: 12,
             padding: "8px 12px",
             fontSize: 14,
@@ -219,7 +219,7 @@ function UserMessageView({ message, cwd, onOpenFile, onOpenWebUrl, entryId, onFo
                     key={i}
                     src={src}
                     alt=""
-                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid rgba(59,130,246,0.15)" }}
+                    style={{ maxWidth: 240, maxHeight: 240, borderRadius: 6, objectFit: "contain", display: "block", border: "1px solid rgba(78,173,104,0.15)" }}
                   />
                 );
               })}
@@ -976,7 +976,7 @@ function PatchTextView({ text }: { text: string }) {
         const bg =
           kind === "added" ? "rgba(34,197,94,0.12)" :
           kind === "removed" ? "rgba(248,113,113,0.13)" :
-          kind === "hunk" ? "rgba(96,165,250,0.12)" :
+          kind === "hunk" ? "rgba(64,156,255,0.12)" :
           "transparent";
         const color =
           kind === "added" ? "#22c55e" :

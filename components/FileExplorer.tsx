@@ -43,6 +43,8 @@ interface Props {
 
 export interface FileExplorerHandle {
   openUploadPicker: () => void;
+  /** Expand the directory (and its ancestors) in the tree so it becomes visible. */
+  revealPath: (fullPath: string) => void;
 }
 
 type UploadPhase = "idle" | "checking" | "uploading";
@@ -118,7 +120,7 @@ const GIT_STATUS_COLORS: Record<GitFileStatusKind, string> = {
   modified: "#d6a84b",
   added: "#4ade80",
   deleted: "#f87171",
-  renamed: "#60a5fa",
+  renamed: "#409cff",
   untracked: "#4ade80",
   conflict: "#f87171",
 };
@@ -270,6 +272,16 @@ function TreeNode({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshToken]);
 
+  // Auto-load children when a directory is expanded programmatically
+  // (e.g. revealPath from a file-search result) — the click handler is not
+  // involved in that path.
+  useEffect(() => {
+    if (open && !loaded) {
+      loadChildren();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const handleClick = useCallback(() => {
     if (node.isDir) {
       const next = !open;
@@ -291,9 +303,9 @@ function TreeNode({
           display: "flex",
           alignItems: "center",
           gap: 4,
-          paddingLeft: 8 + depth * 14,
+          paddingLeft: 8 + depth * 16,
           paddingRight: 8,
-          height: 24,
+          height: 26,
           cursor: "pointer",
           background: hovered ? "var(--bg-hover)" : "transparent",
           borderRadius: 4,
@@ -332,7 +344,7 @@ function TreeNode({
             aria-label={t("files.newlyUploaded")}
             style={{ width: 14, height: 14, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}
           >
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#3b82f6" }} />
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4EAD68" }} />
           </span>
         )}
         {!hovered && !node.isDir && gitStatus && (
@@ -447,7 +459,7 @@ function TreeNode({
             />
           ))}
           {children.length === 0 && loaded && (
-            <div style={{ paddingLeft: 8 + (depth + 1) * 14, fontSize: 11, color: "var(--text-dim)", height: 22, display: "flex", alignItems: "center" }}>
+            <div style={{ paddingLeft: 8 + (depth + 1) * 16, fontSize: 11, color: "var(--text-dim)", height: 24, display: "flex", alignItems: "center" }}>
               empty
             </div>
           )}
@@ -487,7 +499,7 @@ function ChangeRow({
         gap: 6,
         paddingLeft: 10,
         paddingRight: 8,
-        height: 24,
+        height: 26,
         cursor: "pointer",
         background: hovered ? "var(--bg-hover)" : "transparent",
         borderRadius: 4,
@@ -668,7 +680,27 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
     openUploadPicker() {
       if (!uploadBusy) uploadInputRef.current?.click();
     },
-  }), [uploadBusy]);
+    revealPath(fullPath: string) {
+      // Expand the target directory + every ancestor up to the cwd so the
+      // tree reveals it (used by the file-search results).
+      const normalizedCwd = normalizeFilePathSlashes(cwd).replace(/\/+$/, "");
+      const normalized = normalizeFilePathSlashes(fullPath).replace(/\/+$/, "");
+      const toExpand: string[] = [];
+      let current = normalized;
+      while (current && current.startsWith(normalizedCwd)) {
+        toExpand.push(current);
+        if (current === normalizedCwd) break;
+        const parent = getFileDirectory(current);
+        if (!parent || parent === current) break;
+        current = parent;
+      }
+      setExpandedPaths((prev) => {
+        const next = new Set(prev);
+        for (const p of toExpand) next.add(p);
+        return next;
+      });
+    },
+  }), [uploadBusy, cwd]);
 
   useEffect(() => {
     onUploadBusyChange?.(uploadBusy);

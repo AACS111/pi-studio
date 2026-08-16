@@ -184,6 +184,10 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     commitWidth(widthRef.current);
   }, [commitWidth, widthRef]);
 
+  const setWidthTo = useCallback((candidate: number) => {
+    commitWidth(candidate, { forcePersist: true });
+  }, [commitWidth]);
+
   const onKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? 32 : 12;
     const growKey = growthDirection === "right" ? "ArrowRight" : "ArrowLeft";
@@ -261,6 +265,7 @@ export function useResizablePanel(options: UseResizablePanelOptions) {
     panelRef,
     reclampWidth,
     resetWidth,
+    setWidthTo,
     separatorProps: {
       "aria-label": ariaLabel,
       "aria-orientation": "vertical" as const,

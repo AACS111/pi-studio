@@ -1,0 +1,14 @@
+{
+  "name": "pi-memory-zh",
+  "version": "0.1.0",
+  "description": "中文跨会话永久记忆扩展（按项目隔离）：长期记忆 / 每日日志 / 待办清单 / 删除恢复 / 中文检索 / 每轮自动注入。",
+  "keywords": ["pi-package", "memory", "记忆", "跨会话", "scratchpad", "daily-log"],
+  "license": "MIT",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.81.1",
+    "@earendil-works/pi-ai": ">=0.81.1"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}

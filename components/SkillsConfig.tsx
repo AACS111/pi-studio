@@ -386,9 +386,38 @@ function AddSkillPanel({
   );
   const [scope, setScope] = useState<"global" | "project">("global");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [popularSkills, setPopularSkills] = useState<SkillSearchResult[]>([]);
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularError, setPopularError] = useState<string | null>(null);
+  const popularReqRef = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  // Load popular skills (skills.sh leaderboard) once on mount.
+  useEffect(() => {
+    const id = ++popularReqRef.current;
+    setPopularLoading(true);
+    setPopularError(null);
+    fetch("/api/skills/popular?limit=12")
+      .then((res) => res.json().catch(() => ({})))
+      .then((d) => {
+        if (id !== popularReqRef.current) return;
+        const data = d as { results?: SkillSearchResult[]; error?: string };
+        if (data.error || !data.results) {
+          setPopularError(data.error ?? "load failed");
+          setPopularSkills([]);
+          return;
+        }
+        setPopularSkills(data.results);
+      })
+      .catch((e) => {
+        if (id === popularReqRef.current) setPopularError(String(e));
+      })
+      .finally(() => {
+        if (id === popularReqRef.current) setPopularLoading(false);
+      });
   }, []);
 
   const search = useCallback(async (q: string) => {
@@ -446,6 +475,116 @@ function AddSkillPanel({
     },
     [onInstalled, scope, cwd],
   );
+
+  const renderOnlineCard = (r: SkillSearchResult) => {
+    const isInstalled =
+      installedPackages[scope].has(r.package) ||
+      newlyInstalledPkgs.has(`${scope}:${r.package}`);
+    const isInstalling = installing === r.package;
+    // split "owner/repo@skill" for cleaner display
+    const atIdx = r.package.indexOf("@");
+    const repopart = atIdx > -1 ? r.package.slice(0, atIdx) : r.package;
+    const skillpart = atIdx > -1 ? r.package.slice(atIdx + 1) : null;
+    return (
+      <div
+        key={r.package}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 14,
+          padding: "12px 0",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* skill name prominent */}
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: "var(--text)",
+              marginBottom: 3,
+            }}
+          >
+            {skillpart ?? repopart}
+          </div>
+          {/* repo + installs + link row */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                color: "var(--text-dim)",
+              }}
+            >
+              {repopart}
+            </span>
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--text-muted)",
+                fontWeight: 500,
+              }}
+            >
+              ⭐ {r.installs}
+            </span>
+            {r.url && (
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  fontSize: 12,
+                  color: "var(--accent)",
+                  textDecoration: "none",
+                }}
+              >
+                {t("activity.officialSite")} ↗
+              </a>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={() =>
+            !isInstalled && !isInstalling && install(r.package)
+          }
+          disabled={isInstalled || isInstalling || installing !== null}
+          style={{
+            flexShrink: 0,
+            padding: "5px 14px",
+            fontSize: 12,
+            fontWeight: 500,
+            borderRadius: 5,
+            border: "1px solid var(--border)",
+            cursor:
+              isInstalled || isInstalling || installing !== null
+                ? "not-allowed"
+                : "pointer",
+            background: isInstalled ? "rgba(34,197,94,0.1)" : "none",
+            color: isInstalled
+              ? "#16a34a"
+              : isInstalling
+                ? "var(--accent)"
+                : "var(--text-muted)",
+            transition: "color 0.12s",
+          }}
+        >
+          {isInstalled
+             ? `✓ ${t("i18n.installed")}`
+            : isInstalling
+               ? t("i18n.installing")
+               : t("i18n.install")}
+        </button>
+      </div>
+    );
+  };
 
   const installPath =
     scope === "global"
@@ -573,117 +712,21 @@ function AddSkillPanel({
       {/* ── Results list ── */}
       {results.length > 0 ? (
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {results.map((r) => {
-            const isInstalled =
-              installedPackages[scope].has(r.package) ||
-              newlyInstalledPkgs.has(`${scope}:${r.package}`);
-            const isInstalling = installing === r.package;
-            // split "owner/repo@skill" for cleaner display
-            const atIdx = r.package.indexOf("@");
-            const repopart = atIdx > -1 ? r.package.slice(0, atIdx) : r.package;
-            const skillpart = atIdx > -1 ? r.package.slice(atIdx + 1) : null;
-            return (
-              <div
-                key={r.package}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 14,
-                  padding: "12px 0",
-                  borderBottom: "1px solid var(--border)",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {/* skill name prominent */}
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color: "var(--text)",
-                      marginBottom: 3,
-                    }}
-                  >
-                    {skillpart ?? repopart}
-                  </div>
-                  {/* repo + installs + link row */}
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        color: "var(--text-dim)",
-                      }}
-                    >
-                      {repopart}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "var(--text-muted)",
-                        fontWeight: 500,
-                      }}
-                    >
-                      {r.installs}
-                    </span>
-                    {r.url && (
-                      <a
-                        href={r.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          fontSize: 12,
-                          color: "var(--accent)",
-                          textDecoration: "none",
-                        }}
-                      >
-                        skills.sh ↗
-                      </a>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() =>
-                    !isInstalled && !isInstalling && install(r.package)
-                  }
-                  disabled={isInstalled || isInstalling || installing !== null}
-                  style={{
-                    flexShrink: 0,
-                    padding: "5px 14px",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    borderRadius: 5,
-                    border: "1px solid var(--border)",
-                    cursor:
-                      isInstalled || isInstalling || installing !== null
-                        ? "not-allowed"
-                        : "pointer",
-                    background: isInstalled ? "rgba(34,197,94,0.1)" : "none",
-                    color: isInstalled
-                      ? "#16a34a"
-                      : isInstalling
-                        ? "var(--accent)"
-                        : "var(--text-muted)",
-                    transition: "color 0.12s",
-                  }}
-                >
-                  {isInstalled
-                     ? `✓ ${t("i18n.installed")}`
-                    : isInstalling
-                       ? t("i18n.installing")
-                       : t("i18n.install")}
-                </button>
-              </div>
-            );
-          })}
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: "var(--text-dim)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              paddingBottom: 4,
+            }}
+          >
+            {t("activity.onlineResults")}
+          </div>
+          {results.map(renderOnlineCard)}
         </div>
-      ) : (
+      ) : query.trim() ? (
         !searchError &&
         !searching && (
           <div
@@ -701,7 +744,31 @@ function AddSkillPanel({
             to discover and install skills for your agent.
           </div>
         )
-      )}
+      ) : popularLoading ? (
+        <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+          {t("activity.marketplaceLoading")}
+        </div>
+      ) : popularError ? (
+        <div style={{ fontSize: 12, color: "#f87171", overflowWrap: "anywhere" }}>
+          {popularError}
+        </div>
+      ) : popularSkills.length > 0 ? (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          <div
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: "var(--text-dim)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              paddingBottom: 4,
+            }}
+          >
+            {t("activity.popularSkills")}
+          </div>
+          {popularSkills.map(renderOnlineCard)}
+        </div>
+      ) : null}
     </div>
   );
 }

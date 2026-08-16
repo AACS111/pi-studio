@@ -16,6 +16,7 @@ import { ProjectTrustDialog } from "./ProjectTrustDialog";
 import { ActivityBar, type Activity } from "./ActivityBar";
 import { CommandPalette, type PaletteMode } from "./CommandPalette";
 import { SkillsPanel } from "./SkillsPanel";
+import { DshMarketPanel } from "./DshMarketPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { WindowControls } from "./WindowControls";
@@ -133,6 +134,13 @@ export function AppShell() {
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   // First-level activity (一级导航) — the second column swaps its content.
   const [activeActivity, setActiveActivity] = useState<Activity>("sessions");
+  // Cross-panel jump: the dsh market asks to search the pi market for an
+  // equivalent plugin → switch to skills activity with a pre-filled query.
+  const [piSearchRequest, setPiSearchRequest] = useState<{
+    target: "plugins" | "skills";
+    query: string;
+    nonce: number;
+  } | null>(null);
   // Reported by the always-mounted SessionSidebar for the activity-bar dot.
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(new Set());
   const [unreadSessionCount, setUnreadSessionCount] = useState(0);
@@ -190,6 +198,7 @@ export function AppShell() {
     widthRef: rightPanelWidthRef,
   });
   const reclampSidebarWidth = sidebarResizer.reclampWidth;
+  const setSidebarWidth = sidebarResizer.setWidthTo;
   const reclampRightPanelWidth = rightPanelResizer.reclampWidth;
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
   // is visible on load. Runs once the breakpoint resolves after hydration.
@@ -199,6 +208,15 @@ export function AppShell() {
   useEffect(() => {
     setMobileSidebarReady(true);
   }, []);
+  // The terminal needs more horizontal room than the session tree; give it a
+  // comfortable default when the terminal activity is opened (VS Code-style).
+  // Read the live width from the ref so this only fires on the activity
+  // *transition* and never fights a user dragging narrower afterwards.
+  useEffect(() => {
+    if (activeActivity === "terminal") {
+      setSidebarWidth(Math.max(sidebarWidthRef.current, 420));
+    }
+  }, [activeActivity, setSidebarWidth]);
   useEffect(() => {
     if (!rightPanelOpen) return;
     reclampSidebarWidth();
@@ -320,6 +338,12 @@ export function AppShell() {
     setSidebarOpen(true);
     if (isMobile) setActiveTopPanel(null);
   }, [isMobile]);
+
+  const handleOpenPiSearch = useCallback((target: "plugins" | "skills", query: string) => {
+    setPiSearchRequest((prev) => ({ target, query, nonce: (prev?.nonce ?? 0) + 1 }));
+    setActiveActivity("skills");
+    setSidebarOpen(true);
+  }, []);
 
   // Position the session stats panel under the top bar
   useEffect(() => {
@@ -994,7 +1018,8 @@ export function AppShell() {
         onUnreadSessionsChange={setUnreadSessionCount}
       />
       </div>
-      {activeActivity === "skills" && <SkillsPanel cwd={secondColumnCwd} />}
+      {activeActivity === "skills" && <SkillsPanel cwd={secondColumnCwd} piSearchRequest={piSearchRequest} />}
+      {activeActivity === "dsh" && <DshMarketPanel onOpenPiSearch={handleOpenPiSearch} />}
       {activeActivity === "terminal" && <TerminalPanel cwd={secondColumnCwd} />}
       {activeActivity === "settings" && (
         <SettingsPanel

@@ -6,6 +6,22 @@ export interface SkillSearchResult {
   url: string;
 }
 
+/** A package listed on https://pi.dev/packages (scraped by /api/packages/catalog). */
+export interface CatalogPackage {
+  name: string;
+  description: string;
+  author: string;
+  downloads: number;
+  downloadsLabel: string;
+  updatedLabel: string;
+  date: number;
+  types: string[];
+  installSource: string;
+  npmUrl: string;
+  repoUrl: string;
+  url: string;
+}
+
 export type SkillInstallScope = "global" | "project";
 
 export interface SkillInstallInfo {

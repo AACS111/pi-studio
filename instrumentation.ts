@@ -14,6 +14,16 @@ export async function register(): Promise<void> {
   const { configureHttpDispatcher } = await import("@/lib/http-dispatcher");
   configureHttpDispatcher();
 
+  // 注册随应用分发的内置 pi 包（pi-memory-zh 中文记忆插件）到 settings.json 的
+  // packages 数组，首次启动后 pi 引擎自动加载其扩展。幂等：已配置过/用户手动
+  // 安装过的同名包不会被重复注册；失败不阻塞启动。
+  try {
+    const { ensureBuiltinPackagesRegistered } = await import("./lib/builtin-packages");
+    ensureBuiltinPackagesRegistered();
+  } catch {
+    /* best-effort */
+  }
+
   // Warm the univer daemon in the background so the first .univer command from
   // the user isn't paying the cold-start cost (~4s + race retries). The warm-up
   // is idempotent and failure-tolerant (see lib/univer-cli.ts); boot must never

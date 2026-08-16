@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor, normalizeHex } from "@/hooks/useAccentColor";
@@ -22,6 +22,23 @@ interface Props {
   onAutoName: () => void;
 }
 
+interface UpdateCheckResult {
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  changelogUrl: string;
+  canAutoUpdate: boolean;
+  unavailableReason?: string;
+  published: boolean;
+  installMode: "global" | "source";
+  compat: { ok: boolean; piVersion: string; errors: string[] };
+}
+
+interface UpdateMessage {
+  kind: "ok" | "error";
+  text: string;
+}
+
 interface Row {
   label: string;
   desc?: string;
@@ -40,6 +57,13 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
   const [customColor, setCustomColor] = useState(accent);
   const [version, setVersion] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
+  // Pi Studio 应用更新检查状态
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<UpdateMessage | null>(null);
+  const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0";
+  const piVersion = process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0";
   // Dragging the color picker fires onChange continuously; debounce the actual
   // theme application so the page only re-renders after the pointer pauses.
   const accentDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -53,6 +77,62 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
     if (accentDebounceRef.current) clearTimeout(accentDebounceRef.current);
     accentDebounceRef.current = setTimeout(() => setAccentColor(color), 500);
   }, [setAccentColor]);
+
+  const handleCheckUpdates = useCallback(async () => {
+    setCheckingUpdates(true);
+    setUpdateMessage(null);
+    try {
+      const res = await fetch("/api/update/check");
+      const data = (await res.json()) as UpdateCheckResult & { error?: string };
+      if (!res.ok) {
+        setUpdateMessage({ kind: "error", text: data.error ?? t("settings.checkUpdates") });
+        return;
+      }
+      setUpdateInfo(data);
+      if (data.updateAvailable && !data.canAutoUpdate) {
+        // 源码模式 / 只读目录：给出具体原因，而不是笼统的“不支持”
+        setUpdateMessage({
+          kind: "error",
+          text: data.installMode === "source" ? t("settings.sourceMode") : t("settings.updateUnavailable"),
+        });
+      }
+      if (!data.compat.ok) {
+        setUpdateMessage({ kind: "error", text: t("settings.compatFailed", { errors: data.compat.errors.join("; ") }) });
+      }
+    } catch (error) {
+      setUpdateMessage({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setCheckingUpdates(false);
+    }
+  }, [t]);
+
+  const handleUpdateNow = useCallback(async () => {
+    if (!updateInfo?.latest) return;
+    setUpdating(true);
+    setUpdateMessage(null);
+    try {
+      const res = await fetch("/api/update/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: updateInfo.latest }),
+      });
+      const data = (await res.json()) as { updatedTo?: string; error?: string };
+      if (!res.ok) {
+        setUpdateMessage({ kind: "error", text: t("settings.updateFailed", { error: data.error ?? "" }) });
+        return;
+      }
+      setUpdateMessage({ kind: "ok", text: t("settings.updateDone", { version: data.updatedTo ?? updateInfo.latest }) });
+      // 更新后重新检查一次，刷新版本状态
+      try {
+        const re = await fetch("/api/update/check");
+        if (re.ok) setUpdateInfo((await re.json()) as UpdateCheckResult);
+      } catch { /* ignore */ }
+    } catch (error) {
+      setUpdateMessage({ kind: "error", text: t("settings.updateFailed", { error: error instanceof Error ? error.message : String(error) }) });
+    } finally {
+      setUpdating(false);
+    }
+  }, [updateInfo, t]);
 
   const sessionRows: Row[] = [
     {
@@ -167,6 +247,18 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
   );
 
   const divider = <div style={{ height: 1, background: "var(--hairline)", margin: "8px 4px" }} />;
+
+  const updateBtnStyle: CSSProperties = {
+    height: 26,
+    padding: "0 10px",
+    background: "var(--bg-hover)",
+    border: "1px solid var(--border)",
+    borderRadius: 6,
+    color: "var(--text)",
+    cursor: "pointer",
+    fontSize: 11.5,
+    fontWeight: 500,
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -359,6 +451,81 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
             )}
           </button>
         ))}
+
+        {divider}
+        {sectionTitle(t("settings.updates"))}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 10px" }}>
+          <span style={{ color: "var(--text-muted)", flexShrink: 0, display: "inline-flex" }}>
+            <IconRefresh />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 12.5, fontWeight: 500 }}>{t("settings.piStudioVersion")}</span>
+            <span style={{ display: "block", fontSize: 11, color: "var(--text-dim)", marginTop: 1 }}>{t("settings.piStudioVersionDesc")}</span>
+          </span>
+          <span style={{ fontSize: 11.5, color: "var(--text-muted)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>v{appVersion}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, padding: "0 10px 8px", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            disabled={checkingUpdates || updating}
+            onClick={handleCheckUpdates}
+            style={{...updateBtnStyle}}
+          >
+            {checkingUpdates ? t("settings.checkingUpdates") : t("settings.checkUpdates")}
+          </button>
+          {updateInfo?.updateAvailable && updateInfo.latest && updateInfo.canAutoUpdate && (
+            <button
+              type="button"
+              disabled={updating || checkingUpdates}
+              onClick={handleUpdateNow}
+              style={{...updateBtnStyle, background: "var(--accent)", color: "#fff"}}
+            >
+              {updating ? t("settings.updating") : t("settings.updateNow", { version: updateInfo.latest })}
+            </button>
+          )}
+          {updateInfo?.changelogUrl && (
+            <a
+              href={updateInfo.changelogUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{...updateBtnStyle, textDecoration: "none", display: "inline-flex", alignItems: "center", justifyContent: "center"}}
+            >
+              {t("settings.changelog")}
+            </a>
+          )}
+        </div>
+        {updateInfo && (
+          <div style={{ padding: "2px 10px 8px", fontSize: 11.5, lineHeight: 1.5, color: "var(--text-muted)" }}>
+            {!updateInfo.published ? (
+              <span>{t("settings.notPublished")}</span>
+            ) : updateInfo.updateAvailable && updateInfo.latest ? (
+              <span>{t("settings.updateAvailable", { version: updateInfo.latest })}</span>
+            ) : (
+              <span>{t("settings.upToDate")}</span>
+            )}
+            {!updateInfo.canAutoUpdate && updateInfo.updateAvailable && updateInfo.installMode === "source" && (
+              <span style={{ display: "block", color: "var(--text-dim)", marginTop: 2 }}>{t("settings.sourceMode")}</span>
+            )}
+            <span style={{ display: "block", marginTop: 4, fontFamily: "var(--font-mono)", fontSize: 10.5 }}>
+              {t("settings.piEngineInfo", { version: piVersion })}
+            </span>
+            {!updateInfo.compat.ok && (
+              <span style={{ display: "block", marginTop: 2, color: "#e5484d" }}>{t("settings.compatFailed", { errors: updateInfo.compat.errors.join("; ") })}</span>
+            )}
+          </div>
+        )}
+        {updateMessage && (
+          <div
+            style={{
+              padding: "4px 10px 10px",
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              color: updateMessage.kind === "ok" ? "var(--accent)" : "#e5484d",
+            }}
+          >
+            {updateMessage.text}
+          </div>
+        )}
       </div>
 
       <div style={{ flexShrink: 0, padding: "8px 12px 12px", borderTop: "1px solid var(--hairline)", fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
@@ -498,6 +665,16 @@ function IconDoc() {
       <polyline points="14 2 14 8 20 8" />
       <line x1="8" y1="13" x2="16" y2="13" />
       <line x1="8" y1="17" x2="13" y2="17" />
+    </svg>
+  );
+}
+function IconRefresh() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
+      <path d="M3 21v-5h5" />
     </svg>
   );
 }

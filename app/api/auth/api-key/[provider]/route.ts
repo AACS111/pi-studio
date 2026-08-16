@@ -32,6 +32,9 @@ export async function POST(req: Request, { params }: Params) {
     }
     let keySubmitted = false;
     const credential = await apiKeyAuth.login({
+      // pi >= 0.84 requires an abort signal in the login interaction; tie it to
+      // the request so a client disconnect cancels the auth flow.
+      signal: req.signal,
       notify: () => {},
       prompt: async (prompt) => {
         if (prompt.type === "select") {

@@ -29,6 +29,7 @@ files:
   - "public/**"
   - "skills/**"
   - ".agents/**"
+  - "packages/pi-memory-zh/**"   # 内置中文记忆插件（pi-memory-zh），随应用分发
   - "next.config.mjs"
   - "package.json"
 
@@ -54,6 +55,10 @@ files:
   # ⚠️ 以下两个 @univerjs-pro native 包绝不能排除：univer-cli 的 import/export 运行时需要
   # （@univerjs-pro/uexcli → uexcli-windows-x64 的 exe；doc 转换 → doc-typst-native-binding）。
   # 此前误排除导致 AI 编辑报 Cannot find module '@univerjs-pro/uexcli-windows-x64/uexcli-windows.exe'
+  # 终端 PTY 只留 win32-x64 预编译二进制，其余平台的 @lydell/node-pty-* 无意义（可选依赖，装时按平台装，
+  # 打包时排除其他平台可省体积）。
+  - "!node_modules/@lydell/node-pty-linux*/**"
+  - "!node_modules/@lydell/node-pty-darwin*/**"
 
   # 项目目录里的开发/临时内容
   - "!**/.next/**"

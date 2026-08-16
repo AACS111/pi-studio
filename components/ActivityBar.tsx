@@ -6,7 +6,7 @@ import { useI18n } from "@/hooks/useI18n";
 
 /** First-level capability entries (一级导航). File is deliberately NOT here —
  *  the file explorer lives in the second column. */
-export type Activity = "sessions" | "skills" | "terminal" | "settings";
+export type Activity = "sessions" | "skills" | "terminal" | "dsh" | "settings";
 
 interface ActivityItem {
   id: Activity;
@@ -95,6 +95,17 @@ const ITEMS: ActivityItem[] = [
       <IconSvg active={active}>
         <polyline points="4 17 10 11 4 5" />
         <line x1="12" y1="19" x2="20" y2="19" />
+      </IconSvg>
+    ),
+  },
+  {
+    id: "dsh",
+    titleKey: "activity.dshMarket",
+    icon: (active) => (
+      <IconSvg active={active}>
+        <path d="M3 9l1.5-5h15L21 9" />
+        <path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z" />
+        <path d="M8 9V7a4 4 0 0 1 8 0v2" />
       </IconSvg>
     ),
   },

@@ -7,11 +7,14 @@ import type {
   SkillSearchResult,
   PluginPackageInfo,
   PluginsResponse,
+  CatalogPackage,
 } from "@/lib/api-types";
 
 interface Props {
   cwd: string | null;
   onPluginsChanged?: () => void;
+  /** Cross-panel jump from the dsh market: switch tab + prefill a search. */
+  piSearchRequest?: { target: "plugins" | "skills"; query: string; nonce: number } | null;
 }
 
 type Tab = "skills" | "plugins";
@@ -89,7 +92,7 @@ function SkillDescription({ text, expanded, onToggle }: { text: string; expanded
   );
 }
 
-export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
+export function SkillsPanel({ cwd, onPluginsChanged, piSearchRequest }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("skills");
 
@@ -111,6 +114,12 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
   const [skillScope, setSkillScope] = useState<"global" | "project">("global");
   const [projectResourcesLoaded, setProjectResourcesLoaded] = useState(true);
 
+  // ── Popular skills (skills.sh leaderboard) state ──
+  const [popularSkills, setPopularSkills] = useState<SkillSearchResult[]>([]);
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularError, setPopularError] = useState<string | null>(null);
+  const popularReqRef = useRef(0);
+
   // ── Plugins state ──
   const [packages, setPackages] = useState<PluginPackageInfo[]>([]);
   const [totals, setTotals] = useState<PluginsResponse["totals"] | null>(null);
@@ -121,6 +130,15 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+
+  // ── Marketplace (pi.dev catalog) state ──
+  const [catalogPackages, setCatalogPackages] = useState<CatalogPackage[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [marketQuery, setMarketQuery] = useState("");
+  const [installingCatalog, setInstallingCatalog] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const catalogReqRef = useRef(0);
 
   const loadSkills = useCallback(async () => {
     if (!cwd) return;
@@ -216,6 +234,56 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
     }
   }, [cwd, skillScope, loadSkills]);
 
+  // ── Popular skills (skills.sh leaderboard) ──
+  const loadPopularSkills = useCallback(async () => {
+    const id = ++popularReqRef.current;
+    setPopularLoading(true);
+    setPopularError(null);
+    try {
+      const res = await fetch("/api/skills/popular?limit=12");
+      const d = (await res.json().catch(() => ({}))) as {
+        results?: SkillSearchResult[];
+        error?: string;
+      };
+      if (id !== popularReqRef.current) return;
+      if (!res.ok || d.error || !d.results) {
+        setPopularError(d.error ?? `HTTP ${res.status}`);
+        setPopularSkills([]);
+        return;
+      }
+      setPopularSkills(d.results);
+    } catch (e) {
+      if (id !== popularReqRef.current) return;
+      setPopularError(e instanceof Error ? e.message : String(e));
+      setPopularSkills([]);
+    } finally {
+      if (id === popularReqRef.current) setPopularLoading(false);
+    }
+  }, []);
+
+  // Load popular skills once when the skills tab is opened.
+  useEffect(() => {
+    if (tab === "skills" && cwd && popularSkills.length === 0 && !popularLoading && !popularError) {
+      void loadPopularSkills();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, cwd]);
+
+  // Cross-panel jump from the dsh market: switch tab + prefill + search.
+  useEffect(() => {
+    if (!piSearchRequest) return;
+    if (piSearchRequest.target === "plugins") {
+      setTab("plugins");
+      setMarketQuery(piSearchRequest.query);
+      void loadCatalog(piSearchRequest.query);
+    } else {
+      setTab("skills");
+      setSearchQuery(piSearchRequest.query);
+      if (piSearchRequest.query.trim()) void runSearch(piSearchRequest.query);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [piSearchRequest?.nonce]);
+
   const toggleSkill = useCallback(async (skill: SkillInfo) => {
     const next = !skill.disableModelInvocation;
     setToggling((s) => new Set(s).add(skill.filePath));
@@ -295,10 +363,146 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
     return set;
   }, [skills]);
 
+  // ── Marketplace (pi.dev catalog) ──
+  const loadCatalog = useCallback(async (q: string) => {
+    const id = ++catalogReqRef.current;
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const params = new URLSearchParams();
+      const trimmed = q.trim();
+      if (trimmed) params.set("q", trimmed);
+      params.set("sort", "downloads");
+      const res = await fetch(`/api/packages/catalog?${params.toString()}`);
+      const d = (await res.json().catch(() => ({}))) as {
+        packages?: CatalogPackage[];
+        error?: string;
+      };
+      if (id !== catalogReqRef.current) return;
+      if (!res.ok || d.error || !d.packages) {
+        setCatalogError(d.error ?? `HTTP ${res.status}`);
+        setCatalogPackages([]);
+        return;
+      }
+      setCatalogPackages(d.packages);
+    } catch (e) {
+      if (id !== catalogReqRef.current) return;
+      setCatalogError(e instanceof Error ? e.message : String(e));
+      setCatalogPackages([]);
+    } finally {
+      if (id === catalogReqRef.current) setCatalogLoading(false);
+    }
+  }, []);
+
+  // Load popular catalog once when the plugins tab is opened.
+  useEffect(() => {
+    if (tab === "plugins" && cwd && catalogPackages.length === 0 && !catalogLoading && !catalogError) {
+      void loadCatalog("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, cwd]);
+
+  const isCatalogInstalled = useCallback(
+    (pkg: CatalogPackage) => {
+      const source = pkg.installSource || `npm:${pkg.name}`;
+      return packages.some(
+        (p) =>
+          p.source === source ||
+          p.source === `npm:${pkg.name}` ||
+          p.source.endsWith(`/${pkg.name}`),
+      );
+    },
+    [packages],
+  );
+
+  const installCatalogPackage = useCallback(
+    async (pkg: CatalogPackage) => {
+      const source = pkg.installSource || `npm:${pkg.name}`;
+      setInstallingCatalog(source);
+      setActionError(null);
+      setActionMessage(null);
+      try {
+        const res = await fetch("/api/plugins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "install", source, scope: "global", cwd }),
+        });
+        const next = (await res.json().catch(() => ({}))) as PluginsResponse & { error?: string };
+        if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+        setPackages(next.packages);
+        setTotals(next.totals);
+        setDiagnostics(next.diagnostics ?? []);
+        setActionMessage(t("i18n.installDone"));
+        onPluginsChanged?.();
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setInstallingCatalog(null);
+      }
+    },
+    [cwd, onPluginsChanged, t],
+  );
+
   const visibleSkills = useMemo(
     () => skills.filter((s) => skillScopeOf(s) === skillScope),
     [skills, skillScope],
   );
+
+  // Shared card renderer for online skills (popular + search results).
+  const renderOnlineCard = (r: SkillSearchResult) => {
+    const isInstalled = installedSkillPackages.has(r.package);
+    const isInstalling = installingSkill === r.package;
+    const atIdx = r.package.indexOf("@");
+    const repoPart = atIdx > -1 ? r.package.slice(0, atIdx) : r.package;
+    const skillPart = atIdx > -1 ? r.package.slice(atIdx + 1) : null;
+    return (
+      <div
+        key={r.package}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 9px",
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          background: "var(--bg-panel)",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {skillPart ?? repoPart}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, minWidth: 0, flexWrap: "wrap" }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {repoPart}
+            </span>
+            <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500, flexShrink: 0 }}>⭐ {r.installs}</span>
+            {r.url && (
+              <a href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0 }}>
+                {t("activity.officialSite")} ↗
+              </a>
+            )}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => { if (!isInstalled && !isInstalling) void installSkill(r.package); }}
+          disabled={isInstalled || isInstalling}
+          style={{
+            flexShrink: 0, height: 24, padding: "0 10px",
+            background: isInstalled ? "rgba(34,197,94,0.1)" : "var(--accent)",
+            border: "none", borderRadius: 5,
+            color: isInstalled ? "#16a34a" : "#fff",
+            cursor: isInstalled || isInstalling ? "default" : "pointer",
+            fontSize: 11, fontWeight: 600,
+            opacity: isInstalling ? 0.6 : 1,
+          }}
+        >
+          {isInstalled ? `✓ ${t("i18n.installed")}` : isInstalling ? t("i18n.installing") : t("i18n.install")}
+        </button>
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -396,6 +600,33 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
               </div>
             </div>
 
+            {/* ── Popular / online results (marketplace style, above local list) ── */}
+            {!searchQuery.trim() ? (
+              popularLoading ? (
+                <div style={{ padding: "10px 4px", fontSize: 11, color: "var(--text-muted)" }}>{t("activity.marketplaceLoading")}</div>
+              ) : popularError ? (
+                <div style={{ padding: "10px 4px", fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{popularError}</div>
+              ) : popularSkills.length > 0 ? (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                    {t("activity.popularSkills")}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto", paddingRight: 2 }}>
+                    {popularSkills.map(renderOnlineCard)}
+                  </div>
+                </div>
+              ) : null
+            ) : searchResults.length > 0 ? (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                  {t("activity.onlineResults")}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto", paddingRight: 2 }}>
+                  {searchResults.map(renderOnlineCard)}
+                </div>
+              </div>
+            ) : null}
+
             {/* scope tabs */}
             <div style={{ padding: "0 4px 8px", flexShrink: 0 }}>
               <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 7, overflow: "hidden", height: 28 }}>
@@ -429,63 +660,6 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                 })}
               </div>
             </div>
-
-            {/* Online results (above the divider) — capped so local skills stay visible */}
-            {searchResults.length > 0 && (
-              <div style={{ maxHeight: 240, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, marginBottom: 8, background: "var(--bg-panel)" }}>
-                <div style={{ padding: "6px 8px 4px", fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", position: "sticky", top: 0, background: "var(--bg-panel)" }}>
-                  {t("activity.onlineResults")}
-                </div>
-                {searchResults.map((r) => {
-                  const isInstalled = installedSkillPackages.has(r.package);
-                  const isInstalling = installingSkill === r.package;
-                  const atIdx = r.package.indexOf("@");
-                  const repoPart = atIdx > -1 ? r.package.slice(0, atIdx) : r.package;
-                  const skillPart = atIdx > -1 ? r.package.slice(atIdx + 1) : null;
-                  return (
-                    <div key={r.package} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", borderBottom: "1px solid var(--hairline)" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {skillPart ?? repoPart}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, minWidth: 0 }}>
-                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {repoPart}
-                          </span>
-                          <span style={{ fontSize: 10, color: "var(--text-muted)", flexShrink: 0 }}>{r.installs}</span>
-                          {r.url && (
-                            <a href={r.url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0 }}>
-                              skills.sh ↗
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { if (!isInstalled && !isInstalling) void installSkill(r.package); }}
-                        disabled={isInstalled || isInstalling}
-                        style={{
-                          flexShrink: 0, height: 24, padding: "0 10px",
-                          background: isInstalled ? "rgba(34,197,94,0.1)" : "none",
-                          border: "1px solid var(--border)", borderRadius: 5,
-                          color: isInstalled ? "#16a34a" : isInstalling ? "var(--accent)" : "var(--text-muted)",
-                          cursor: isInstalled || isInstalling ? "default" : "pointer",
-                          fontSize: 11, fontWeight: 500,
-                        }}
-                      >
-                        {isInstalled ? `✓ ${t("i18n.installed")}` : isInstalling ? t("i18n.installing") : t("i18n.install")}
-                      </button>
-                    </div>
-                  );
-                })}
-                {/* Divider between online and local */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 4px", color: "var(--text-dim)" }}>
-                  <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-                  <span style={{ fontSize: 10 }}>{skillScope === "global" ? t("activity.globalScope") : t("activity.projectScope")}</span>
-                  <span style={{ flex: 1, height: 1, background: "var(--border)" }} />
-                </div>
-              </div>
-            )}
 
             {/* Local skills */}
             {skillsLoading && <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.loading")}</div>}
@@ -568,120 +742,269 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
 
             {!pluginsLoading && !pluginsError && (
               <div style={{ padding: "4px 2px 8px" }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {/* ── Marketplace header ── */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>
+                    {t("activity.marketplace")}
+                  </span>
+                  <a
+                    href="https://pi.dev/packages"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0, whiteSpace: "nowrap" }}
+                  >
+                    pi.dev/packages ↗
+                  </a>
+                </div>
+
+                {/* ── Marketplace search (pi.dev catalog) ── */}
+                <div style={{ display: "flex", gap: 6 }}>
                   <input
-                    value={installSource}
-                    onChange={(e) => setInstallSource(e.target.value)}
-                    onBlur={(e) => setInstallSource(normalizePluginSourceInput(e.currentTarget.value))}
-                    onKeyDown={(e) => { if (e.key === "Enter" && installSource.trim()) void installPlugin(); }}
-                    placeholder="npm:@scope/package · git:https://… · /path"
+                    value={marketQuery}
+                    onChange={(e) => setMarketQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") void loadCatalog(marketQuery); }}
+                    placeholder={t("activity.searchPackagesPlaceholder")}
                     style={{
                       flex: 1, minWidth: 0, boxSizing: "border-box",
-                      fontSize: 11, fontFamily: "var(--font-mono)", padding: "6px 9px",
+                      fontSize: 12, fontFamily: "inherit", padding: "6px 9px",
                       border: "1px solid var(--border)", borderRadius: 6,
                       outline: "none", background: "var(--bg)", color: "var(--text)",
                     }}
                   />
                   <button
                     type="button"
-                    onClick={() => void installPlugin()}
-                    disabled={!installSource.trim() || busyKey?.startsWith("install:")}
-                    title={t("i18n.install")}
+                    onClick={() => void loadCatalog(marketQuery)}
+                    disabled={catalogLoading}
                     style={{
                       flexShrink: 0, height: 29, padding: "0 10px",
                       background: "var(--accent)", border: "none", borderRadius: 6,
-                      color: "#fff", cursor: installSource.trim() ? "pointer" : "default",
-                      fontSize: 11, fontWeight: 600, opacity: installSource.trim() ? 1 : 0.5,
+                      color: "#fff", cursor: catalogLoading ? "default" : "pointer",
+                      fontSize: 11, fontWeight: 600, opacity: catalogLoading ? 0.5 : 1,
                     }}
                   >
-                    {busyKey?.startsWith("install:") ? t("i18n.installing") : t("i18n.install")}
+                    {catalogLoading ? t("i18n.searching") : t("activity.searchPiDev")}
                   </button>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-                  <a
-                    href="https://pi.dev/packages"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none", flexShrink: 0 }}
-                  >
-                    pi.dev/packages ↗
-                  </a>
-                  {actionError && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{actionError}</span>}
-                  {actionMessage && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#16a34a", overflowWrap: "anywhere" }}>{actionMessage}</span>}
-                </div>
-              </div>
-            )}
 
-            {!pluginsLoading && !pluginsError && packages.map((pkg) => {
-              const key = packageKey(pkg);
-              const busy = busyKey?.endsWith(key) ?? false;
-              const enabled = !pkg.disabled;
-              return (
-                <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 8px", borderRadius: 6, borderBottom: "1px solid var(--hairline)" }}>
-                  <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: statusColor(pkg.status) }} />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                      <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pkg.source}>
-                        {pkg.source}
-                      </span>
-                      <span
-                        style={{
-                          flexShrink: 0, fontSize: 9, padding: "1px 4px", borderRadius: 3,
-                          background: pkg.scope === "project" ? "rgba(99,102,241,0.12)" : "rgba(120,120,120,0.12)",
-                          color: pkg.scope === "project" ? "rgba(99,102,241,0.85)" : "var(--text-dim)",
-                        }}
-                      >
-                        {pkg.scope}
-                      </span>
+                {catalogError && (
+                  <div style={{ fontSize: 10, color: "#f87171", marginTop: 6, overflowWrap: "anywhere" }}>
+                    {catalogError}
+                  </div>
+                )}
+
+                {/* ── Catalog: popular (default) or search results ── */}
+                {!catalogLoading && catalogPackages.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                      {marketQuery.trim() ? t("activity.onlineResults") : t("activity.popularPackages")}
                     </div>
-                    <div style={{ fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}>
-                      {resourceSummary(pkg, t)}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 340, overflowY: "auto", paddingRight: 2 }}>
+                      {catalogPackages.map((pkg) => {
+                        const source = pkg.installSource || `npm:${pkg.name}`;
+                        const installed = isCatalogInstalled(pkg);
+                        const installing = installingCatalog === source;
+                        return (
+                          <div key={pkg.name} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 9px", background: "var(--bg-panel)" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                              <span
+                                title={pkg.name}
+                                style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "var(--text)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                              >
+                                {pkg.name}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => { if (!installed && !installing) void installCatalogPackage(pkg); }}
+                                disabled={installed || installing || installingCatalog !== null}
+                                style={{
+                                  flexShrink: 0, height: 24, padding: "0 10px",
+                                  background: installed ? "rgba(34,197,94,0.1)" : "var(--accent)",
+                                  border: "none", borderRadius: 5,
+                                  color: installed ? "#16a34a" : "#fff",
+                                  cursor: installed || installing || installingCatalog !== null ? "default" : "pointer",
+                                  fontSize: 11, fontWeight: 600,
+                                  opacity: installed ? 1 : installing ? 0.6 : 1,
+                                }}
+                              >
+                                {installed ? `✓ ${t("i18n.installed")}` : installing ? t("i18n.installing") : t("i18n.install")}
+                              </button>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+                              {pkg.types.map((type) => (
+                                <span key={type} style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "rgba(99,102,241,0.12)", color: "rgba(99,102,241,0.85)" }}>
+                                  {type}
+                                </span>
+                              ))}
+                              {pkg.downloadsLabel && (
+                                <span style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500 }} title={`${pkg.downloads} /mo`}>
+                                  ⭐ {pkg.downloadsLabel}
+                                </span>
+                              )}
+                              {pkg.author && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{pkg.author}</span>}
+                              {pkg.updatedLabel && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>· {pkg.updatedLabel}</span>}
+                            </div>
+                            {pkg.description && (
+                              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4, lineHeight: 1.45, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                                {pkg.description}
+                              </div>
+                            )}
+                            {(pkg.url || pkg.npmUrl || pkg.repoUrl) && (
+                              <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                                {pkg.url && (
+                                  <a href={pkg.url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none" }}>
+                                    {t("activity.officialSite")} ↗
+                                  </a>
+                                )}
+                                {pkg.npmUrl && (
+                                  <a href={pkg.npmUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--text-muted)", textDecoration: "none" }}>
+                                    npm ↗
+                                  </a>
+                                )}
+                                {pkg.repoUrl && (
+                                  <a href={pkg.repoUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--text-muted)", textDecoration: "none" }}>
+                                    GitHub ↗
+                                  </a>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
+                )}
+                {catalogLoading && (
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8, padding: "8px 4px" }}>
+                    {t("activity.marketplaceLoading")}
+                  </div>
+                )}
+                {!catalogLoading && !catalogError && catalogPackages.length === 0 && (
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8, padding: "8px 4px" }}>
+                    {t("activity.noMarketplacePackages")}
+                  </div>
+                )}
+
+                {/* ── Advanced: install by source ── */}
+                <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => setAdvancedOpen((v) => !v)}
+                    style={{ background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer", fontSize: 11, padding: "2px 0" }}
+                  >
+                    {advancedOpen ? "▾ " : "▸ "}{t("activity.advancedSourceInstall")}
+                  </button>
+                  {advancedOpen && (
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      <input
+                        value={installSource}
+                        onChange={(e) => setInstallSource(e.target.value)}
+                        onBlur={(e) => setInstallSource(normalizePluginSourceInput(e.currentTarget.value))}
+                        onKeyDown={(e) => { if (e.key === "Enter" && installSource.trim()) void installPlugin(); }}
+                        placeholder={t("activity.sourceInstallHint")}
+                        style={{
+                          flex: 1, minWidth: 0, boxSizing: "border-box",
+                          fontSize: 11, fontFamily: "var(--font-mono)", padding: "6px 9px",
+                          border: "1px solid var(--border)", borderRadius: 6,
+                          outline: "none", background: "var(--bg)", color: "var(--text)",
+                        }}
+                      />
                       <button
                         type="button"
-                        onClick={() => void runPluginAction(pkg.disabled ? "enable" : "disable", pkg)}
-                        disabled={busy}
-                        title={pkg.disabled ? t("i18n.enablePackage") : t("i18n.disablePackage")}
+                        onClick={() => void installPlugin()}
+                        disabled={!installSource.trim() || busyKey?.startsWith("install:")}
                         style={{
-                          flexShrink: 0, width: 36, height: 20, borderRadius: 10,
-                          border: "none", padding: 0, cursor: busy ? "wait" : "pointer",
-                          background: enabled ? "var(--accent)" : "var(--border)",
-                          position: "relative", transition: "background 0.18s", opacity: busy ? 0.6 : 1,
+                          flexShrink: 0, height: 29, padding: "0 10px",
+                          background: "var(--accent)", border: "none", borderRadius: 6,
+                          color: "#fff", cursor: installSource.trim() ? "pointer" : "default",
+                          fontSize: 11, fontWeight: 600, opacity: installSource.trim() ? 1 : 0.5,
                         }}
                       >
-                        <span style={{
-                          position: "absolute", top: 2, left: enabled ? 18 : 2,
-                          width: 16, height: 16, borderRadius: "50%",
-                          background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
-                          transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
-                        }} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void runPluginAction("remove", pkg)}
-                        disabled={busy}
-                        title={t("i18n.remove")}
-                        style={{
-                          flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                          width: 22, height: 22, padding: 0, background: "none", border: "none",
-                          borderRadius: 4, color: "var(--text-dim)", cursor: "pointer", opacity: busy ? 0.5 : 1,
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.background = "var(--bg-hover)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                          <path d="M3 6h18" />
-                          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
-                          <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                        </svg>
+                        {busyKey?.startsWith("install:") ? t("i18n.installing") : t("i18n.install")}
                       </button>
                     </div>
-                  );
-                })}
+                  )}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                    {actionError && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#f87171", overflowWrap: "anywhere" }}>{actionError}</span>}
+                    {actionMessage && <span style={{ flex: 1, minWidth: 0, fontSize: 10, color: "#16a34a", overflowWrap: "anywhere" }}>{actionMessage}</span>}
+                  </div>
+                </div>
 
-            {!pluginsLoading && !pluginsError && packages.length === 0 && (
-              <div style={{ padding: "12px 10px", color: "var(--text-muted)", fontSize: 12 }}>{t("i18n.noPlugins")}</div>
+                {/* ── Installed packages ── */}
+                {packages.length > 0 && (
+                  <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>
+                      {t("activity.installedSection")} ({packages.length})
+                    </div>
+                    {packages.map((pkg) => {
+                      const key = packageKey(pkg);
+                      const busy = busyKey?.endsWith(key) ?? false;
+                      const enabled = !pkg.disabled;
+                      return (
+                        <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 8px", borderRadius: 6, borderBottom: "1px solid var(--hairline)" }}>
+                          <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: statusColor(pkg.status) }} />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                              <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pkg.source}>
+                                {pkg.source}
+                              </span>
+                              <span
+                                style={{
+                                  flexShrink: 0, fontSize: 9, padding: "1px 4px", borderRadius: 3,
+                                  background: pkg.scope === "project" ? "rgba(99,102,241,0.12)" : "rgba(120,120,120,0.12)",
+                                  color: pkg.scope === "project" ? "rgba(99,102,241,0.85)" : "var(--text-dim)",
+                                }}
+                              >
+                                {pkg.scope}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 10, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2 }}>
+                              {resourceSummary(pkg, t)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void runPluginAction(pkg.disabled ? "enable" : "disable", pkg)}
+                            disabled={busy}
+                            title={pkg.disabled ? t("i18n.enablePackage") : t("i18n.disablePackage")}
+                            style={{
+                              flexShrink: 0, width: 36, height: 20, borderRadius: 10,
+                              border: "none", padding: 0, cursor: busy ? "wait" : "pointer",
+                              background: enabled ? "var(--accent)" : "var(--border)",
+                              position: "relative", transition: "background 0.18s", opacity: busy ? 0.6 : 1,
+                            }}
+                          >
+                            <span style={{
+                              position: "absolute", top: 2, left: enabled ? 18 : 2,
+                              width: 16, height: 16, borderRadius: "50%",
+                              background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+                              transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
+                            }} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runPluginAction("remove", pkg)}
+                            disabled={busy}
+                            title={t("i18n.remove")}
+                            style={{
+                              flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                              width: 22, height: 22, padding: 0, background: "none", border: "none",
+                              borderRadius: 4, color: "var(--text-dim)", cursor: "pointer", opacity: busy ? 0.5 : 1,
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.color = "#f87171"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                              <path d="M3 6h18" />
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+                              <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
 
             {!pluginsLoading && !pluginsError && (

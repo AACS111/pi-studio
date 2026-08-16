@@ -4,10 +4,13 @@ import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@e
 import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
+import { PLAIN_THEME_BG, PLAIN_THEME_FG } from "./pi-compat-check";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
+import { ensureDshPluginsLoaded } from "./plugins/adapters/dsh/dsh-adapter";
+import { collectDshTools } from "./plugins/core/plugin-registry";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
@@ -87,14 +90,18 @@ export interface RpcSessionStartOptions {
   thinkingLevel?: ThinkingLevel;
 }
 
+// 完整颜色表来自 lib/pi-compat-check.ts（单一来源，冒烟测试共用）。
+// pi >= 0.84 的 Theme 构造函数会无条件迭代所有颜色键并做 `?? fallback` 兜底，
+// 缺 text/selectedBg 会算出 undefined，fgAnsi(undefined) 抛 TypeError
+// （0.83 → 0.84 升级后 /api/sessions 500 的根因）。全键置 "" 即合法“无色”值。
 const CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
 // Extensions require a complete Theme, while the web UI applies its own styling.
 class PlainTextTheme extends Theme {
   constructor() {
     super(
-      { thinkingXhigh: "" } as ConstructorParameters<typeof Theme>[0],
-      {} as ConstructorParameters<typeof Theme>[1],
+      PLAIN_THEME_FG as ConstructorParameters<typeof Theme>[0],
+      PLAIN_THEME_BG as ConstructorParameters<typeof Theme>[1],
       "truecolor",
     );
   }
@@ -1222,6 +1229,14 @@ export async function startRpcSession(
     );
     const defaultProvider = services.settingsManager.getDefaultProvider();
     const defaultModelId = services.settingsManager.getDefaultModel();
+    // 桥接已安装的 DSH 插件工具（幂等，产物缓存在 plugin-registry）。
+    let dshTools: Awaited<ReturnType<typeof collectDshTools>> = [];
+    try {
+      await ensureDshPluginsLoaded();
+      dshTools = collectDshTools();
+    } catch (error) {
+      console.error("[pi-studio] failed to load DSH plugins:", error instanceof Error ? error.message : error);
+    }
     const hasExistingMessages = sessionManager.getBranch().some((entry) => entry.type === "message");
     const initial = hasExistingMessages
       ? { scopedModels: [...scope.scopedModels] }
@@ -1239,6 +1254,7 @@ export async function startRpcSession(
       ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
+      ...(dshTools.length > 0 ? { customTools: dshTools } : {}),
     });
 
     const persistedPreferences = await persistExplicitStartupPreferences(

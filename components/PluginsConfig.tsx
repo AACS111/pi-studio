@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { useIsMobile } from "@/hooks/useIsMobile";
-import type { PluginPackageInfo, PluginsResponse } from "@/lib/api-types";
+import type { PluginPackageInfo, PluginsResponse, CatalogPackage } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
 
 type PluginScope = PluginPackageInfo["scope"];
@@ -292,6 +292,15 @@ function AddPluginPanel({
   projectResourcesLoaded,
   busy,
   actionError,
+  marketQuery,
+  catalogPackages,
+  catalogLoading,
+  catalogError,
+  catalogInstalling,
+  installedSources,
+  onMarketQueryChange,
+  onSearchCatalog,
+  onInstallPackage,
   onSourceChange,
   onScopeChange,
   onInstall,
@@ -302,24 +311,46 @@ function AddPluginPanel({
   projectResourcesLoaded: boolean;
   busy: boolean;
   actionError: string | null;
+  marketQuery: string;
+  catalogPackages: CatalogPackage[];
+  catalogLoading: boolean;
+  catalogError: string | null;
+  catalogInstalling: string | null;
+  installedSources: ReadonlySet<string>;
+  onMarketQueryChange: (value: string) => void;
+  onSearchCatalog: (q: string) => void;
+  onInstallPackage: (source: string) => void;
   onSourceChange: (value: string) => void;
   onScopeChange: (scope: PluginScope) => void;
   onInstall: () => void;
 }) {
   const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const examples = ["npm:@scope/pi-plugin", "git:https://github.com/user/repo", "/absolute/path/to/plugin"];
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
+  const isCatalogInstalled = (pkg: CatalogPackage) => {
+    const source = pkg.installSource || `npm:${pkg.name}`;
+    return installedSources.has(source) || installedSources.has(`npm:${pkg.name}`);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 660, minHeight: "100%" }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>
-            {t("i18n.addPlugin")}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>
+              {t("activity.marketplace")}
+            </span>
+            <SegmentedScope
+              value={scope}
+              projectResourcesLoaded={projectResourcesLoaded}
+              onChange={onScopeChange}
+            />
           </div>
           <a
             href="https://pi.dev/packages"
@@ -351,99 +382,305 @@ function AddPluginPanel({
         </div>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        <label htmlFor="plugin-source" style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
-          Source
-        </label>
+      {/* ── Marketplace search ── */}
+      <div style={{ display: "flex", gap: 8 }}>
         <input
-          id="plugin-source"
-          ref={inputRef}
-          value={source}
-          onChange={(e) => onSourceChange(e.target.value)}
-          onPaste={(e) => {
-            const pasted = e.clipboardData.getData("text");
-            const normalized = normalizePluginSourceInput(pasted);
-            if (normalized === pasted) return;
-            e.preventDefault();
-            onSourceChange(normalized);
+          value={marketQuery}
+          onChange={(e) => onMarketQueryChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onSearchCatalog(marketQuery);
           }}
-          onBlur={(e) => onSourceChange(normalizePluginSourceInput(e.currentTarget.value))}
-          placeholder="npm:@scope/package"
+          placeholder={t("activity.searchPackagesPlaceholder")}
           style={{
-            width: "100%",
+            flex: 1,
             height: 36,
             padding: "0 11px",
             border: "1px solid var(--border)",
             borderRadius: 6,
             background: "var(--bg-panel)",
             color: "var(--text)",
-            fontFamily: "var(--font-mono)",
             fontSize: 13,
             outline: "none",
           }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && source.trim() && !busy) onInstall();
-          }}
-        />
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <SegmentedScope
-          value={scope}
-          projectResourcesLoaded={projectResourcesLoaded}
-          onChange={onScopeChange}
         />
         <button
           type="button"
-          onClick={onInstall}
-          disabled={busy || !source.trim()}
+          onClick={() => onSearchCatalog(marketQuery)}
+          disabled={catalogLoading}
           style={{
-            ...buttonStyle(busy || !source.trim()),
+            height: 36,
+            padding: "0 18px",
+            borderRadius: 6,
+            border: "none",
             background: "var(--accent)",
-            color: "white",
-            borderColor: "var(--accent)",
+            color: "#fff",
+            cursor: catalogLoading ? "not-allowed" : "pointer",
+            opacity: catalogLoading ? 0.5 : 1,
+            fontSize: 13,
+            fontWeight: 600,
+            flexShrink: 0,
           }}
         >
-          {busy ? t("i18n.installing") : t("i18n.install")}
+          {catalogLoading ? t("i18n.searching") : t("activity.searchPiDev")}
         </button>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)" }}>
-          Examples
+      {catalogError && (
+        <div style={{ fontSize: 12, color: "#f87171", overflowWrap: "anywhere" }}>
+          {catalogError}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {examples.map((example) => (
-            <button
-              key={example}
-              type="button"
-              onClick={() => onSourceChange(example)}
+      )}
+
+      {/* ── Catalog grid: popular (default) or search results ── */}
+      {!catalogLoading && catalogPackages.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "var(--text-dim)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+            }}
+          >
+            {marketQuery.trim() ? t("activity.onlineResults") : t("activity.popularPackages")}
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))",
+              gap: 8,
+              maxHeight: 340,
+              overflowY: "auto",
+              paddingRight: 2,
+            }}
+          >
+            {catalogPackages.map((pkg) => {
+              const source = pkg.installSource || `npm:${pkg.name}`;
+              const installed = isCatalogInstalled(pkg);
+              const installing = catalogInstalling === source;
+              return (
+                <div
+                  key={pkg.name}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 5,
+                    border: "1px solid var(--border)",
+                    borderRadius: 8,
+                    padding: "10px 11px",
+                    background: "var(--bg-panel)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span
+                      title={pkg.name}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "var(--text)",
+                        fontFamily: "var(--font-mono)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {pkg.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => { if (!installed && !installing) onInstallPackage(source); }}
+                      disabled={installed || installing || catalogInstalling !== null}
+                      style={{
+                        flexShrink: 0,
+                        height: 24,
+                        padding: "0 11px",
+                        borderRadius: 5,
+                        border: "none",
+                        background: installed ? "rgba(34,197,94,0.1)" : "var(--accent)",
+                        color: installed ? "#16a34a" : "#fff",
+                        cursor: installed || installing || catalogInstalling !== null ? "default" : "pointer",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        opacity: installing ? 0.6 : 1,
+                      }}
+                    >
+                      {installed ? `✓ ${t("i18n.installed")}` : installing ? t("i18n.installing") : t("i18n.install")}
+                    </button>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    {pkg.types.map((type) => (
+                      <span
+                        key={type}
+                        style={{
+                          fontSize: 9,
+                          padding: "1px 5px",
+                          borderRadius: 3,
+                          background: "rgba(99,102,241,0.12)",
+                          color: "rgba(99,102,241,0.85)",
+                        }}
+                      >
+                        {type}
+                      </span>
+                    ))}
+                    {pkg.downloadsLabel && (
+                      <span style={{ fontSize: 10.5, color: "var(--text-muted)", fontWeight: 500 }} title={`${pkg.downloads} /mo`}>
+                        ⭐ {pkg.downloadsLabel}
+                      </span>
+                    )}
+                    {pkg.author && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{pkg.author}</span>}
+                    {pkg.updatedLabel && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>· {pkg.updatedLabel}</span>}
+                  </div>
+                  {pkg.description && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--text-muted)",
+                        lineHeight: 1.5,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {pkg.description}
+                    </div>
+                  )}
+                  {(pkg.url || pkg.npmUrl || pkg.repoUrl) && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                      {pkg.url && (
+                        <a href={pkg.url} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--accent)", textDecoration: "none" }}>
+                          {t("activity.officialSite")} ↗
+                        </a>
+                      )}
+                      {pkg.npmUrl && (
+                        <a href={pkg.npmUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--text-muted)", textDecoration: "none" }}>
+                          npm ↗
+                        </a>
+                      )}
+                      {pkg.repoUrl && (
+                        <a href={pkg.repoUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: "var(--text-muted)", textDecoration: "none" }}>
+                          GitHub ↗
+                        </a>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {catalogLoading && (
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          {t("activity.marketplaceLoading")}
+        </div>
+      )}
+      {!catalogLoading && !catalogError && catalogPackages.length === 0 && (
+        <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          {t("activity.noMarketplacePackages")}
+        </div>
+      )}
+
+      {/* ── Advanced: install by source ── */}
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+        <button
+          type="button"
+          onClick={() => setAdvancedOpen((v) => !v)}
+          style={{
+            background: "none",
+            border: "none",
+            padding: 0,
+            color: "var(--text-dim)",
+            cursor: "pointer",
+            fontSize: 12,
+            fontWeight: 600,
+          }}
+        >
+          {advancedOpen ? "▾ " : "▸ "}{t("activity.advancedSourceInstall")}
+        </button>
+        {advancedOpen && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+            <input
+              id="plugin-source"
+              ref={inputRef}
+              value={source}
+              onChange={(e) => onSourceChange(e.target.value)}
+              onPaste={(e) => {
+                const pasted = e.clipboardData.getData("text");
+                const normalized = normalizePluginSourceInput(pasted);
+                if (normalized === pasted) return;
+                e.preventDefault();
+                onSourceChange(normalized);
+              }}
+              onBlur={(e) => onSourceChange(normalizePluginSourceInput(e.currentTarget.value))}
+              placeholder={t("activity.sourceInstallHint")}
               style={{
                 width: "100%",
-                minHeight: 30,
-                textAlign: "left",
-                padding: "6px 9px",
+                height: 36,
+                padding: "0 11px",
                 border: "1px solid var(--border)",
                 borderRadius: 6,
                 background: "var(--bg-panel)",
-                color: "var(--text-dim)",
-                cursor: "pointer",
+                color: "var(--text)",
                 fontFamily: "var(--font-mono)",
-                fontSize: 11,
+                fontSize: 13,
+                outline: "none",
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--bg-hover)";
-                e.currentTarget.style.color = "var(--text-muted)";
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && source.trim() && !busy) onInstall();
               }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "var(--bg-panel)";
-                e.currentTarget.style.color = "var(--text-dim)";
-              }}
-            >
-              {example}
-            </button>
-          ))}
-        </div>
+            />
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={onInstall}
+                disabled={busy || !source.trim()}
+                style={{
+                  ...buttonStyle(busy || !source.trim()),
+                  background: "var(--accent)",
+                  color: "white",
+                  borderColor: "var(--accent)",
+                }}
+              >
+                {busy ? t("i18n.installing") : t("i18n.install")}
+              </button>
+              <span style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+                {examples.map((example) => (
+                  <button
+                    key={example}
+                    type="button"
+                    onClick={() => onSourceChange(example)}
+                    style={{
+                      marginRight: 6,
+                      marginBottom: 4,
+                      padding: "4px 9px",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      background: "var(--bg-panel)",
+                      color: "var(--text-dim)",
+                      cursor: "pointer",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "var(--bg-hover)";
+                      e.currentTarget.style.color = "var(--text-muted)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "var(--bg-panel)";
+                      e.currentTarget.style.color = "var(--text-dim)";
+                    }}
+                  >
+                    {example}
+                  </button>
+                ))}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {actionError && (
@@ -636,6 +873,14 @@ export function PluginsConfig({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
+  // ── Marketplace (pi.dev catalog) state ──
+  const [catalogPackages, setCatalogPackages] = useState<CatalogPackage[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [marketQuery, setMarketQuery] = useState("");
+  const [installingCatalog, setInstallingCatalog] = useState<string | null>(null);
+  const catalogReqRef = useRef(0);
+
   const packages = useMemo(() => data?.packages ?? [], [data?.packages]);
   const selectedPackage = packages.find((pkg) => packageKey(pkg) === selected) ?? null;
   const projectResourcesLoaded = data?.projectResourcesLoaded ?? true;
@@ -733,6 +978,71 @@ export function PluginsConfig({
     }
   }, [cwd, installScope, installSource]);
 
+  const loadCatalog = useCallback(async (q: string) => {
+    const id = ++catalogReqRef.current;
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const params = new URLSearchParams();
+      const trimmed = q.trim();
+      if (trimmed) params.set("q", trimmed);
+      params.set("sort", "downloads");
+      const res = await fetch(`/api/packages/catalog?${params.toString()}`);
+      const d = (await res.json().catch(() => ({}))) as {
+        packages?: CatalogPackage[];
+        error?: string;
+      };
+      if (id !== catalogReqRef.current) return;
+      if (!res.ok || d.error || !d.packages) {
+        setCatalogError(d.error ?? `HTTP ${res.status}`);
+        setCatalogPackages([]);
+        return;
+      }
+      setCatalogPackages(d.packages);
+    } catch (e) {
+      if (id !== catalogReqRef.current) return;
+      setCatalogError(e instanceof Error ? e.message : String(e));
+      setCatalogPackages([]);
+    } finally {
+      if (id === catalogReqRef.current) setCatalogLoading(false);
+    }
+  }, []);
+
+  // Load popular catalog once when the add-panel opens (addMode becomes true).
+  useEffect(() => {
+    if (addMode && catalogPackages.length === 0 && !catalogLoading && !catalogError) {
+      void loadCatalog("");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addMode]);
+
+  const installCatalogPackage = useCallback(
+    async (source: string) => {
+      setInstallingCatalog(source);
+      setActionError(null);
+      setActionMessage(null);
+      try {
+        const res = await fetch("/api/plugins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "install", source, scope: installScope, cwd }),
+        });
+        const next = (await res.json()) as PluginsResponse & { error?: string };
+        if (!res.ok || next.error) throw new Error(next.error ?? `HTTP ${res.status}`);
+        setData(next);
+        const installed = findInstalledPackage(next.packages, source, installScope);
+        setSelected(installed ? packageKey(installed) : `${installScope}\0${source}`);
+        setAddMode(false);
+        setActionMessage("Package installed.");
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setInstallingCatalog(null);
+      }
+    },
+    [cwd, installScope],
+  );
+
   const reloadSession = useCallback(async () => {
     if (!sessionId) return;
     setBusyKey("reload");
@@ -751,6 +1061,12 @@ export function PluginsConfig({
   }, [loadPlugins, onReloaded, sessionId]);
 
   const addBusy = busyKey?.startsWith("install:") ?? false;
+
+  const installedSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const pkg of packages) set.add(pkg.source);
+    return set;
+  }, [packages]);
 
   return (
     <div
@@ -1020,6 +1336,15 @@ export function PluginsConfig({
                 projectResourcesLoaded={projectResourcesLoaded}
                 busy={addBusy}
                 actionError={actionError}
+                marketQuery={marketQuery}
+                catalogPackages={catalogPackages}
+                catalogLoading={catalogLoading}
+                catalogError={catalogError}
+                catalogInstalling={installingCatalog}
+                installedSources={installedSources}
+                onMarketQueryChange={setMarketQuery}
+                onSearchCatalog={(q) => void loadCatalog(q)}
+                onInstallPackage={(source) => void installCatalogPackage(source)}
                 onSourceChange={setInstallSource}
                 onScopeChange={setInstallScope}
                 onInstall={installPlugin}

@@ -21,6 +21,8 @@ const nextConfig = {
     "@earendil-works/pi-agent-core",
     "@earendil-works/pi-ai",
     "@earendil-works/pi-tui",
+    // 原生模块：webpack 不能打包 .node，运行时从 node_modules 加载
+    "@lydell/node-pty",
   ],
   allowedDevOrigins: ['192.168.*.*'],
   async headers() {

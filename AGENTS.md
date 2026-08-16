@@ -167,6 +167,8 @@ skills/check/route.ts            POST 检查 skill 包更新（git 浅克隆到�
 skills/update/route.ts           POST 更新 skill 包
 project-trust/route.ts           POST 信任项目（~/.pi/agent/trust.json；busy 时拒绝，之后销毁该 cwd 的会话）
 vision/describe/route.ts         POST 用视觉模型描述图片（90s 超时，2048 tokens）
+update/check/route.ts            GET 检查 pi-studio 应用自身版本（npm registry latest vs 本地，lib/update-manager.ts）
+update/run/route.ts              POST 全局安装模式自更新应用（npm install -g --prefix，需重启生效；源码模式拒绝）
 ```
 
 ### `lib/`
@@ -239,6 +241,12 @@ path-security.ts      路径规范化/防穿越
 web-auth.ts           可选 Basic Auth（用户名固定 pi；PI_WEB_PASSWORD 开启，timingSafeEqual 比较）
 http-dispatcher.ts    全局 undici dispatcher：空闲 300s 超时 + 忽略内部 Client error（防进程被 EventEmitter error 打死）
 bash-output.ts        bash 输出临时文件白名单解析（pi-bash-*.log 必须在系统 tmpdir 根，O_NOFOLLOW 防软链）
+update-manager.ts     应用自身版本检查/自更新：npm registry latest vs package.json；仅全局安装模式可自动更新
+                      （npm install -g --prefix <全局前缀>，源码模式提示 git pull && npm install）；npm-cli.js 按
+                      npm_execpath → execPath 布局 → cmd /c npm root -g 顺序解析；globalThis 串行锁
+pi-compat-check.ts     pi 引擎兼容性自检（自包含，可被 node 子进程 strip-types 直跑）：Theme 构造冒烟 +
+                      依赖导出检查；THEME_FG/BG_KEYS 全量颜色表是 rpc-manager PlainTextTheme 的单一来源
+                      （pi >= 0.84 Theme 构造缺键会 undefined.startsWith 崩溃）
 ```
 
 **其他**

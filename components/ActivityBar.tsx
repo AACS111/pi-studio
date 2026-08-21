@@ -3,10 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import type { PiUiExtension } from "@/lib/plugins/ui/types";
+import { pluginIconNode } from "./PluginHost";
 
 /** First-level capability entries (一级导航). File is deliberately NOT here —
- *  the file explorer lives in the second column. */
-export type Activity = "sessions" | "skills" | "terminal" | "dsh" | "settings";
+ *  the file explorer lives in the second column. Terminal moved to right panel. */
+export type Activity = "sessions" | "skills" | "dsh" | "settings" | "rightPanel";
+
+/** 插件注册的动态扩展（ActivityBar rail 里的可点击条目）。 */
+export type PluginActivityId = `plugin:${string}`;
+
+export type ActivityOrPlugin = Activity | PluginActivityId;
 
 interface ActivityItem {
   id: Activity;
@@ -89,16 +96,6 @@ const ITEMS: ActivityItem[] = [
     ),
   },
   {
-    id: "terminal",
-    titleKey: "activity.terminal",
-    icon: (active) => (
-      <IconSvg active={active}>
-        <polyline points="4 17 10 11 4 5" />
-        <line x1="12" y1="19" x2="20" y2="19" />
-      </IconSvg>
-    ),
-  },
-  {
     id: "dsh",
     titleKey: "activity.dshMarket",
     icon: (active) => (
@@ -112,13 +109,15 @@ const ITEMS: ActivityItem[] = [
 ];
 
 interface Props {
-  active: Activity;
-  onSelect: (activity: Activity) => void;
+  active: ActivityOrPlugin;
+  onSelect: (activity: ActivityOrPlugin) => void;
   onSearch: () => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
   hasRunningSession: boolean;
   hasUnreadSessions: boolean;
+  /** 插件注册的动态扩展条目（在 skills/terminal/dsh 之后渲染）。 */
+  extensions?: PiUiExtension[];
 }
 
 /** Icon-only rail entry: 20px icon, hover highlight + custom tooltip on the right. */
@@ -210,7 +209,7 @@ function RailButton({
   );
 }
 
-export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sidebarOpen, hasRunningSession, hasUnreadSessions }: Props) {
+export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sidebarOpen, hasRunningSession, hasUnreadSessions, extensions = [] }: Props) {
   const { t } = useI18n();
 
   const sessionsBadge = (
@@ -313,10 +312,33 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
             {item.icon(active === item.id)}
           </RailButton>
         ))}
+        {extensions.map((ext) => {
+          const pid = `plugin:${ext.id}` as PluginActivityId;
+          const activePid = active === pid;
+          return (
+            <RailButton
+              key={pid}
+              label={ext.sidebarEntry?.label ?? ext.title}
+              active={activePid}
+              onClick={() => onSelect(pid)}
+            >
+              <IconSvg active={activePid}>{pluginIconNode(ext.sidebarEntry?.icon)}</IconSvg>
+            </RailButton>
+          );
+        })}
       </nav>
 
-      {/* Bottom: settings + collapse */}
+      {/* Bottom: right panel toggle + settings + collapse */}
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", marginTop: 4 }}>
+        <RailButton
+          label={t("files.showPanel")}
+          active={active === "rightPanel"}
+          onClick={() => onSelect("rightPanel")}
+        >
+          <IconSvg active={active === "rightPanel"}>
+            <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
+          </IconSvg>
+        </RailButton>
         <RailButton label={t("common.settings")} active={active === "settings"} onClick={() => onSelect("settings")}>
           <IconSvg active={active === "settings"}>
             <circle cx="12" cy="12" r="3" />

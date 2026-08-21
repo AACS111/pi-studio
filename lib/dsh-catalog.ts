@@ -35,6 +35,8 @@ export interface DshCatalogItem {
   /** B类 only: this package is already bundled into another aggregate package.
    *  Installing both causes a duplicate loader entry crash. */
   includedIn?: string;
+  /** dsh 兼容 seam 标签（如 webServer/sessions/slots…），UI 中展示。 */
+  seams?: string[];
 }
 
 export const DSH_CATALOG: DshCatalogItem[] = [

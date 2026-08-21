@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import type { DshCatalogItem, DshCategory } from "@/lib/dsh-catalog";
 import { dshRepoOf, dshNpmUrlOf } from "@/lib/dsh-catalog";
+import type { DshAdaptationReport } from "@/lib/plugins/adapters/dsh/dsh-detect";
 
 interface LoadedPlugin {
   id: string;
@@ -86,8 +87,14 @@ export function DshMarketPanel({
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const catalogReqRef = useRef(0);
-  // monorepo 探测到的候选 npm 包，待用户选择安装
-  const [pendingCandidates, setPendingCandidates] = useState<{ repo: string; candidates: string[] } | null>(null);
+  // monorepo 探测到的候选 npm 包 + 各自适配检测结果
+  const [pendingCandidates, setPendingCandidates] = useState<{
+    repo: string;
+    candidates: Array<{ package: string; report?: DshAdaptationReport }>;
+  } | null>(null);
+  // 精选插件的适配检测结果
+  const [reports, setReports] = useState<Record<string, DshAdaptationReport>>({});
+  const [detecting, setDetecting] = useState<string | null>(null);
 
   const loadPlugins = useCallback(async () => {
     try {
@@ -152,21 +159,19 @@ export function DshMarketPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action, package: pkg }),
         });
-        const d = (await res.json()) as { success?: boolean; error?: string; ui?: boolean; url?: string | null; status?: string };
+        const d = (await res.json()) as {
+          success?: boolean;
+          error?: string;
+          report?: DshAdaptationReport;
+        };
         if (!res.ok || d.error) {
-          setActionErr(d.error ?? `HTTP ${res.status}`);
-        } else {
-          if (d.ui && d.url) {
-            // UI 插件：启动 DSH Web UI 后在右面板打开，面板立即可见。
-            setActionMsg(`${pkg} · ${t("dsh.uiInstalled")}`);
-            void fetch("/api/browser", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ url: d.url, title: "DeepSeek Harness" }),
-            }).catch(() => {});
-          } else {
-            setActionMsg(action === "install" ? t("dsh.installedBridged") : t("dsh.removed"));
+          const rejectReport = d.report;
+          if (rejectReport) {
+            setReports((prev) => ({ ...prev, [pkg]: rejectReport as DshAdaptationReport }));
           }
+          setActionErr(rejectReport?.reason ?? d.error ?? `HTTP ${res.status}`);
+        } else {
+          setActionMsg(action === "install" ? t("dsh.installedBridged") : t("dsh.removed"));
           void loadPlugins();
         }
       } catch (e) {
@@ -178,29 +183,34 @@ export function DshMarketPanel({
     [t, loadPlugins],
   );
 
-  /** 手动启动 DSH Web UI 并在右面板打开（用于查看已装的 UI 插件面板）。 */
-  const openUi = useCallback(async () => {
-    setActionErr(null);
-    try {
-      const res = await fetch("/api/dsh/ui", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "start" }),
-      });
-      const d = (await res.json()) as { url?: string | null; error?: string };
-      if (d.url) {
-        await fetch("/api/browser", {
+  /** 对 npm 包做适配检测，结果缓存到本地 state。 */
+  const detectPackage = useCallback(
+    async (pkg: string): Promise<DshAdaptationReport | null> => {
+      if (reports[pkg]) return reports[pkg];
+      setDetecting(pkg);
+      setActionErr(null);
+      try {
+        const res = await fetch("/api/dsh/detect", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: d.url, title: "DeepSeek Harness" }),
+          body: JSON.stringify({ package: pkg }),
         });
-      } else {
-        setActionErr(d.error ?? "DSH Web UI 启动失败");
+        const d = (await res.json().catch(() => ({}))) as DshAdaptationReport & { error?: string };
+        if (d.error && !d.package) {
+          setActionErr(d.error);
+          return null;
+        }
+        setReports((prev) => ({ ...prev, [pkg]: d as DshAdaptationReport }));
+        return d;
+      } catch (e) {
+        setActionErr(e instanceof Error ? e.message : String(e));
+        return null;
+      } finally {
+        setDetecting(null);
       }
-    } catch (e) {
-      setActionErr(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
+    },
+    [reports],
+  );
 
   /** 从生态目录的一个 GitHub 仓库一键安装：探测 → npm 包名 → 安装 + 桥接。 */
   const installFromRepo = useCallback(
@@ -226,9 +236,9 @@ export function DshMarketPanel({
           setActionErr(`${repo}: ${insp.reason ?? insp.error ?? "not installable"}`);
           return;
         }
-        // monorepo：多个候选，交给用户选择
+        // monorepo：多个候选，交给用户逐个做适配检测
         if (insp.npmCandidates && insp.npmCandidates.length > 0) {
-          setPendingCandidates({ repo, candidates: insp.npmCandidates });
+          setPendingCandidates({ repo, candidates: insp.npmCandidates.map((packageName) => ({ package: packageName })) });
           setActionErr(null);
           return;
         }
@@ -251,6 +261,12 @@ export function DshMarketPanel({
           setActionErr(`${repo}: ${insp.reason ?? "not installable"}`);
           return;
         }
+        const report = await detectPackage(insp.npmPackage);
+        if (!report) return;
+        if (!report.adaptable) {
+          setActionErr(`${insp.npmPackage}: ${report.reason}`);
+          return;
+        }
         const res = await fetch("/api/dsh/plugins", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -269,7 +285,29 @@ export function DshMarketPanel({
         setBusy(null);
       }
     },
-    [t, loadPlugins],
+    [t, loadPlugins, detectPackage],
+  );
+
+  /** 批量检测 monorepo 候选，并把结果渲染进候选列表。 */
+  const detectCandidates = useCallback(
+    async (repo: string, packages: string[]) => {
+      setBusy(`candidates:${repo}`);
+      setActionErr(null);
+      try {
+        const results = await Promise.all(
+          packages.map(async (pkg) => {
+            const report = await detectPackage(pkg);
+            return { package: pkg, report: report ?? undefined };
+          }),
+        );
+        setPendingCandidates((prev) =>
+          prev && prev.repo === repo ? { ...prev, candidates: results } : prev,
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [detectPackage],
   );
 
   const installedSet = useMemo(() => new Set(plugins?.installed ?? []), [plugins?.installed]);
@@ -327,9 +365,6 @@ export function DshMarketPanel({
             </a>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <button type="button" onClick={() => void openUi()} style={{ ...btnStyle(), fontSize: 10 }}>
-              {t("dsh.openUi")}
-            </button>
             <button
               type="button"
               onClick={() => { void loadPlugins(); void loadMarket(); void loadCatalog(search, category, 1, false); }}
@@ -383,26 +418,52 @@ export function DshMarketPanel({
               {t("dsh.monorepoCandidates", { n: String(pendingCandidates.candidates.length) })}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              {pendingCandidates.candidates.map((pkg) => (
-                <button
-                  key={pkg}
-                  type="button"
-                  onClick={() => { const chosen = pkg; setPendingCandidates(null); void mutate("install", chosen); }}
-                  disabled={busy === pkg}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-                    padding: "6px 10px", fontSize: 11, borderRadius: 5,
-                    border: "1px solid var(--border)", background: "var(--bg-hover)",
-                    color: "var(--text)", cursor: busy === pkg ? "default" : "pointer",
-                    fontFamily: "var(--font-mono)", textAlign: "left",
-                  }}
-                >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pkg}</span>
-                  <span style={{ fontSize: 10, color: "var(--accent)", flexShrink: 0 }}>
-                    {busy === pkg ? t("i18n.installing") : t("i18n.install")}
-                  </span>
-                </button>
-              ))}
+              {pendingCandidates.candidates.map(({ package: pkg, report }) => {
+                const isDetecting = busy === `candidates:${pendingCandidates.repo}` && !report;
+                return (
+                  <div
+                    key={pkg}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8,
+                      padding: "6px 10px", fontSize: 11, borderRadius: 5,
+                      border: "1px solid var(--border)", background: "var(--bg-hover)",
+                      fontFamily: "var(--font-mono)", flexWrap: "wrap",
+                    }}
+                  >
+                    <span style={{ flex: 1, minWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{pkg}</span>
+                    {!report && (
+                      <button
+                        type="button"
+                        onClick={() => void detectCandidates(pendingCandidates.repo, pendingCandidates.candidates.map((c) => c.package))}
+                        disabled={isDetecting}
+                        style={{ fontSize: 10, color: "var(--accent)", background: "none", border: "none", cursor: isDetecting ? "default" : "pointer" }}
+                      >
+                        {isDetecting ? t("dsh.detecting") : t("dsh.detect")}
+                      </button>
+                    )}
+                    {report && (
+                      <span style={{ fontSize: 10, color: report.adaptable ? "#16a34a" : "#ef4444", flexShrink: 0 }}>
+                        {report.adaptable ? t("dsh.adaptable") : t("dsh.notAdaptable")} · {t("dsh.adaptScore", { score: String(report.score) })}
+                      </span>
+                    )}
+                    {report?.adaptable && (
+                      <button
+                        type="button"
+                        onClick={() => { setPendingCandidates(null); void mutate("install", pkg); }}
+                        disabled={busy === pkg}
+                        style={{ fontSize: 10, color: "#fff", background: "var(--accent)", border: "none", borderRadius: 4, padding: "2px 8px", cursor: busy === pkg ? "default" : "pointer" }}
+                      >
+                        {busy === pkg ? t("i18n.installing") : t("i18n.install")}
+                      </button>
+                    )}
+                    {report && !report.adaptable && (
+                      <span style={{ fontSize: 10, color: "var(--text-dim)", flexBasis: "100%", lineHeight: 1.4, overflowWrap: "anywhere" }}>
+                        {report.reason}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <button type="button" onClick={() => setPendingCandidates(null)} style={{ ...btnStyle(), marginTop: 7, fontSize: 10 }}>
               {t("dsh.cancel")}
@@ -539,7 +600,7 @@ export function DshMarketPanel({
                       opacity: busy === item.repo ? 0.6 : 1,
                     }}
                   >
-                    {busy === item.repo ? t("i18n.installing") : t("i18n.install")}
+                    {busy === item.repo ? t("dsh.detecting") : t("dsh.detect")}
                   </button>
                 </div>
               </div>
@@ -595,6 +656,8 @@ export function DshMarketPanel({
               const isInstalled = item.category === "B" && installedSet.has(item.package);
               const isBundled = item.category === "B" && Boolean(item.includedIn && installedSet.has(item.includedIn));
               const isBusy = busy === item.package;
+              const isDetecting = detecting === item.package;
+              const report = reports[item.package];
               return (
                 <div key={item.package} style={{ margin: "0 4px 8px", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 11px", background: "var(--bg-panel)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
@@ -607,6 +670,15 @@ export function DshMarketPanel({
                   </div>
                   <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 3, lineHeight: 1.45 }}>{item.description}</div>
                   <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 3 }}>{item.reason}</div>
+                  {item.seams && item.seams.length > 0 && (
+                    <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>
+                      {item.seams.map((seam) => (
+                        <span key={seam} style={{ fontSize: 9, color: "var(--text-dim)", background: "var(--bg-hover)", padding: "1px 5px", borderRadius: 3, fontFamily: "var(--font-mono)" }}>
+                          {seam}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
                   <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                     {dshRepoOf(item.package) && (
@@ -618,6 +690,55 @@ export function DshMarketPanel({
                       npm ↗
                     </a>
                   </div>
+
+                  {report && (
+                    <div style={{ marginTop: 7, borderTop: "1px solid var(--border)", paddingTop: 7 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span
+                          style={{
+                            fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 4,
+                            background: report.adaptable ? "rgba(34,197,94,0.12)" : "rgba(239,68,68,0.1)",
+                            color: report.adaptable ? "#16a34a" : "#ef4444",
+                          }}
+                        >
+                          {report.adaptable ? t("dsh.adaptable") : t("dsh.notAdaptable")}
+                        </span>
+                        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                          {t("dsh.adaptScore", { score: String(report.score) })}
+                        </span>
+                        {report.capabilities.length > 0 && (
+                          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                            {t("dsh.capsLabel")}: {report.capabilities.join(", ")}
+                          </span>
+                        )}
+                      </div>
+                      {!report.adaptable && (
+                        <div style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 4, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+                          {report.reason}
+                        </div>
+                      )}
+                      {report.seams.length > 0 && (
+                        <div style={{ display: "flex", gap: 4, marginTop: 5, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 9, color: "var(--text-dim)", alignSelf: "center" }}>{t("dsh.seamsLabel")}:</span>
+                          {report.seams.map((s) => {
+                            const stColor =
+                              s.status === "mapped" ? "#16a34a"
+                              : s.status === "pending" ? "#f59e0b"
+                              : s.status === "blocked" ? "#ef4444" : "var(--text-dim)";
+                            return (
+                              <span
+                                key={s.seam}
+                                title={`${s.seam} → ${s.pi}`}
+                                style={{ fontSize: 9, color: stColor, background: "var(--bg-hover)", padding: "1px 5px", borderRadius: 3, fontFamily: "var(--font-mono)" }}
+                              >
+                                {s.seam} · {s.status === "mapped" ? t("dsh.seamMapped") : s.status === "pending" ? t("dsh.seamPending") : s.status === "blocked" ? t("dsh.seamBlocked") : s.pi}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {item.category === "A" && item.piRecommend && (
                     <div style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 7 }}>
@@ -635,22 +756,41 @@ export function DshMarketPanel({
                   )}
 
                   {item.category === "B" && (
-                    <div style={{ marginTop: 7, borderTop: "1px solid var(--border)", paddingTop: 7 }}>
-                      <button
-                        type="button"
-                        onClick={() => { if (!isInstalled && !isBusy && !isBundled) void mutate("install", item.package); }}
-                        disabled={isInstalled || isBundled || isBusy}
-                        title={isBundled ? t("dsh.includedInBundle", { pkg: item.includedIn ?? "" }) : isInstalled ? t("i18n.installed") : ""}
-                        style={{
-                          padding: "4px 12px", fontSize: 11, fontWeight: 600, borderRadius: 5, border: "none",
-                          background: isInstalled || isBundled ? "rgba(34,197,94,0.1)" : "var(--accent)",
-                          color: isInstalled || isBundled ? "#16a34a" : "#fff",
-                          cursor: isInstalled || isBundled || isBusy ? "default" : "pointer",
-                          opacity: isBusy ? 0.6 : 1,
-                        }}
-                      >
-                        {isBundled ? `✓ ${t("dsh.includedIn")}` : isInstalled ? `✓ ${t("i18n.installed")}` : isBusy ? t("i18n.installing") : t("i18n.install")}
-                      </button>
+                    <div style={{ marginTop: 7, borderTop: "1px solid var(--border)", paddingTop: 7, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {isBundled ? (
+                        <span style={{ fontSize: 10, color: "#16a34a" }}>✓ {t("dsh.includedInBundle", { pkg: item.includedIn ?? "" })}</span>
+                      ) : isInstalled ? (
+                        <span style={{ fontSize: 10, color: "#16a34a" }}>✓ {t("i18n.installed")}</span>
+                      ) : !report ? (
+                        <button
+                          type="button"
+                          onClick={() => { if (!isDetecting) void detectPackage(item.package); }}
+                          disabled={isDetecting}
+                          style={{
+                            padding: "4px 12px", fontSize: 11, fontWeight: 600, borderRadius: 5,
+                            border: "1px solid var(--border)", background: "none", color: "var(--text-muted)",
+                            cursor: isDetecting ? "default" : "pointer", opacity: isDetecting ? 0.6 : 1,
+                          }}
+                        >
+                          {isDetecting ? t("dsh.detecting") : t("dsh.detect")}
+                        </button>
+                      ) : report.adaptable ? (
+                        <button
+                          type="button"
+                          onClick={() => { if (!isBusy) void mutate("install", item.package); }}
+                          disabled={isBusy}
+                          title={t("dsh.adaptableHint")}
+                          style={{
+                            padding: "4px 12px", fontSize: 11, fontWeight: 600, borderRadius: 5, border: "none",
+                            background: "var(--accent)", color: "#fff",
+                            cursor: isBusy ? "default" : "pointer", opacity: isBusy ? 0.6 : 1,
+                          }}
+                        >
+                          {isBusy ? t("i18n.installing") : t("i18n.install")}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{t("dsh.notAdaptable")}</span>
+                      )}
                     </div>
                   )}
 

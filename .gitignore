@@ -64,3 +64,10 @@ tools/browser-use-server/*.log
 # 日志与临时文件
 *.log
 *.tmp
+
+# 临时调试/测试脚本（根目录与 electron/test-*），不入库
+/test-builtin*.js
+/test-e*.cjs
+electron/test-*.cjs
+electron/test-*.js
+electron/test-api.js

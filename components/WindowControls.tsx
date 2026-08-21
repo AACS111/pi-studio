@@ -72,21 +72,25 @@ function ControlButton({
 }
 
 export function WindowControls() {
-  const api = getElectronApi();
+  // 不能在渲染期间同步读 window（SSR 无 window → null；Electron 注入后有 → div），
+  // 会导致 hydration mismatch（服务器 HTML 无 div，客户端有）。
+  // 改为挂载后（useEffect）再读 API：SSR 与首次 hydration 都返回 null，再客户端补渲染。
+  const [api, setApi] = useState<PiElectronApi | undefined>(undefined);
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
-    if (!api?.window) return;
+    const a = getElectronApi();
+    setApi(a);
+    if (!a?.window) return;
     let alive = true;
-    void api.window.isMaximized().then((m) => {
+    void a.window.isMaximized().then((m) => {
       if (alive) setIsMaximized(m);
     });
-    const off = api.window.onMaximizedChange((m) => setIsMaximized(m));
+    const off = a.window.onMaximizedChange((m) => setIsMaximized(m));
     return () => {
       alive = false;
       off();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!api?.window) return null;

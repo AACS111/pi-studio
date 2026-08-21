@@ -1,5 +1,7 @@
 allowBuilds:
-  '@google/genai': set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+  '@google/genai': true
+  electron-winstaller: true
+  protobufjs: true
+  sharp: true
+  univer-cli: true
+  unrs-resolver: true

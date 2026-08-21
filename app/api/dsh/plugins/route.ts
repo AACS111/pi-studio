@@ -1,35 +1,17 @@
 import { NextResponse } from "next/server";
 import { installPlugin, removePlugin, listInstalledPlugins } from "@/lib/plugins/adapters/dsh/dsh-plugin-store";
-import { loadDshPlugin } from "@/lib/plugins/adapters/dsh/dsh-adapter";
+import { loadDshPlugin, ensureDshPluginsLoaded } from "@/lib/plugins/adapters/dsh/dsh-adapter";
+import { registerDshClientExtension } from "@/lib/plugins/adapters/dsh/dsh-client-adapter";
 import { registerPlugin, unregisterPlugin, listPlugins } from "@/lib/plugins/core/plugin-registry";
-import { installUiPlugin, startDshUi } from "@/lib/dsh-ui-runtime";
+import { unregisterPluginExtensions } from "@/lib/plugins/ui/ui-registry";
+import { detectDshPackage } from "@/lib/plugins/adapters/dsh/dsh-detect";
 
 export const dynamic = "force-dynamic";
 
-/** 读 npm registry 元数据，判断包是否 UI 插件（dsh.client.platform === "web"）。 */
-async function isUiPlugin(pkg: string): Promise<boolean> {
-  const url = `https://registry.npmjs.org/${pkg.replace("/", "%2F")}`;
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "pi-studio/0.8", Accept: "application/json" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return false;
-    const json = (await res.json()) as {
-      "dist-tags"?: { latest?: string };
-      versions?: Record<string, { dsh?: { client?: { platform?: string } } }>;
-    };
-    const latest = json["dist-tags"]?.latest;
-    const v = latest ? json.versions?.[latest] : undefined;
-    return v?.dsh?.client?.platform === "web";
-  } catch {
-    return false;
-  }
-}
-
 // GET /api/dsh/plugins — installed DSH plugins + loaded/bridged artifacts.
+// 先确保已安装插件已加载（幂等；UI 刷新插件列表即触发加载，不依赖会话创建）。
 export async function GET() {
+  await ensureDshPluginsLoaded();
   return NextResponse.json({
     installed: listInstalledPlugins(),
     loaded: listPlugins()
@@ -60,21 +42,16 @@ export async function POST(req: Request) {
   if (!pkg) return NextResponse.json({ error: "package required" }, { status: 400 });
 
   if (action === "install") {
-    // UI 插件（面板/皮肤等）走 DSH Web UI 运行时；tool/skill 插件走 Cordis 桥接。
-    if (await isUiPlugin(pkg)) {
-      const inst = await installUiPlugin(pkg);
-      if (!inst.ok) {
-        return NextResponse.json({ error: inst.output }, { status: 500 });
-      }
-      const snapshot = await startDshUi();
-      return NextResponse.json({
-        success: true,
-        ui: true,
-        package: pkg,
-        url: snapshot.url,
-        status: snapshot.status,
-        error: snapshot.error,
-      });
+    // 安装前强制适配检测：只有能被 DSH Adapter 承载的插件才允许安装。
+    const report = await detectDshPackage(pkg);
+    if (!report.adaptable) {
+      return NextResponse.json(
+        {
+          error: report.reason,
+          report,
+        },
+        { status: 409 },
+      );
     }
 
     const installResult = await installPlugin(pkg);
@@ -92,6 +69,8 @@ export async function POST(req: Request) {
         artifacts: result.artifacts,
         loadedAt: Date.now(),
       });
+      // 若插件带 dsh.client manifest，顺带注册 Pi UI 扩展（sidebar 条目）。
+      const clientExt = registerDshClientExtension(pkg);
       return NextResponse.json({
         success: true,
         installed: listInstalledPlugins(),
@@ -100,9 +79,31 @@ export async function POST(req: Request) {
           compat: result.compat,
           toolCount: result.artifacts.tools.length,
           skillCount: result.artifacts.skillPaths.length,
+          ui: clientExt != null,
         },
       });
     } catch (error) {
+      // 纯 client UI 插件：无 host 入口（normalizeDshModule 返回 null → throw），
+      // 但有 dsh.client manifest 时仍可注册为 Pi UI 扩展。
+      const clientExt = registerDshClientExtension(pkg);
+      if (clientExt) {
+        return NextResponse.json({
+          success: true,
+          installed: listInstalledPlugins(),
+          loaded: {
+            package: pkg,
+            compat: {
+              score: 100,
+              verified: false,
+              unmapped: [],
+              notes: ["client-ui plugin; registered as Pi UI extension (no host entry)"],
+            },
+            toolCount: 0,
+            skillCount: 0,
+            ui: true,
+          },
+        });
+      }
       return NextResponse.json(
         { error: error instanceof Error ? error.message : String(error) },
         { status: 500 },
@@ -116,5 +117,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: removeResult.output }, { status: 500 });
   }
   unregisterPlugin(`dsh:${pkg}`);
+  unregisterPluginExtensions(`dsh:${pkg}`);
   return NextResponse.json({ success: true, installed: listInstalledPlugins() });
 }

@@ -111,7 +111,7 @@ export function CommandPalette(props: Props) {
         hint: t("activity.terminalHint"),
         keywords: "shell terminal command line",
         icon: <TerminalIcon />,
-        run: () => props.onSelectActivity("terminal"),
+        run: () => { props.onSelectActivity("rightPanel"); },
       },
       {
         id: "go-settings",

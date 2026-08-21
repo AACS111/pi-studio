@@ -15,19 +15,15 @@ import { writePrivateFileAtomicSync } from "@/lib/atomic-file";
 
 const STORE_DIR = join(getInternalDir(), "dsh-plugins");
 
-/** 核心服务包：随插件一起安装，保证 peer 版本一致（POC 验证过的集合）。 */
+/** 核心服务包：随插件一起安装，保证 peer 版本一致（POC 验证过的最小集合）。
+ *  只保留 host 桥接必需（cordis + fs/tools/system-prompt）；沙箱/llm/session 等
+ *  完整 host 能力包不装——它们会与新版插件（如 dsh-better-sidebar 依赖的
+ *  dsh-agent@0.1.0-rc.6）的 peer 版本冲突，且 Pi 的裸后端用不到。 */
 const CORE_DEPS = [
   "@deepseek-ai/cordis@4.0.1",
-  "@deepseek-ai/dsh-fs",
-  "@deepseek-ai/dsh-tools",
-  "@deepseek-ai/dsh-system-prompt",
-  "@deepseek-ai/dsh-sandbox",
-  "@deepseek-ai/dsh-sandbox-policy",
-  "@deepseek-ai/dsh-llm",
-  "@deepseek-ai/dsh-session",
-  "@deepseek-ai/dsh-invariants",
-  "@deepseek-ai/dsh-user-approval",
-  "@deepseek-ai/dsh-brand",
+  "@deepseek-ai/dsh-fs@0.0.1-rc.1",
+  "@deepseek-ai/dsh-tools@0.0.1-rc.1",
+  "@deepseek-ai/dsh-system-prompt@0.0.1-rc.1",
   "@deepseek-ai/schemastery",
 ];
 
@@ -109,7 +105,7 @@ export async function installPlugin(pkg: string): Promise<{ ok: boolean; output:
   if (!safe || !/^[\w@./-]+$/.test(safe)) return { ok: false, output: "invalid package name" };
   const storeDir = getDshPluginStoreDir();
   const result = await runNpm(
-    ["install", "--prefix", storeDir, "--no-audit", "--no-fund", "--loglevel=error", safe, ...CORE_DEPS],
+    ["install", "--prefix", storeDir, "--no-audit", "--no-fund", "--legacy-peer-deps", "--loglevel=error", safe, ...CORE_DEPS],
     dirname(storeDir),
   );
   if (result.ok) {

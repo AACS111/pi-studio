@@ -14,6 +14,7 @@ import { DSH_CTX_SERVICES, DSH_CONTRACT_VERSION } from "./dsh-contract";
 import { createDshRuntime, normalizeDshModule } from "./dsh-runtime";
 import { dshToolsToPiTools } from "./dsh-tool-adapter";
 import { listInstalledPlugins, loadPluginModule, pluginModulePath } from "./dsh-plugin-store";
+import { registerDshClientExtension } from "./dsh-client-adapter";
 
 /** 已知可提供的服务名（Pi 宿主已实现或计划实现的 ctx 服务）。 */
 const KNOWN_SERVICES = new Set<string>([...DSH_CTX_SERVICES]);
@@ -62,15 +63,46 @@ export interface DshLoadResult {
 /**
  * 加载并桥接一个已安装的 DSH 插件包。
  * 返回产物（tools + skillPaths）+ 兼容性报告。
+ *
+ * 「host 侧不可用」的三种情况（import 失败 / 无有效入口 / inject 宿主 seam）
+ * 统一降级为「仅 client 侧」产物而非抛错：client.js 是独立 bundle，host 侧
+ * 依赖（node-pty/ws 等）缺失不影响 client UI 加载（dsh-client-adapter 负责）。
  */
 export async function loadDshPlugin(pkg: string): Promise<DshLoadResult> {
-  const mod = await loadPluginModule(pkg);
+  const pkgPath = pluginModulePath(pkg);
+  const skillPaths = findSkillPaths(pkgPath);
+  const version = readVersion(pkg);
+  const clientOnly = (note: string, unmapped: string[] = []): DshLoadResult => ({
+    compat: {
+      score: 0,
+      verified: false,
+      unmapped,
+      notes: [`${note} — 仅 client 侧`],
+    },
+    artifacts: { packageName: pkg, version, tools: [], skillPaths, unmappedServices: unmapped },
+  });
+
+  let mod: unknown;
+  try {
+    mod = await loadPluginModule(pkg);
+  } catch (error) {
+    // host 入口 import 失败（缺 node-pty/ws/dsh-settings 等依赖）→ 仅 client 侧。
+    return clientOnly(`host entry import failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
   const entry = normalizeDshModule(mod);
   if (!entry) {
-    throw new Error(`DSH plugin "${pkg}" does not export a valid plugin entry (function/class/{apply})`);
+    // host 入口无有效插件入口（纯 client 插件）→ 仅 client 侧。
+    return clientOnly("no valid host plugin entry (client-only)");
   }
 
   const unmapped = (entry.inject ?? []).filter((s) => !KNOWN_SERVICES.has(s));
+  if (unmapped.length > 0) {
+    // host 侧 inject 了 Pi 未提供的服务（webServer/session/terminal 等宿主 seam）→
+    // Cordis 挂载会因服务缺失而 PENDING（await 永远不 resolve），跳过 host 桥接。
+    return clientOnly(`host seam unavailable: ${unmapped.join(", ")}`, unmapped);
+  }
+
   const runtime = await createDshRuntime();
   let tools: ReturnType<typeof dshToolsToPiTools>;
   let skippedConflicts = 0;
@@ -84,12 +116,8 @@ export async function loadDshPlugin(pkg: string): Promise<DshLoadResult> {
     runtime.dispose();
   }
 
-  const pkgPath = pluginModulePath(pkg);
-  const skillPaths = findSkillPaths(pkgPath);
-  const version = readVersion(pkg);
-
   const compat: CompatReport = {
-    score: unmapped.length === 0 ? 100 : Math.max(0, 100 - unmapped.length * 25),
+    score: 100,
     verified: tools.length > 0,
     unmapped,
     notes: [
@@ -154,21 +182,32 @@ export function ensureDshPluginsLoaded(): Promise<void> {
       const loaded = new Set(listPlugins().map((p) => p.id));
       for (const pkg of installed) {
         const id = `dsh:${pkg}`;
-        if (loaded.has(id)) continue;
+        // 1) host 侧：工具 / 技能桥接（真 Cordis + Pi Service）
+        if (!loaded.has(id)) {
+          try {
+            const result = await loadDshPlugin(pkg);
+            registerPlugin({
+              id,
+              origin: "dsh",
+              name: pkg,
+              version: result.artifacts.version,
+              compat: result.compat,
+              artifacts: result.artifacts,
+              loadedAt: Date.now(),
+            });
+          } catch (error) {
+            console.error(
+              `[pi-studio] failed to load DSH plugin "${pkg}":`,
+              error instanceof Error ? error.message : error,
+            );
+          }
+        }
+        // 2) client 侧：UI 扩展注册（纯 client 插件无 host 入口也能进 Pi 侧边栏）
         try {
-          const result = await loadDshPlugin(pkg);
-          registerPlugin({
-            id,
-            origin: "dsh",
-            name: pkg,
-            version: result.artifacts.version,
-            compat: result.compat,
-            artifacts: result.artifacts,
-            loadedAt: Date.now(),
-          });
+          registerDshClientExtension(pkg);
         } catch (error) {
           console.error(
-            `[pi-studio] failed to load DSH plugin "${pkg}":`,
+            `[pi-studio] failed to register DSH client extension "${pkg}":`,
             error instanceof Error ? error.message : error,
           );
         }

@@ -223,7 +223,15 @@ univer-view-cache.ts  xlsx 导出缓存（30min TTL + 同 key 合并 + edit-comm
 univer-compact.ts     导入后压缩：删除已合并 worktree 的 seed/artifact 冗余行（34MB→9.8MB 量级）
 univer-user-edits.ts  「u」前缀在线编辑提交的旁路标记（<数据目录>/.internal/pi-web-univer-user-edits.json）
 ket-bridge.ts         加密 .xlsx 解密（WPS KET COM：首选 SaveAs 51，兜底 COM 取数重建；结果按
-                      源路径|大小|mtime|密码 缓存到内部目录，上限 32 个 / 7 天）
+                      源路径|大小|mtime|密码 缓存到内部目录，上限 32 个 / 7 天）。2026-08-17 实测修复：
+                      WPS 12.0 的 SaveAs 输出必被 TSD 包裹（含普通文件，csv/xls/xlsb/xlsx 全包）、工作表级
+                      COM 被拒（E_ACCESSDENIED，只能读 Application 级活动工作表）；PS 5.1 二维数组逐格索引
+                      走反射慢路径（24780 格分钟级挂死，原实现在合并检测循环挂死）→ 必须 foreach 展平 1D；
+                      ConvertTo-Json 大嵌套数组极慢 → 改 StringBuilder 紧凑行协议；无密码打开需密码文件时
+                      必须显式传空串密码参数（缺参弹「文档已加密」模态框阻塞，DisplayAlerts 抑制不了）；
+                      COM 返回数组维度可能 ≠ SpecialCells 行列（69x20 → 69x46）→ 以数组实际维度建网格防
+                      越界；超时残留 et/wps 进程会阻塞后续所有 KET 调用 → 脚本上报 KET_WPS_PIDS + Node
+                      finally taskkill /T /F 清理。提取重建 partial=true（仅活动表），sheetsTotal 给总数
 ```
 
 **Skill / 插件**

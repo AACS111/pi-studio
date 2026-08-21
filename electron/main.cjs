@@ -17,7 +17,28 @@
  *                               用户可在 UI「修改目录」覆盖此默认值）
  */
 
+// Electron npm 包 index.js 只导出 exe 路径字符串，会遮蔽 Electron 内置 API 模块。
+// 临时重命名 index.js 和 package.json 让 require("electron") 回退到内置模块。
+(function () {
+  const path = require("path");
+  const fs = require("fs");
+  const dir = path.join(__dirname, "..", "node_modules", "electron");
+  const indexJs = path.join(dir, "index.js");
+  const indexBak = indexJs + ".pi-bak";
+  const pkgJson = path.join(dir, "package.json");
+  const pkgBak = pkgJson + ".pi-bak";
+  try { if (fs.existsSync(indexJs)) fs.renameSync(indexJs, indexBak); } catch {}
+  try { if (fs.existsSync(pkgJson)) fs.renameSync(pkgJson, pkgBak); } catch {}
+  globalThis.__piElectronRestore = () => {
+    try { if (fs.existsSync(indexBak)) fs.renameSync(indexBak, indexJs); } catch {}
+    try { if (fs.existsSync(pkgBak)) fs.renameSync(pkgBak, pkgJson); } catch {}
+  };
+})();
+
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell, WebContentsView } = require("electron");
+
+// require 完成后立即恢复（后续不再需要内置模块解析）
+if (globalThis.__piElectronRestore) { globalThis.__piElectronRestore(); globalThis.__piElectronRestore = undefined; }
 const { spawn, spawnSync } = require("child_process");
 const http = require("http");
 const path = require("path");

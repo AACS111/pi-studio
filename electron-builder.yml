@@ -75,6 +75,10 @@ files:
   # AI 编辑报 ENOENT: view/index.html，daemon 起不来）
   - "!**/.next-pkg/**/*.html"
   - "!**/*.log"
+  # ⚠️ .pi-web-config.json 包含开发者本机的 uploadsDir 路径（如 D:\zheng\data\APP\pi），
+  # 打包时绝不能带入——否则用户安装后数据目录指向不存在的绝对路径，导致文件浏览
+  # 等依赖数据目录的功能在重启后「爆红」。
+  - "!**/.pi-web-config.json"
   - "!**/测试模板*"
 
 win:

@@ -11,6 +11,7 @@ import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } fro
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
 import { resolveProject, type ProjectInfo } from "./worktree";
+import { readTeamsIndex } from "./team/store";
 
 export { getAgentDir };
 
@@ -18,6 +19,9 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
   const piSessions: PiSessionInfo[] = await SessionManager.listAll();
   const pathToId = new Map<string, string>();
   for (const s of piSessions) pathToId.set(sessionPathKey(s.path), s.id);
+
+  // 项目组标记：index.json 是唯一来源，避免污染 pi 会话文件
+  const teamsIndex = readTeamsIndex() as Record<string, { teamId: string; name: string; uiMode: "team" | "chat" }>;
 
   // Resolve each unique cwd to its project root (main repo shared by all
   // worktrees). resolveProject caches per-cwd, so this is cheap after warmup.
@@ -30,6 +34,7 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
   return piSessions.map((s) => {
     cacheSessionPath(s.id, s.path);
     const project = s.cwd ? projectByCwd.get(s.cwd) : undefined;
+    const team = teamsIndex[s.id];
     return {
       path: s.path,
       id: s.id,
@@ -42,6 +47,7 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       parentSessionId: s.parentSessionPath ? pathToId.get(sessionPathKey(s.parentSessionPath)) : undefined,
       projectRoot: project?.projectRoot ?? s.cwd,
       ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
+      ...(team ? { teamId: team.teamId, teamName: team.name, teamUiMode: team.uiMode } : {}),
     };
   });
 }

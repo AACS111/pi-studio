@@ -298,6 +298,12 @@ export interface SessionInfo {
   projectRoot?: string;
   /** Branch name when cwd is a linked git worktree (not the main checkout) */
   worktreeBranch?: string;
+  /** Team-backed session: set when this session is a 项目组 (multi-agent team) */
+  teamId?: string;
+  /** 项目组显示名（teamId 存在时） */
+  teamName?: string;
+  /** 项目组 UI 模式："team"=群聊视图，"chat"=已转回普通会话（数据保留） */
+  teamUiMode?: "team" | "chat";
 }
 
 export interface RecentFile {

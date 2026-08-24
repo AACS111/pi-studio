@@ -78,6 +78,8 @@ interface Props {
   selectedSessionId: string | null;
   onSelectSession: (session: SessionInfo, isRestore?: boolean) => void;
   onNewSession?: (sessionId: string, cwd: string) => void;
+  /** 新建项目组（create 模式）：传入选中的工作目录 */
+  onCreateTeam?: (cwd: string) => void;
   initialSessionId?: string | null;
   skipInitialProjectSelection?: boolean;
   onInitialRestoreDone?: () => void;
@@ -331,7 +333,7 @@ function buildSessionTree(sessions: SessionInfo[]): SessionTreeNode[] {
   return roots;
 }
 
-export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onRunningSessionsChange, onUnreadSessionsChange }: Props) {
+export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSession, onCreateTeam, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onOpenFile, explorerRefreshKey, onExplorerRefresh, onAtMention, onAtMentions, onRunningSessionsChange, onUnreadSessionsChange }: Props) {
   const { t } = useI18n();
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -339,12 +341,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
   const [homeDir, setHomeDir] = useState<string>("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
   const [projectFilter, setProjectFilter] = useState("");
   const [customPathOpen, setCustomPathOpen] = useState(false);
   const [customPathValue, setCustomPathValue] = useState("");
   const [customPathError, setCustomPathError] = useState<string | null>(null);
   const [customPathValidating, setCustomPathValidating] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
   const [explorerOpen, setExplorerOpen] = useState(true);
   const [explorerKey, setExplorerKey] = useState(0);
   const [explorerUploadBusy, setExplorerUploadBusy] = useState(false);
@@ -636,6 +640,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         setDropdownOpen(false);
         setProjectFilter("");
       }
+      if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
+        setNewMenuOpen(false);
+      }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -716,6 +723,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
     onNewSession?.(tempId, selectedCwd);
   }, [selectedCwd, onNewSession]);
+
+  const handleCreateTeam = useCallback(() => {
+    if (!selectedCwd || !onCreateTeam) return;
+    onCreateTeam(selectedCwd);
+  }, [selectedCwd, onCreateTeam]);
+
+  // 新建菜单（＋下拉）：新建会话 / 新建项目组
+  const newMenuBtnStyle: CSSProperties = {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "7px 10px", background: "none", border: "none", borderRadius: 7,
+    color: "var(--text)", cursor: "pointer", fontSize: 12.5, textAlign: "left", width: "100%",
+  };
 
   const recentProjects = getRecentProjects(allSessions);
   const showProjectFilter = recentProjects.length > 8;
@@ -998,28 +1017,56 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
             )}
           </button>
-          <button
-            type="button"
-            onClick={handleNewSession}
-            disabled={!selectedCwd}
-            title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "center",
-              width: 26, height: 26, padding: 0,
-              background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 7,
-              color: selectedCwd ? "var(--text)" : "var(--text-dim)",
-              cursor: selectedCwd ? "pointer" : "not-allowed",
-              opacity: selectedCwd ? 1 : 0.5,
-              transition: "background 0.12s, color 0.12s",
-            }}
-            onMouseEnter={(e) => { if (selectedCwd) { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--accent)"; } }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = selectedCwd ? "var(--text)" : "var(--text-dim)"; }}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
+          <div ref={newMenuRef} style={{ position: "relative" }}>
+            <button
+              type="button"
+              onClick={() => setNewMenuOpen((v) => !v)}
+              disabled={!selectedCwd}
+              title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 26, height: 26, padding: 0,
+                background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 7,
+                color: selectedCwd ? "var(--text)" : "var(--text-dim)",
+                cursor: selectedCwd ? "pointer" : "not-allowed",
+                opacity: selectedCwd ? 1 : 0.5,
+                transition: "background 0.12s, color 0.12s",
+              }}
+              onMouseEnter={(e) => { if (selectedCwd) { e.currentTarget.style.background = "var(--bg-selected)"; e.currentTarget.style.color = "var(--accent)"; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = selectedCwd ? "var(--text)" : "var(--text-dim)"; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+            {newMenuOpen && selectedCwd && (
+              <div
+                style={{
+                  position: "absolute", right: 0, top: 30, zIndex: 60,
+                  minWidth: 150,
+                  background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 10,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                  padding: 4, display: "flex", flexDirection: "column", gap: 2,
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => { setNewMenuOpen(false); handleNewSession(); }}
+                  style={newMenuBtnStyle}
+                >
+                  💬 <span>{t("sidebar.newSession")}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setNewMenuOpen(false); handleCreateTeam(); }}
+                  style={newMenuBtnStyle}
+                >
+                  👥 <span>{t("team.sidebar.createTeam")}</span>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1454,6 +1501,9 @@ function SessionItem({
               <circle cx="6" cy="18" r="3" />
               <path d="M18 9a9 9 0 0 1-9 9" />
             </svg>
+          )}
+          {(session.teamId && session.teamUiMode === "team") && (
+            <span style={{ flexShrink: 0, fontSize: 11, lineHeight: 1 }} title={title}>👥</span>
           )}
           {isPinned && (
             <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none" style={{ flexShrink: 0, color: "var(--accent)" }} aria-hidden="true">

@@ -5,6 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
 import { ChatWindow } from "./ChatWindow";
+import { TeamChat } from "./TeamChat";
+import { TeamCreateDialog } from "./TeamCreateDialog";
 import { FileViewer } from "./FileViewer";
 import { WebViewer } from "./WebViewer";
 import { TabBar, type Tab } from "./TabBar";
@@ -111,6 +113,7 @@ export function AppShell() {
   const isMobile = useIsMobile();
   useViewportHeight();
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
+  const [teamDialog, setTeamDialog] = useState<{ mode: "convert"; sessionId?: string } | null>(null);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
@@ -1013,7 +1016,7 @@ export function AppShell() {
   // Session title + running status for the top-left of the chat column.
   const isSessionRunning = Boolean(selectedSession && runningSessionIds.has(selectedSession.id));
   const sessionTitle = selectedSession
-    ? (selectedSession.name || selectedSession.firstMessage.slice(0, 50) || selectedSession.id.slice(0, 12))
+    ? (selectedSession.teamName || selectedSession.name || selectedSession.firstMessage.slice(0, 50) || selectedSession.id.slice(0, 12))
     : translate("sidebar.selectSession");
 
   useEffect(() => {
@@ -1036,6 +1039,24 @@ export function AppShell() {
         selectedSessionId={selectedSession?.id ?? null}
         onSelectSession={handleSelectSession}
         onNewSession={handleNewSession}
+        onCreateTeam={(cwd) => {
+          // 直接创建项目组（不弹窗）：POST /api/teams，默认仅组长
+          void fetch("/api/teams", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd }),
+          })
+            .then((r) => (r.ok ? r.json() : Promise.reject(r)))
+            .then((data) => {
+              setRefreshKey((k) => k + 1);
+              return fetch(`/api/sessions/${encodeURIComponent(data.sessionId)}`);
+            })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => {
+              if (d?.info) handleSelectSession(d.info as SessionInfo);
+            })
+            .catch(() => setRefreshKey((k) => k + 1));
+        }}
         initialSessionId={initialSessionId}
         skipInitialProjectSelection={initialNavigation.requestedCwd !== null}
         onInitialRestoreDone={handleInitialRestoreDone}
@@ -1066,6 +1087,7 @@ export function AppShell() {
           onOpenSkills={() => setSkillsConfigOpen(true)}
           onOpenPlugins={() => setPluginsConfigOpen(true)}
           onOpenUploads={() => setUploadsManagerOpen(true)}
+          onOpenTeamTemplateCreate={() => {/* 模板从项目组设置中配置 */}}
           onViewHistory={handleViewFullHistory}
           onAutoName={() => { void handleAutoName(); }}
         />
@@ -1459,6 +1481,23 @@ export function AppShell() {
               {sessionTitle}
             </span>
           </button>
+          {showChat && selectedSession && !selectedSession.teamId && (
+            <button
+              type="button"
+              onClick={() => setTeamDialog({ mode: "convert", sessionId: selectedSession.id })}
+              title={translate("team.convertAction")}
+              aria-label={translate("team.convertAction")}
+              style={{
+                display: "flex", alignItems: "center", gap: 5, height: "100%", padding: "0 10px",
+                background: "none", border: "none", borderRight: "1px solid var(--hairline)",
+                color: "var(--text-muted)", cursor: "pointer", flexShrink: 0, fontSize: 11, whiteSpace: "nowrap",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+            >
+              👥 {!isMobile && <span>{translate("team.convertAction")}</span>}
+            </button>
+          )}
           {showChat && projectTrust?.requiresTrust && !projectTrust.trusted && (
             <button
               type="button"
@@ -1635,6 +1674,14 @@ export function AppShell() {
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
+            selectedSession?.teamId && selectedSession.teamUiMode === "team" ? (
+              <TeamChat
+                key={`team-${selectedSession.id}`}
+                sessionId={selectedSession.id}
+                teamName={selectedSession.teamName ?? selectedSession.name}
+                onOpenFile={handleOpenLinkedFile}
+              />
+            ) : (
             <ChatWindow
               key={sessionKey}
               session={selectedSession}
@@ -1657,6 +1704,7 @@ export function AppShell() {
               aiEditContext={aiEditContext}
               onAiEditContextConsumed={() => setAiEditContext(null)}
             />
+            )
           ) : initialCwdStatus === "validating" ? (
             <div
               role="status"
@@ -2152,6 +2200,23 @@ export function AppShell() {
     )}
 
     {modelsConfigOpen && <ModelsConfig onClose={() => { setModelsConfigOpen(false); setModelsRefreshKey((k) => k + 1); }} />}
+    {teamDialog && (
+      <TeamCreateDialog
+        mode="convert"
+        sessionId={teamDialog.sessionId}
+        onClose={() => setTeamDialog(null)}
+        onCreated={(sessionId) => {
+          setTeamDialog(null);
+          setRefreshKey((k) => k + 1);
+          void fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+              if (data?.info) handleSelectSession(data.info as SessionInfo);
+            })
+            .catch(() => setRefreshKey((k) => k + 1));
+        }}
+      />
+    )}
     {projectTrustDialogOpen && projectTrustCwd && (
       <ProjectTrustDialog
         cwd={projectTrustCwd}

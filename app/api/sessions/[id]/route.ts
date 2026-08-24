@@ -12,6 +12,7 @@ import {
 } from "@/lib/session-reader";
 import { sessionPathKey } from "@/lib/session-path";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { readTeamsIndex } from "@/lib/team/store";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
@@ -139,6 +140,11 @@ export async function GET(
     const parentSessionId = header?.parentSession
       ? await resolveSessionIdByPath(header.parentSession)
       : undefined;
+
+    // 项目组标记：index.json 是唯一来源，需要合并到 info 中以便 AppShell 判断是否渲染 TeamChat
+    const teamsIndex = readTeamsIndex() as Record<string, { teamId: string; name: string; uiMode: "team" | "chat" }>;
+    const team = teamsIndex[id];
+
     const info = header ? {
       path: filePath,
       id: header.id,
@@ -155,6 +161,7 @@ export async function GET(
           })()
         : "(no messages)",
       parentSessionId,
+      ...(team ? { teamId: team.teamId, teamName: team.name, teamUiMode: team.uiMode } : {}),
     } : null;
 
     return NextResponse.json({

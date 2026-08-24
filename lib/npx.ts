@@ -26,10 +26,11 @@ export function resolveNodeExecutable(): string {
       // ignore
     }
   }
-  // If execPath is already real node (not electron), use it.
+  // If execPath is already real node (not electron / not electron-as-node), use it.
   const exe = execPath.toLowerCase();
-  if (!exe.includes("electron")) return execPath;
-  // Electron-as-node: find the real node on PATH.
+  const isElectronAsNode = process.env.ELECTRON_RUN_AS_NODE === "1";
+  if (!isElectronAsNode && !exe.includes("electron")) return execPath;
+  // Electron or electron-as-node: find the real node on PATH.
   const onPath = findNodeOnPath();
   if (onPath) return onPath;
   return execPath;

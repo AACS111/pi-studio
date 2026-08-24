@@ -18,6 +18,8 @@ export type ActivityOrPlugin = Activity | PluginActivityId;
 interface ActivityItem {
   id: Activity;
   titleKey: string;
+  /** 图标主色（解决“无色简单图标”——给每个功能一个可识别的 accent 色） */
+  tint?: string;
   icon: (active: boolean) => ReactNode;
 }
 
@@ -76,6 +78,7 @@ const ITEMS: ActivityItem[] = [
   {
     id: "sessions",
     titleKey: "activity.sessions",
+    tint: "#4f8ef7",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -85,6 +88,7 @@ const ITEMS: ActivityItem[] = [
   {
     id: "skills",
     titleKey: "activity.skills",
+    tint: "#8b5cf6",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M14.5 6.5v-3a1 1 0 0 0-1-1h-3a1 1 0 0 0-1 1v3" />
@@ -98,6 +102,7 @@ const ITEMS: ActivityItem[] = [
   {
     id: "dsh",
     titleKey: "activity.dshMarket",
+    tint: "#2ec27e",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M3 9l1.5-5h15L21 9" />
@@ -127,12 +132,14 @@ function RailButton({
   onClick,
   badge,
   children,
+  tint,
 }: {
   label: string;
   active?: boolean;
   onClick: () => void;
   badge?: ReactNode;
   children: ReactNode;
+  tint?: string;
 }) {
   const [showTip, setShowTip] = useState(false);
   const timerRef = useRef<number | null>(null);
@@ -143,14 +150,14 @@ function RailButton({
 
   const enter = (e: MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.style.background = active ? "var(--accent-soft)" : "var(--bg-hover)";
-    e.currentTarget.style.color = active ? "var(--accent-hover)" : "var(--text)";
+    e.currentTarget.style.color = active ? "var(--accent-hover)" : (tint ?? "var(--text)");
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => setShowTip(true), 120);
   };
 
   const leave = (e: MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.style.background = active ? "var(--accent-soft)" : "transparent";
-    e.currentTarget.style.color = active ? "var(--accent-hover)" : "var(--text-muted)";
+    e.currentTarget.style.color = active ? "var(--accent-hover)" : (tint ?? "var(--text-muted)");
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = null;
     setShowTip(false);
@@ -176,7 +183,7 @@ function RailButton({
         background: active ? "var(--accent-soft)" : "transparent",
         border: "none",
         borderRadius: 10,
-        color: active ? "var(--accent-hover)" : "var(--text-muted)",
+        color: active ? "var(--accent-hover)" : (tint ?? "var(--text-muted)"),
         cursor: "pointer",
         transition: "background 0.12s, color 0.12s",
       }}
@@ -293,6 +300,7 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
           active={active === "sessions"}
           onClick={() => onSelect("sessions")}
           badge={sessionsBadge}
+          tint={ITEMS[0].tint}
         >
           {ITEMS[0].icon(active === "sessions")}
         </RailButton>
@@ -308,6 +316,7 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
             label={t(item.titleKey)}
             active={active === item.id}
             onClick={() => onSelect(item.id)}
+            tint={item.tint}
           >
             {item.icon(active === item.id)}
           </RailButton>

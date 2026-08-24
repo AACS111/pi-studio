@@ -41,7 +41,7 @@ export async function POST(req: Request) {
 
     console.log(`[skills/install] running: npx ${args.join(" ")}`);
     const { stdout, stderr } = await runNpx(args, {
-      timeout: 60000,
+      timeout: 180000,
       cwd: !isGlobal && cwd ? cwd : undefined,
       env: { ...process.env, FORCE_COLOR: "0" },
     });

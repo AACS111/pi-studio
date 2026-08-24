@@ -1,5 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
@@ -17,6 +18,7 @@ import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
+import { readCompactionSettings, writeCompactionSettings, hasExplicitCompaction, recommendedCompactionForWindow, type CompactionSettings } from "./compaction-settings";
 
 // ============================================================================
 // Types
@@ -88,6 +90,12 @@ export interface RpcSessionStartOptions {
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
   thinkingLevel?: ThinkingLevel;
+  /** 额外自定义工具（团队受控工具等），与 DSH 插件工具合并注入 */
+  customTools?: ToolDefinition[];
+  /** 覆盖默认系统提示词（团队角色 systemPrompt） */
+  systemPrompt?: string;
+  /** 覆盖上下文自动压缩设置（团队角色执行等长任务会话可单独调优；缺省跟随全局 settings.json） */
+  compaction?: Partial<CompactionSettings>;
 }
 
 // 完整颜色表来自 lib/pi-compat-check.ts（单一来源，冒烟测试共用）。
@@ -401,6 +409,7 @@ export class AgentSessionWrapper {
           isBashRunning: this.inner.isBashRunning,
           isCompacting: this.inner.isCompacting,
           autoCompactionEnabled: this.inner.autoCompactionEnabled,
+          compactionSettings: readCompactionSettings(),
           autoRetryEnabled: this.inner.autoRetryEnabled,
           model: model ? { id: model.id, provider: model.provider } : undefined,
           messageCount: 0,
@@ -523,6 +532,34 @@ export class AgentSessionWrapper {
       case "set_auto_compaction": {
         this.inner.setAutoCompactionEnabled(command.enabled as boolean);
         return null;
+      }
+
+      case "get_compaction_settings": {
+        return readCompactionSettings();
+      }
+
+      case "set_compaction": {
+        const next = writeCompactionSettings({
+          enabled: command.enabled as boolean | undefined,
+          reserveTokens: command.reserveTokens as number | undefined,
+          keepRecentTokens: command.keepRecentTokens as number | undefined,
+        });
+        // 同步当前会话内存（pi 压缩逻辑每次实时读 settingsManager，改内存即时生效）：
+        // enabled 走公开 setter（同时写全局），reserve/keepRecent 直接改 globalSettings 段。
+        this.inner.setAutoCompactionEnabled(next.enabled);
+        // 直接更新当前会话内存（pi 压缩逻辑每次实时读 settingsManager，改内存即时生效）
+        const settingsManager = this.inner.settingsManager as unknown as {
+          globalSettings?: { compaction?: unknown };
+        };
+        if (settingsManager?.globalSettings) {
+          settingsManager.globalSettings.compaction = {
+            enabled: next.enabled,
+            reserveTokens: next.reserveTokens,
+            keepRecentTokens: next.keepRecentTokens,
+          };
+        }
+        invalidateSessionListCache();
+        return next;
       }
 
       case "clear_queue": {
@@ -1175,7 +1212,7 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
-  const { toolNames, initialModel, thinkingLevel } = options;
+  const { toolNames, initialModel, thinkingLevel, customTools, systemPrompt, compaction } = options;
   const registry = getRegistry();
   const locks = getLocks();
 
@@ -1247,6 +1284,8 @@ export async function startRpcSession(
           : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
       });
+    // 合并 DSH 插件工具 + 调用方自定义工具（团队受控工具等）
+    const mergedCustomTools = [...dshTools, ...(customTools ?? [])];
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
@@ -1254,7 +1293,7 @@ export async function startRpcSession(
       ...(initial.thinkingLevel ? { thinkingLevel: initial.thinkingLevel } : {}),
       ...(initial.scopedModels.length > 0 ? { scopedModels: initial.scopedModels } : {}),
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
-      ...(dshTools.length > 0 ? { customTools: dshTools } : {}),
+      ...(mergedCustomTools.length > 0 ? { customTools: mergedCustomTools } : {}),
     });
 
     const persistedPreferences = await persistExplicitStartupPreferences(
@@ -1278,6 +1317,32 @@ export async function startRpcSession(
     // extensions stay usable in Pi Studio just like in the `pi` CLI.
     if (toolNames && toolNames.length > 0) {
       inner.setActiveToolsByName(withExtensionTools(inner, toolNames));
+    }
+
+    // 团队角色：覆盖默认系统提示词（角色 systemPrompt + 共享上下文已在其中）
+    if (systemPrompt && inner.agent.state) {
+      inner.agent.state.systemPrompt = systemPrompt;
+    }
+
+    // 上下文自动压缩：调用方可按会话覆盖（如团队角色长任务），否则跟随全局 settings.json。
+    // pi 的 reserveTokens/keepRecentTokens 由压缩逻辑每次实时读取 settingsManager，
+    // 因此先写全局（若提供覆盖则写合并结果），再同步 enabled 到当前会话。
+    const globalSettings = readCompactionSettings();
+    if (compaction) {
+      const merged = writeCompactionSettings(compaction);
+      inner.setAutoCompactionEnabled(merged.enabled);
+    } else {
+      // 仅当 settings.json 从未显式配置过 compaction 时，按当前模型窗口写入推荐阈值。
+      // （默认 16384/20000 对 131072 窗口触发点约 87.5% 偏晚；推荐值触发点≈85%窗口）
+      if (!hasExplicitCompaction()) {
+        const model = inner.model;
+        const window = model?.contextWindow ?? 0;
+        if (window > 0) {
+          const recommended = recommendedCompactionForWindow(window);
+          writeCompactionSettings(recommended);
+        }
+      }
+      inner.setAutoCompactionEnabled(globalSettings.enabled);
     }
 
     const wrapper = new AgentSessionWrapper(inner);

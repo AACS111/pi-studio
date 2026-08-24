@@ -5,6 +5,8 @@ import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor, normalizeHex } from "@/hooks/useAccentColor";
 import { BranchNavigator } from "./BranchNavigator";
+import { AgentLibraryPanel } from "./AgentLibraryPanel";
+import { TeamTemplatesPanel } from "./TeamTemplatesPanel";
 import type { SessionTreeNode } from "@/lib/types";
 
 interface Props {
@@ -18,6 +20,8 @@ interface Props {
   onOpenSkills: () => void;
   onOpenPlugins: () => void;
   onOpenUploads: () => void;
+  /** 用模板创建项目组（打开创建对话框并预选模板） */
+  onOpenTeamTemplateCreate?: (templateId: string) => void;
   onViewHistory: () => void;
   onAutoName: () => void;
 }
@@ -50,13 +54,15 @@ interface Row {
 
 /** Second-column panel shown when the Settings activity is selected.
  *  Hosts the app/session settings formerly in the sidebar footer popover. */
-export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branchActiveLeafId, onBranchLeafChange, onOpenModels, onOpenSkills, onOpenPlugins, onOpenUploads, onViewHistory, onAutoName }: Props) {
+export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branchActiveLeafId, onBranchLeafChange, onOpenModels, onOpenSkills, onOpenPlugins, onOpenUploads, onOpenTeamTemplateCreate, onViewHistory, onAutoName }: Props) {
   const { t, locale, setLocale, supportedLocales } = useI18n();
   const { isDark, toggleTheme } = useTheme();
   const { accent, setAccentColor, resetAccentColor, presets } = useAccentColor({ apply: false });
   const [customColor, setCustomColor] = useState(accent);
   const [version, setVersion] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
+  const [showAgentLibrary, setShowAgentLibrary] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   // Pi Studio 应用更新检查状态
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -183,6 +189,18 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
       icon: <IconUpload />,
       onClick: onOpenUploads,
     },
+    {
+      label: t("team.templates.title"),
+      desc: t("team.templates.settingsDesc"),
+      icon: <IconTemplates />,
+      onClick: () => setShowTemplates(true),
+    },
+    {
+      label: t("team.library.title"),
+      desc: t("team.library.settingsDesc"),
+      icon: <IconLibrary />,
+      onClick: () => setShowAgentLibrary(true),
+    },
   ];
 
   const appearanceRows: Row[] = [
@@ -269,6 +287,18 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 8px 8px" }}>
+        {showAgentLibrary ? (
+          <AgentLibraryPanel onBack={() => setShowAgentLibrary(false)} />
+        ) : showTemplates ? (
+          <TeamTemplatesPanel
+            onBack={() => setShowTemplates(false)}
+            onCreate={(templateId) => {
+              setShowTemplates(false);
+              onOpenTeamTemplateCreate?.(templateId);
+            }}
+          />
+        ) : (
+        <>
         {sectionTitle(t("settings.session"))}
         {sessionRows.map(renderRow)}
         {showSystem && hasSession && systemPrompt && (
@@ -289,6 +319,8 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         {divider}
         {sectionTitle(t("settings.appearance"))}
         {appearanceRows.map(renderRow)}
+        </>
+        )}
 
         {/* Accent color: preset palette + free-form picker */}
         <div
@@ -668,6 +700,16 @@ function IconDoc() {
     </svg>
   );
 }
+function IconTemplates() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M9 9v12" />
+      <path d="M10 15l2 2 4-4" />
+    </svg>
+  );
+}
 function IconRefresh() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -675,6 +717,17 @@ function IconRefresh() {
       <path d="M21 3v5h-5" />
       <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" />
       <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+function IconLibrary() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="9" cy="9" r="2" />
+      <path d="M3 21v-4l4-4 3 3 4-4 5 5v4" />
+      <circle cx="18" cy="5" r="1.5" />
+      <circle cx="8" cy="15" r="1" />
+      <path d="M12 12a3 3 0 1 1 0-6 3 3 0 0 1 0 6z" />
     </svg>
   );
 }

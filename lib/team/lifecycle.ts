@@ -109,9 +109,10 @@ export function createTeam(options: CreateTeamOptions): CreateTeamResult {
   const sessionId = manager.getSessionId();
   cacheSessionPath(sessionId, sessionFile);
 
-  const teamName = name?.trim() || "项目组";
+  const teamName = name?.trim() || "";
   // SDK 惰性落盘：只有出现 assistant 消息才全量写盘，纯空会话永不落盘。
   // 手动写最小合法会话文件（header + session_info），保证 sidebar 可见、可 open。
+  // name 为空时：侧边栏/顶部标题回退到首条任务片段（与普通会话一致）。
   const now = new Date().toISOString();
   mkdirSync(dirname(sessionFile), { recursive: true });
   const header = { type: "session", version: 3, id: sessionId, timestamp: now, cwd };
@@ -192,7 +193,7 @@ export async function convertTeam(options: ConvertTeamOptions): Promise<ConvertT
     chat.appendMessage({ kind: m.kind, agentId: m.agentId, role: m.role, content: m.content });
   }
 
-  const teamName = name?.trim() || "项目组";
+  const teamName = name?.trim() || "";
   const team = createTeamDef(sessionId, manager.getCwd(), teamName, templateId, getUserTemplates<UserTemplate>(), options.agentIds);
   TeamStore.write(team);
   TeamStore.upsertIndex(sessionId, { teamId: sessionId, name: teamName, uiMode: "team" });

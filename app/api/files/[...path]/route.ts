@@ -628,20 +628,36 @@ export async function GET(
       return NextResponse.json({ error: "Not a directory" }, { status: 400 });
     }
 
-    // Avoid per-entry stat calls for normal files and directories. Symlinks and
-    // filesystems without directory type information use the stat fallback.
+    // Readdir already gave us the name and whether each entry is a
+    // directory. We additionally stat each entry to expose its size and
+    // last-modified time, which the file explorer uses for sorting and for
+    // showing the change time inline. This is a sidebar browse operation
+    // (not a hot path), so per-entry stat is acceptable.
     const dirents = fs.readdirSync(filePath, { withFileTypes: true });
     const entries = dirents
       .filter((d) => !IGNORED_NAMES.has(d.name) && !IGNORED_SUFFIXES.some((s) => d.name.endsWith(s)))
       .flatMap((d) => {
-        const isDir = resolveDirentIsDirectory(d, path.join(filePath, d.name));
-        return isDir === null
-          ? []
-          : [{ name: d.name, isDir, size: 0, modified: "" }];
+        const fullPath = path.join(filePath, d.name);
+        const isDir = resolveDirentIsDirectory(d, fullPath);
+        if (isDir === null) return [];
+        let size = 0;
+        let modified = "";
+        try {
+          const s = fs.statSync(fullPath);
+          size = s.size;
+          modified = s.mtime.toISOString();
+        } catch {
+          // Leave defaults if the entry disappears between readdir and stat.
+        }
+        return [{ name: d.name, isDir, size, modified }];
       })
       .sort((a, b) => {
-        // Dirs first, then files, both alphabetically
+        // Directories always stay on top; within each group sort by the most
+        // recently modified entry first (newest at top).
         if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        const ta = a.modified ? Date.parse(a.modified) : 0;
+        const tb = b.modified ? Date.parse(b.modified) : 0;
+        if (ta !== tb) return tb - ta;
         return a.name.localeCompare(b.name);
       });
 

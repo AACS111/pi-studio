@@ -1345,7 +1345,15 @@ function SessionItem({
   const [deleting, setDeleting] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const title = session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12);
+  // 显示名：优先会话名；否则用首条消息片段；空会话（firstMessage 为 "(no messages)" 占位）
+  // 时回退到本地化「新会话」，避免露出英文占位（与普通会话新建态一致）。
+  const title =
+    session.name ||
+    (session.firstMessage && session.firstMessage !== "(no messages)"
+      ? session.firstMessage.slice(0, 50)
+      : "") ||
+    t("sidebar.newSession") ||
+    session.id.slice(0, 12);
 
   const startRename = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();

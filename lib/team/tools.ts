@@ -18,7 +18,7 @@ export type TeamToolRequest =
   | { kind: "create_task"; title: string; description?: string; assignedAgentId?: string; parentTaskId?: string }
   | { kind: "complete_task"; taskId: string }
   | { kind: "add_artifact"; path: string; type?: ArtifactRef["type"]; description?: string }
-  | { kind: "record_decision"; content: string; relatedTaskId?: string };
+  | { kind: "record_decision"; content: string; relatedTaskId?: string; verdict?: "pass" | "fail" | "info" };
 
 export interface TeamToolSink {
   requests: TeamToolRequest[];
@@ -92,15 +92,16 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
     name: "team_handoff",
     label: "交接给项目组成员",
     description:
-      "将当前工作交接给项目组中的另一个角色（Runtime 正式控制协议）。交接摘要、产物路径、阻塞项会写入项目记录，下一角色将基于此继续。",
-    promptSnippet: "team_handoff 用于把工作交接给项目组中的下一个角色",
+      "将当前工作交接给项目组中的另一个角色（Runtime 正式控制协议）。交接摘要、产物路径、阻塞项会写入项目记录，下一角色将基于此继续。\n\n重要：若你判断整个任务的最终交付已经达成、不需要任何下游角色再处理时，将 to 设为 __end__ 结束本次运行；不要为了走流程而把已完成的工作再交给下一个角色接力。",
+    promptSnippet: "team_handoff 用于把工作交接给项目组中的下一个角色；任务已全面完成时 to 传 __end__ 结束",
     promptGuidelines: [
       "交接必须写清：交接对象、工作摘要（200 字内）、产物文件路径（如有）。",
       "产物写文件路径，让下一角色 read 验证，不要只写“已完成”。",
       "有问题时交接给负责修复的角色；全部通过时交接给组长收尾。",
+      "若你判断整个任务目标已全部达成、无需任何下游处理，交接 to=__end__ 结束运行；不得为了走工作流而重复接力已完成的环节。",
     ],
     parameters: Type.Object({
-      to: Type.String({ description: "目标角色 id" }),
+      to: Type.String({ description: "目标角色 id；若整个任务已交付完成，填 __end__ 结束运行" }),
       summary: Type.String({ description: "工作摘要（200 字内）" }),
       artifacts: Type.Optional(Type.Array(Type.String(), { description: "产物文件路径" })),
       blockers: Type.Optional(Type.Array(Type.String(), { description: "阻塞项" })),
@@ -135,6 +136,17 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
       parentTaskId: Type.Optional(Type.String({ description: "父任务 id" })),
     }),
     execute: async (_toolCallId, params) => {
+      // 去重：按 title 归一化判断是否已存在同名任务，避免 leader 重复建任务污染 DAG
+      const normalizedTitle = params.title.trim().replace(/\s+/g, "");
+      const dup = options.existingTasks.find(
+        (t) => t.title.trim().replace(/\s+/g, "") === normalizedTitle,
+      );
+      if (dup) {
+        return {
+          content: text(`任务「${params.title}」已存在（${dup.id}），无需重复创建。`),
+          details: { ok: true, kind: "create_task", deduped: true, taskId: dup.id },
+        };
+      }
       const error = collect({
         kind: "create_task",
         title: params.title,
@@ -144,7 +156,7 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
       });
       return {
         content: text(error ?? `已创建子任务：${params.title}`),
-        details: { ok: !error, kind: "create_task" },
+        details: { ok: !error, kind: "create_task", deduped: false, taskId: "" },
       };
     },
   });
@@ -204,12 +216,18 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
     parameters: Type.Object({
       content: Type.String({ description: "决策内容与理由" }),
       relatedTaskId: Type.Optional(Type.String({ description: "关联任务 id" })),
+      verdict: Type.Optional(Type.Union([
+        Type.Literal("pass"),
+        Type.Literal("fail"),
+        Type.Literal("info"),
+      ], { description: "结构化裁决：pass=通过（质检类角色验证通过） fail=失败（发现缺陷需返工） info=中性（仅记录）" })),
     }),
     execute: async (_toolCallId, params) => {
       const error = collect({
         kind: "record_decision",
         content: params.content,
         relatedTaskId: params.relatedTaskId,
+        verdict: params.verdict,
       });
       return {
         content: text(error ?? "已记录决策"),
@@ -228,11 +246,12 @@ export function consumeToolRequests(
   agentId: string,
   runId: string,
   emit: (event: unknown) => void,
-): { handoff?: TeamToolRequest & { kind: "handoff" }; taskRequests: number; artifactRequests: number; decisionRequests: number } {
+): { handoff?: TeamToolRequest & { kind: "handoff" }; taskRequests: number; artifactRequests: number; decisionRequests: number; lastVerdict?: "pass" | "fail" | "info" } {
   let handoff: (TeamToolRequest & { kind: "handoff" }) | undefined;
   let taskRequests = 0;
   let artifactRequests = 0;
   let decisionRequests = 0;
+  let lastVerdict: "pass" | "fail" | "info" | undefined;
 
   for (const req of sink.requests) {
     switch (req.kind) {
@@ -263,6 +282,7 @@ export function consumeToolRequests(
         break;
       case "record_decision":
         decisionRequests++;
+        if (req.verdict) lastVerdict = req.verdict;
         emit({
           type: "decision_recorded",
           decision: {
@@ -271,12 +291,13 @@ export function consumeToolRequests(
             madeBy: agentId,
             createdAt: Date.now(),
             relatedTaskId: req.relatedTaskId,
+            verdict: req.verdict,
           },
         });
         break;
     }
   }
-  return { handoff, taskRequests, artifactRequests, decisionRequests };
+  return { handoff, taskRequests, artifactRequests, decisionRequests, lastVerdict };
 }
 
 let taskSeq = 0;

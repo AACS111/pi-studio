@@ -6,7 +6,7 @@
  *   2. Transition.keyword / always（便宜，priority DESC 取第一个命中）
  *   3. Transition.llm（最后决策器：对候选集一次性判定）
  */
-import type { Condition, ExecutionStatus, GatewayDef, RoutingMode, TeamDef, Transition } from "./types.ts";
+import type { Condition, ExecutionStatus, ExecutionStats, GatewayDef, RoutingMode, TeamDef, Transition } from "./types.ts";
 import { stripNoise } from "./validate.ts";
 
 export interface ExecutionResult {
@@ -18,7 +18,10 @@ export interface ExecutionResult {
     artifacts?: string[];
     blockers?: string[];
   };
+  /** 结构化裁决（P1-1）：角色经 team_record_decision 记录的 verdict，路由优先据此而非赌 keyword */
+  verdict?: "pass" | "fail";
   failureReason?: string;
+  stats?: ExecutionStats;                      // 回合统计（token/成本/消息数）
 }
 
 export interface Route {
@@ -54,6 +57,7 @@ export class WorkflowEngine {
   async resolveRoute(
     execution: { agentId: string; status: ExecutionStatus | "timeout" },
     result: ExecutionResult,
+    executionSeq?: number,
   ): Promise<Route | null> {
     const mode = this.effectiveMode(execution.agentId);
 
@@ -68,8 +72,20 @@ export class WorkflowEngine {
       };
     }
 
-    // 2) 候选 Transition：from 匹配 + 事件匹配，priority DESC
-    const candidates = matchingTransitions(this.team, execution.agentId, execution.status);
+    // 2) 候选 Transition：from 匹配 + 事件匹配 + onlyExecutionSeq 匹配，priority DESC
+    const candidates = matchingTransitions(this.team, execution.agentId, execution.status, executionSeq);
+
+    // 2.5) 结构化裁决优先（P1-1）：角色已 record_decision 记录 pass/fail → 匹配对应 verdictGuard 边，
+    //      不依赖输出文本里是否出现“通过/问题/bug”等词，规避模型随机性导致的 keyword 漏判。
+    if (result.verdict) {
+      const guarded = candidates
+        .filter((t) => t.verdictGuard === result.verdict)
+        .sort((a, b) => b.priority - a.priority);
+      if (guarded.length > 0) {
+        const t = guarded[0];
+        return { kind: "transition", from: execution.agentId, to: t.to, transitionId: t.id, reason: `verdict:${result.verdict}` };
+      }
+    }
 
     // 3) keyword / always（便宜先试）—— priority DESC 取第一个命中
     for (const t of candidates) {
@@ -147,14 +163,22 @@ export function judgeCheap(cond: Condition | undefined, output: string): boolean
   return false; // llm 走 resolveRoute 的最后决策器
 }
 
-/** 静态辅助：给定节点（Agent 或网关）与事件，返回匹配的候选（priority DESC） */
-export function matchingTransitions(team: TeamDef, nodeId: string, event: ExecutionStatus | "timeout"): Transition[] {
+/** 静态辅助：给定节点（Agent 或网关）与事件，返回匹配的候选（priority DESC）。
+ *  executionSeq：Agent 的第几次执行（1 起）。仅当传入时，才过滤 `onlyExecutionSeq` 不匹配的边；
+ *  网关解析不传该值，故网关边不受 onlyExecutionSeq 影响。 */
+export function matchingTransitions(
+  team: TeamDef,
+  nodeId: string,
+  event: ExecutionStatus | "timeout",
+  executionSeq?: number,
+): Transition[] {
   return team.transitions
     .filter(
       (t) =>
         t.enabled !== false &&
         t.from === nodeId &&
-        (t.trigger.event === event || t.trigger.event === "any"),
+        (t.trigger.event === event || t.trigger.event === "any") &&
+        (t.onlyExecutionSeq === undefined || executionSeq === undefined || t.onlyExecutionSeq === executionSeq),
     )
     .sort((a, b) => b.priority - a.priority);
 }

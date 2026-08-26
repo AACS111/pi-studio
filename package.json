@@ -30,9 +30,9 @@
     "package.json"
   ],
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 10141",
+    "dev": "node scripts/run-dev.mjs 127.0.0.1 10141",
     "dev:electron": "node scripts/dev-electron.mjs",
-    "dev:lan": "next dev -H 0.0.0.0 -p 30141",
+    "dev:lan": "node scripts/run-dev.mjs 0.0.0.0 30141",
     "build": "next build --webpack",
     "start": "next start -H 127.0.0.1 -p 30141",
     "start:lan": "next start -H 0.0.0.0 -p 30141",

@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { TeamStore } from "@/lib/team/store";
 import { setTeamUiMode, deleteTeam } from "@/lib/team/lifecycle";
 import { validateWorkflow } from "@/lib/team/validate";
 import { readTeamChat } from "@/lib/team/lifecycle";
+import { invalidateSessionListCache } from "@/lib/session-reader";
+import { resolveSessionPath } from "@/lib/session-reader";
 import type { TeamDef } from "@/lib/team/types";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +68,17 @@ export async function PATCH(req: Request, { params }: Params) {
     TeamStore.write(next);
     // 同步 index.json 的 name（sidebar/顶部标题用 teamName 展示）
     TeamStore.upsertIndex(sessionId, { name: next.name });
+    // 同步宿主 pi 会话的 name（侧边栏列表标题用 session.name，改此处才能跟随）
+    try {
+      const filePath = await resolveSessionPath(sessionId);
+      if (filePath) {
+        const sm = SessionManager.open(filePath);
+        sm.appendSessionInfo(next.name);
+      }
+    } catch {
+      /* pi 会话名同步失败不阻断 */
+    }
+    invalidateSessionListCache();
     return NextResponse.json({ ok: true, team: next });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

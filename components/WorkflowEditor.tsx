@@ -615,6 +615,29 @@ function EdgeEditPanel({
         </label>
       </div>
 
+      <div style={fieldRow}>
+        <label style={fieldLabel}>裁决</label>
+        <select
+          value={tr.verdictGuard ?? ""}
+          onChange={(e) => onPatch({ verdictGuard: e.target.value === "" ? undefined : (e.target.value as "pass" | "fail") })}
+          style={input}
+        >
+          <option value="">无（默认）</option>
+          <option value="pass">pass（通过）</option>
+          <option value="fail">fail（返工）</option>
+        </select>
+      </div>
+
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "var(--text-muted)" }}>
+        <input
+          type="checkbox"
+          checked={tr.approval === true}
+          onChange={(e) => onPatch({ approval: e.target.checked ? true : undefined })}
+          style={{ width: 14, height: 14 }}
+        />
+        🔒 需人工审批（命中此边时暂停等你确认）
+      </label>
+
       <button onClick={onDelete} style={{ ...paletteBtn, borderColor: "rgba(229,72,77,0.4)", color: "#e5484d" }}>
         🗑 删除此边
       </button>

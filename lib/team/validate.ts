@@ -34,6 +34,10 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
     if (t.from === t.to && t.to !== "__end__") {
       pushError("self_loop", `Transition "${t.id}" 是自环（${t.from} → ${t.from}），默认禁止`, { transitionId: t.id });
     }
+    // P1-1：verdictGuard 合法性
+    if (t.verdictGuard && t.verdictGuard !== "pass" && t.verdictGuard !== "fail") {
+      pushError("verdict_guard_invalid", `Transition "${t.id}" 的 verdictGuard 非法：${t.verdictGuard}（仅允许 pass/fail）`, { transitionId: t.id });
+    }
     const cond = t.trigger.condition;
     if (cond) {
       if (cond.mode === "keyword" && (!cond.keywords || cond.keywords.length === 0)) {
@@ -128,6 +132,27 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
         pushWarning(
           "priority_overlap",
           `角色 "${list[0].from}" 在事件 ${list[0].trigger.event} 上有 ${list.length} 条边，靠 priority 区分（相同 priority 时按配置顺序取第一条）`,
+          { transitionId: list[0].id },
+        );
+      }
+    }
+  }
+
+  // ⑨ 重复裁决边（同 from 同 verdictGuard 多条）—— 语义冲突，仅提示
+  if (team.transitions.length > 0) {
+    const byGuard = new Map<string, Transition[]>();
+    for (const t of team.transitions) {
+      if (!t.verdictGuard) continue;
+      const key = `${t.from}:${t.verdictGuard}`;
+      const list = byGuard.get(key) ?? [];
+      list.push(t);
+      byGuard.set(key, list);
+    }
+    for (const [, list] of byGuard) {
+      if (list.length > 1) {
+        pushWarning(
+          "verdict_overlap",
+          `角色 "${list[0].from}" 在 verdict=${list[0].verdictGuard} 上有 ${list.length} 条边，靠 priority 区分（取第一条命中）`,
           { transitionId: list[0].id },
         );
       }

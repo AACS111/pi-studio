@@ -23,6 +23,7 @@ import { PluginExtensionPanel, usePluginExtensions } from "./PluginHost";
 import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { WindowControls } from "./WindowControls";
+import { GlowBackground } from "./GlowBackground";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor } from "@/hooks/useAccentColor";
 import { useI18n } from "@/hooks/useI18n";
@@ -1018,6 +1019,8 @@ export function AppShell() {
   const sessionTitle = selectedSession
     ? (selectedSession.teamName || selectedSession.name || selectedSession.firstMessage.slice(0, 50) || selectedSession.id.slice(0, 12))
     : translate("sidebar.selectSession");
+  // 项目组视图：合并顶部标题行为 1 行 —— 会话标题栏并入 TeamChat 头部，避免双行头部占位。
+  const isTeamChatMode = Boolean(selectedSession?.teamId && selectedSession.teamUiMode === "team");
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -1184,8 +1187,10 @@ export function AppShell() {
       overflow: "hidden",
       background: "var(--bg)",
     }}>
+        {/* 动态背景层：DeepSeek Harness 官网风格（固定最底层、不遮挡交互） */}
+        <GlowBackground />
         {/* Top bar: window drag region + file panel toggle + window controls */}
-        <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)", background: "var(--bg-panel)" }}>
+        <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)", background: "var(--bg-panel)", position: "relative" }}>
           {/* Drag region — grab the window here (buttons below stay clickable) */}
           <div
             className="app-region-drag"
@@ -1449,7 +1454,8 @@ export function AppShell() {
 
       {/* Center: chat */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
-        {/* Chat header — session info + search + stats, above the chat content */}
+        {/* Chat header — session info + search + stats, above the chat content （项目组视图下合并进 TeamChat 头部，仅保留 1 行） */}
+        {!isTeamChatMode && (
         <div style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: 36, background: "var(--bg-panel)" }}>
           <button
             ref={sessionToggleRef}
@@ -1670,6 +1676,7 @@ export function AppShell() {
             );
           })()}
         </div>
+        )}
 
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>

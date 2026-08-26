@@ -2,6 +2,14 @@
  * 项目组内置角色库（设计稿 v5 §3.1）。
  * 角色是"可配置的"：库项只是起点，用户创建团队/编辑时可任意修改。
  * model 默认空字符串 = 跟随全局默认模型（用户创建团队时可按需指定）。
+ *
+ * 各角色默认工具按职责定位分配（非全部默认）：
+ *   leader     → ls/find                     （只拆任务派活，不读改业务代码）
+ *   product    → read/write/grep/find/ls     （写方案文档、读现状，不写代码）
+ *   developer  → 全套                         （主战力：读改跑都能）
+ *   tester     → read/bash/grep/find/ls/write（跑测试只读+写报告，不改业务代码）
+ *   researcher → read/bash/grep/find/ls      （只读探索，不改代码）
+ *   writer     → read/write/grep/find/ls     （读代码写文档，不写代码）
  */
 import type { AgentLibraryItem } from "./types.ts";
 
@@ -10,7 +18,7 @@ export const LIBRARY_BUILTIN_FILE = "builtin.json";
 /** 组长：入口角色，负责理解任务、分配、总结收尾 */
 const LEADER = {
   id: "leader",
-  name: "组长",
+  name: "leader",
   emoji: "🧭",
   role: "项目组长：理解用户任务，拆解分配，汇总结果，向用户汇报",
   model: "",
@@ -24,7 +32,7 @@ const LEADER = {
 【你的职责】
 1. 理解任务目标，拆解出需要哪些角色参与、各自做什么。
 2. 汇总各角色的产出，形成面向用户的最终结论/报告。
-3. 有分歧或阻塞时拍板决策（用 team_record_decision 记录）。
+3. 有分歧或阻塞时拍板决策（用 team_record_decision 记录决策）。
 
 【自动编排（派活协议）】
 - 收到任务后先拆解：这个任务需要谁做？做什么？产出什么？
@@ -35,14 +43,18 @@ const LEADER = {
 【交接协议】
 - 完成任务后调用 team_handoff 交接给下一个角色，必须包含：交接对象、工作摘要、产物路径（如有）。
 - 交接时产物写清楚路径，让下一个角色 read 验证，不要只写"已完成"。`,
-  toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  expectation: "拆解任务并明确各角色分工；汇总各角色产出形成可直接交付用户的最终结论；产物路径写入交接供下游验证。",
+  // 组长只做拆任务+派活+记录决策+总结：只给 ls/find（看项目结构用于拆任务），
+  //   禁 read/grep/bash/edit/write（不读业务代码、不改代码、不跑命令）。
+  //   编排模式下 executor 会进一步收紧到只剩 ls/find。
+  toolNames: ["ls", "find"],
   builtin: true,
 };
 
 /** 产品：需求分析、方案设计 */
 const PRODUCT = {
   id: "product",
-  name: "产品",
+  name: "product",
   emoji: "📋",
   role: "产品经理：需求分析、方案设计、验收标准",
   model: "",
@@ -60,14 +72,16 @@ const PRODUCT = {
 【交接协议】
 - 完成后调用 team_handoff 交接：写清方案文档路径、需求要点、验收标准。
 - 产物让下一个角色能直接 read 验证。`,
-  toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  expectation: "产出包含明确需求点、验收标准、方案文档的路径；关键取舍用 team_record_decision 记录并给理由。",
+  // 产品不写代码，但要写方案文档、读代码了解现状：给 read/write/grep/find/ls，禁 bash/edit。
+  toolNames: ["read", "write", "grep", "find", "ls"],
   builtin: true,
 };
 
 /** 开发：实现功能、修复缺陷 */
 const DEVELOPER = {
   id: "developer",
-  name: "开发",
+  name: "developer",
   emoji: "💻",
   role: "开发工程师：实现功能、修复缺陷",
   model: "",
@@ -86,6 +100,8 @@ const DEVELOPER = {
 【交接协议】
 - 完成后调用 team_handoff 交接：写明改动文件清单、实现要点、如何验证。
 - 若修复的是测试指出的问题，摘要里说明修复内容。`,
+  expectation: "改动真实写入项目目录并跑必要验证（typecheck/测试/构建子集）；交接给出改动文件清单、实现要点、如何验证。",
+  // 开发是主战力，需要全套工具：read/bash/edit/write/grep/find/ls。
   toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
   builtin: true,
 };
@@ -93,7 +109,7 @@ const DEVELOPER = {
 /** 测试：验证功能、报告问题 */
 const TESTER = {
   id: "tester",
-  name: "测试",
+  name: "tester",
   emoji: "🧪",
   role: "测试工程师：验证功能、报告问题",
   model: "",
@@ -112,14 +128,16 @@ const TESTER = {
 - 有问题 → 调用 team_handoff 交接回开发：附问题清单（复现步骤 + 期望/实际）。
 - 全部通过 → 调用 team_handoff 交接给组长：附验证报告路径与结论。
 - 摘要里必须出现明确的通过/失败结论关键词，便于条件路由。`,
-  toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  expectation: "逐项真实验证交接产物；结果用 team_record_decision 记录 verdict（pass/fail）+ 发现的问题清单（复现步骤+期望/实际+严重程度）。",
+  // 测试只验证不写业务代码：给 read/bash/grep/find/ls（跑测试+读代码）+ write（写报告），禁 edit。
+  toolNames: ["read", "bash", "grep", "find", "ls", "write"],
   builtin: true,
 };
 
 /** 研究员：资料调研、技术选型 */
 const RESEARCHER = {
   id: "researcher",
-  name: "研究员",
+  name: "researcher",
   emoji: "🔍",
   role: "研究员：资料调研、技术选型、可行性分析",
   model: "",
@@ -136,14 +154,16 @@ const RESEARCHER = {
 
 【交接协议】
 - 完成后调用 team_handoff 交接：附报告路径、结论摘要、建议的下一步。`,
-  toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  expectation: "调研结论必须是可验证的（给出依据来源 URL/文件/命令输出）；输出报告含结论+依据+风险；关键取舍记录决策。",
+  // 研究员只读探索不改代码：给 read/bash/grep/find/ls（读代码+跑命令探查），禁 edit/write。
+  toolNames: ["read", "bash", "grep", "find", "ls"],
   builtin: true,
 };
 
 /** 文档：整理交付文档 */
 const WRITER = {
   id: "writer",
-  name: "文档",
+  name: "writer",
   emoji: "📝",
   role: "文档工程师：整理使用说明、交付文档",
   model: "",
@@ -159,7 +179,9 @@ const WRITER = {
 
 【交接协议】
 - 完成后调用 team_handoff 交接：附文档路径、覆盖范围。`,
-  toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  expectation: "文档内容必须与实际代码/产物一致（先读再写，禁止编造接口）；给出文档路径与覆盖范围。",
+  // 文档写文档不写代码：给 read/write/grep/find/ls（读代码写实文档），禁 bash/edit。
+  toolNames: ["read", "write", "grep", "find", "ls"],
   builtin: true,
 };
 
@@ -186,6 +208,7 @@ export function agentFromLibrary(item: AgentLibraryItem): {
   systemPrompt: string;
   toolNames: string[];
   skillIds?: string[];
+  expectation?: string;
 } {
   return {
     id: item.id,
@@ -196,6 +219,7 @@ export function agentFromLibrary(item: AgentLibraryItem): {
     systemPrompt: item.systemPrompt,
     toolNames: [...item.toolNames],
     skillIds: item.skillIds ? [...item.skillIds] : undefined,
+    expectation: item.expectation,
   };
 }
 

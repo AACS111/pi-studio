@@ -38,6 +38,8 @@ export interface AgentDef {
   maxOutputChars?: number;    // 产出截断上限（默认 4000）
   timeoutMs?: number;         // 单次执行超时（默认继承 maxRunMinutes）
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";  // 推理级别（透传 startRpcSession；缺省=模型默认）
+  /** 期望产出/验收标准（借鉴 CrewAI expected_output）：明确该角色交付的标尺，注入上下文引导按标尺产出 */
+  expectation?: string;
 }
 
 export interface AgentLibraryItem {
@@ -50,6 +52,8 @@ export interface AgentLibraryItem {
   toolNames: string[];
   skillIds?: string[];
   builtin?: boolean;
+  /** 期望产出/验收标准（借鉴 CrewAI expected_output） */
+  expectation?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -85,6 +89,14 @@ export interface Transition {
     condition?: Condition;
   };
   enabled?: boolean;
+  /** 人工审批闸门（借鉴 LangGraph human-in-loop）：命中该边时 RunManager 暂停等待用户批准/驳回（P1-2） */
+  approval?: boolean;
+  /** 结构化裁决守卫（P1-1：弃 keyword 赌）：当执行角色经 team_record_decision 记录 verdict 时，优先匹配此边 */
+  verdictGuard?: "pass" | "fail";
+  /** 仅在该角色的第 N 次执行时命中（从 1 起）。用于让入口角色只在首次派活、再次进入时默认收尾，
+   *  避免“入口回退→再进入下游→再回入口”的无限循环（修复 多Agent 跑很久/leader 反复输出的根因）。
+   *  参考 MetaGPT 的 SOP / AutoGen 的 GroupChatManager 轮换，用确定性的执行序号而非 keyword 赌命。 */
+  onlyExecutionSeq?: number;
 }
 
 export type ConditionMode = "keyword" | "llm" | "always";
@@ -134,10 +146,12 @@ export interface TeamDef {
   defaultRoutingMode: RoutingMode;  // 默认 "hybrid"；Agent.routingPolicy 可覆盖（Phase 2）
   maxHops: number;            // 默认 30（防任意循环）
   maxReworkRounds: number;    // 默认 3（只统计返工边）
-  maxRunMinutes: number;      // 默认 30
+  maxRunMinutes: number;      // 默认 60
   contextScope: ContextScope; // 默认 "structured"
   recentCount?: number;       // scope=recent 时（默认 20）
   sessionRetention?: SessionRetention;  // Phase 1 不实现，仅预留
+  /** 简单任务 solo 降级（P0-1）：开启后，任务被判定为无需拆解时只跑入口角色，避免极简任务跑遍所有角色 */
+  autoSolo?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -145,22 +159,34 @@ export interface TeamDef {
 /** ==================== Run + AgentExecution + TeamTask ==================== */
 
 export type TeamRunStatus =
-  | "pending" | "running" | "waiting_handoff"
+  | "pending" | "running" | "waiting_handoff" | "waiting_approval"
   | "completed" | "failed" | "cancelled";
 
 export type RunStopCode =
   | "completed" | "max_hops" | "max_rework" | "timeout"
   | "agent_failed" | "workflow_dead_end" | "user_cancelled";
 
+export interface ApprovalRequest {
+  transitionId: string;
+  from: string;               // 请求方角色
+  to: string;                 // 目标节点（角色或 __end__）
+  agentOutput: string;        // 触发审批的角色最终输出（供用户判断）
+  executionId: string;
+  createdAt: number;
+}
+
 export interface TeamRun {
   id: string;
   teamId: string;             // = sessionId
   status: TeamRunStatus;
   task: string;
+  /** 任务复杂度判定（发布即判定）：simple=solo 只跑入口角色，complex=多角色编排 */
+  complexity?: "simple" | "complex";
   statusReason?: {            // UI 直接展示停止原因
     code: RunStopCode;
     message: string;
   };
+  pendingApproval?: ApprovalRequest;  // waiting_approval 时提供待审批详情
   stats: {
     hopCount: number;         // 每次角色执行 +1
     reworkCount: number;      // 仅返工边命中 +1
@@ -185,12 +211,27 @@ export interface AgentExecution {
   completedAt?: number;
   sessionId: string;          // pi 会话 id（回放/审计；retention 策略基于此）
   sessionPath?: string;
-  inputTokens?: number;
-  outputTokens?: number;
   outputMessageId?: string;   // 群聊里对应的 agent 消息
   handoffTo?: string;
   taskIds?: string[];         // 本次执行关联的 Task
   failureReason?: string;
+  /** 执行统计（回合结束后采集；token/成本/消息数） */
+  stats?: ExecutionStats;
+}
+
+/** 单次角色执行的资源统计（来自 pi 会话 get_session_stats） */
+export interface ExecutionStats {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+  userMessages: number;
+  assistantMessages: number;
+  toolCalls: number;
+  toolResults: number;
+  totalMessages: number;
 }
 
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -204,7 +245,9 @@ export interface TeamTask {
   assignedAgentId: string;
   status: TaskStatus;
   parentTaskId?: string;
-  dependsOn?: string[];       // Phase 1 仅预留；Phase 2 并行时使用
+  dependsOn?: string[];       // Phase 2 并行调度使用（任务依赖 DAG）
+  /** 本任务的期望产出/验收标准（借鉴 CrewAI expected_output）；注入上下文供执行角色按标尺交付 */
+  expectedOutput?: string;
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -229,6 +272,8 @@ export interface Decision {
   madeBy: string;             // agentId | "user" | "runtime"
   createdAt: number;
   relatedTaskId?: string;
+  /** 结构化裁决（P1-1：弃 keyword 赌）；路由优先读这里而非输出文本 */
+  verdict?: "pass" | "fail" | "info";
 }
 
 export type TeamMessageKind = "user" | "agent" | "system" | "handoff" | "imported";
@@ -266,7 +311,7 @@ export interface HandoffPayload {
 /** ==================== 事件模型（唯一事实来源） ==================== */
 
 export type TeamEvent =
-  | { type: "run_started"; sequence: number; timestamp: number; runId: string; task: string; entryAgentId: string }
+  | { type: "run_started"; sequence: number; timestamp: number; runId: string; task: string; entryAgentId: string; complexity?: "simple" | "complex" }
   | { type: "task_created"; sequence: number; timestamp: number; task: TeamTask }
   | { type: "task_completed"; sequence: number; timestamp: number; taskId: string }
   | { type: "task_failed"; sequence: number; timestamp: number; taskId: string; reason?: string }
@@ -275,15 +320,18 @@ export type TeamEvent =
   | { type: "artifact_produced"; sequence: number; timestamp: number; artifact: ArtifactRef }
   | { type: "decision_recorded"; sequence: number; timestamp: number; decision: Decision }
   | { type: "handoff_requested"; sequence: number; timestamp: number; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string }
+  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats }
+  | { type: "agent_progress"; sequence: number; timestamp: number; executionId: string; agentId: string; kind: "thinking" | "tool"; content: string }
   | { type: "steer"; sequence: number; timestamp: number; agentId?: string; content: string }
+  | { type: "approval_requested"; sequence: number; timestamp: number; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
+  | { type: "approval_resolved"; sequence: number; timestamp: number; runId: string; transitionId: string; approved: boolean; by: "user" | "runtime" }
   | { type: "run_completed"; sequence: number; timestamp: number; statusReason: { code: RunStopCode; message: string } }
   | { type: "run_failed"; sequence: number; timestamp: number; statusReason: { code: RunStopCode; message: string } }
   | { type: "run_cancelled"; sequence: number; timestamp: number; statusReason: { code: RunStopCode; message: string } };
 
 /** 事件输入：sequence/timestamp 由 EventStore 分配（手写保留判别联合） */
 export type TeamEventInput =
-  | { type: "run_started"; runId: string; task: string; entryAgentId: string }
+  | { type: "run_started"; runId: string; task: string; entryAgentId: string; complexity?: "simple" | "complex" }
   | { type: "task_created"; task: TeamTask }
   | { type: "task_completed"; taskId: string }
   | { type: "task_failed"; taskId: string; reason?: string }
@@ -292,8 +340,11 @@ export type TeamEventInput =
   | { type: "artifact_produced"; artifact: ArtifactRef }
   | { type: "decision_recorded"; decision: Decision }
   | { type: "handoff_requested"; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string }
+  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats }
+  | { type: "agent_progress"; executionId: string; agentId: string; kind: "thinking" | "tool"; content: string }
   | { type: "steer"; agentId?: string; content: string }
+  | { type: "approval_requested"; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
+  | { type: "approval_resolved"; runId: string; transitionId: string; approved: boolean; by: "user" | "runtime" }
   | { type: "run_completed"; statusReason: { code: RunStopCode; message: string } }
   | { type: "run_failed"; statusReason: { code: RunStopCode; message: string } }
   | { type: "run_cancelled"; statusReason: { code: RunStopCode; message: string } };
@@ -417,6 +468,7 @@ export function reduce(events: TeamEvent[]): Projections {
           exec.completedAt = event.timestamp;
           exec.handoffTo = event.handoffTo;
           exec.failureReason = event.failureReason;
+          exec.stats = event.stats;
         }
         for (const taskId of exec?.taskIds ?? []) {
           const task = p.tasks.find((t) => t.id === taskId);
@@ -427,6 +479,10 @@ export function reduce(events: TeamEvent[]): Projections {
         }
         break;
       }
+
+      // 实时进度（thinking / 工具调用）：不落投影，仅事件流可见（前端直接消费 events）
+      case "agent_progress":
+        break;
 
       case "steer":
         p.messages.push({

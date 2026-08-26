@@ -55,6 +55,10 @@ next-env.d.ts
 scripts/trace-hook.cjs
 scripts/trace-requires.cjs
 trace-result.txt
+# 临时编辑脚手架脚本
+.edit-*.cjs
+# 本地用户设置备份
+settings.bak.json
 # browser-use sidecar (Python venv + logs)
 tools/browser-use-server/.venv/
 tools/browser-use-server/.browser-profile/

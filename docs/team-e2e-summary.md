@@ -1,6 +1,6 @@
 # Pi Studio 项目目录结构说明
 
-> 生成时间：2026-08-23 · 本轮核验：2026-08-24（组长实测重扫）
+> 生成时间：2026-08-23 · 本轮核验：2026-08-24（组长第八轮重扫，更新 app/lib/team/docs 计数即收尾）
 > 来源：Team E2E 流程（组长 → 文档 → 组长收尾）
 > 说明：本文档由组长角色根据当前项目目录实际扫描结果编写，供团队协作与后续角色参考。
 > 统计口径：文件数 = `find <目录> -type f`（排除 node_modules），下表为写本文档前实测值。
@@ -16,7 +16,7 @@
 ```
 pi-web-main/
 ├── app/               # Next.js App Router（页面 + 全部 /api 路由）
-│   ├── api/           # 后端 API 路由（27 个子目录：sessions/files/browser/dsh/teams 等）
+│   ├── api/           # 后端 API 路由（26 个子目录：sessions/files/browser/dsh/teams 等）
 │   ├── file/          # 文件相关页面
 │   ├── globals.css    # 全局样式
 │   ├── layout.tsx     # 根布局
@@ -51,21 +51,21 @@ pi-web-main/
 
 | 目录 | 文件数 | 说明 |
 |------|--------|------|
-| app/ | 94 | App Router 页面 + API 路由（其中 app/api/ 下 26 个业务路由目录）|
-| lib/ | 170 | 核心逻辑（含 lib/team/ 23 个 + 大量 .test.mjs 单测）|
+| app/ | 96 | App Router 页面 + API 路由（其中 app/api/ 下 26 个业务路由目录）|
+| lib/ | 173 | 核心逻辑（含 lib/team/ 26 个 + 大量 .test.mjs 单测）|
 | components/ | 56 | UI 组件 |
 | hooks/ | 14 | React hooks |
 | electron/ | 3 | 桌面壳主进程/预加载/桥接 |
-| docs/ | 20 | 架构设计 + 使用文档（docs/agents/ 5 篇）|
+| docs/ | 25 | 架构设计 + 使用文档（docs/agents/ 5 篇）|
 | scripts/ | 3 | 打包/开发/图标脚本 |
 
 ## 四、关键模块速览
 
-1. **app/api/** — 后端 API（27 个路由域）：会话（sessions）、文件（files/open-file）、浏览器桥（browser/*）、
+1. **app/api/** — 后端 API（26 个路由域）：会话（sessions）、文件（files/open-file）、浏览器桥（browser/*）、
    上传、模型配置（models-config）、插件（plugins、dsh/*）、团队（teams/*）、univer、git、worktrees、vision 等。
 2. **lib/** — 核心能力：`changed-files.ts`（AI 改动卡片）、`ket-bridge.ts`（加密表格桥）、
    `provider-listing.ts`（模型提供商）、`model-scope.ts`（模型作用域）、`rpc-manager.ts`（RPC 会话）。
-3. **lib/team/** — 多 Agent 项目组 Runtime（23 文件）：EventStore（events.jsonl 唯一事实来源）+
+3. **lib/team/** — 多 Agent 项目组 Runtime（26 文件）：EventStore（events.jsonl 唯一事实来源）+
    RunManager + WorkflowEngine + ContextEngine + PiAgentExecutor + 受控工具集，设计见
    `docs/agents/team-runtime.md`（v5 定稿）。
 4. **electron/** — Electron 壳：`main.cjs` 内置 Next 服务（ELECTRON_RUN_AS_NODE 启动）、

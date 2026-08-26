@@ -11,7 +11,7 @@ import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } fro
 import { normalizeToolCalls } from "./normalize";
 import { sessionPathKey } from "./session-path";
 import { resolveProject, type ProjectInfo } from "./worktree";
-import { readTeamsIndex } from "./team/store";
+import { readTeamsIndex, TeamStore } from "./team/store";
 
 export { getAgentDir };
 
@@ -35,11 +35,30 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
     cacheSessionPath(s.id, s.path);
     const project = s.cwd ? projectByCwd.get(s.cwd) : undefined;
     const team = teamsIndex[s.id];
+
+    // 项目组会话的显示名：优先用户设置/模板名；为空时回退到首条 run 的任务片段
+    // （等同普通会话默认展示首条用户问题），再回退到 pi 会话首条消息。
+    let teamName = "";
+    if (team) {
+      const customName = (team.name || "").trim();
+      if (customName) {
+        teamName = customName;
+      } else {
+        // 找最早的 run，取其任务片段作为“首条用户问题”
+        const runIds = TeamStore.listRunIds(s.id);
+        const firstTask = runIds
+          .map((rid) => TeamStore.readRunMeta(s.id, rid))
+          .filter((r): r is NonNullable<typeof r> => Boolean(r))
+          .sort((a, b) => (a?.createdAt ?? 0) - (b?.createdAt ?? 0))[0]?.task;
+        teamName = (firstTask || s.firstMessage || "").slice(0, 50);
+      }
+    }
+
     return {
       path: s.path,
       id: s.id,
       cwd: s.cwd,
-      name: s.name,
+      name: s.name || teamName,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
       messageCount: s.messageCount,

@@ -121,11 +121,21 @@ export async function getGitStatus(cwd: string): Promise<GitStatusResponse> {
     const filePath = path.resolve(repositoryRoot, entry.path);
     if (!isWithinPath(cwd, filePath)) return [];
     const classified = classifyGitStatus(entry);
+    // Capture the on-disk mtime so the file explorer can sort the changes
+    // list by modification time and show it inline. Deleted files no longer
+    // exist on disk, so leave modified undefined and let them sink below.
+    let modified: string | undefined;
+    try {
+      modified = fs.statSync(filePath).mtime.toISOString();
+    } catch {
+      modified = undefined;
+    }
     return [{
       filePath,
       ...classified,
       indexStatus: entry.indexStatus,
       worktreeStatus: entry.worktreeStatus,
+      modified,
     }];
   });
   const untrackedAdditions = files.reduce(

@@ -271,6 +271,12 @@ export class TeamStore {
       if (!existsSync(file)) return null;
       const parsed = JSON.parse(readFileSync(file, "utf8")) as TeamDef;
       if (!parsed || parsed.sessionId !== sessionId) return null;
+      // 迁移：老团队 maxRunMinutes 落盘了旧默认 30，自动升级到 60 并回写
+      // （代码默认值已改 60，但已存在的 team.json 不会自动迁移，否则会反复撞 30 分钟超时）
+      if (typeof parsed.maxRunMinutes === "number" && parsed.maxRunMinutes < 60) {
+        parsed.maxRunMinutes = 60;
+        try { TeamStore.write(parsed); } catch { /* 迁移回写失败不阻断读取 */ }
+      }
       return parsed;
     } catch {
       return null;
@@ -340,7 +346,7 @@ export class TeamStore {
       hopCount: events.filter((e) => e.type === "execution_started").length,
       reworkCount: 0, // 由 Runtime 事件补记（Phase 1A 以 execution 计数兜底）
       agentExecutions: events.filter((e) => e.type === "execution_started").length,
-      tokensUsed: 0,
+      tokensUsed: events.reduce((sum, e) => sum + (e.type === "execution_completed" ? (e.stats?.totalTokens ?? 0) : 0), 0),
       durationMs: last.timestamp - first.timestamp,
     };
     return {

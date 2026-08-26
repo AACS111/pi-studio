@@ -26,6 +26,7 @@ interface FileNode {
   fullPath: string;
   isDir: boolean;
   size: number;
+  modified?: string;
   children?: FileNode[];
   loaded?: boolean;
 }
@@ -95,6 +96,7 @@ async function fetchEntries(dirPath: string): Promise<FileNode[]> {
     fullPath: joinFilePath(dirPath, e.name),
     isDir: e.isDir,
     size: e.size,
+    modified: e.modified || undefined,
     children: e.isDir ? [] : undefined,
     loaded: !e.isDir,
   }));
@@ -146,6 +148,21 @@ function GitStatusBadge({ status, t }: { status: GitFileStatus; t: Translate }) 
       {status.code}
     </span>
   );
+}
+
+function formatChangeTime(iso: string | undefined, now: number): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const d = new Date(t);
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayMs = startOfToday.getTime();
+  const sameYear = d.getFullYear() === new Date(now).getFullYear();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (t >= todayMs) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (sameYear) return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${String(d.getFullYear()).slice(-2)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function uploadFiles(
@@ -292,6 +309,14 @@ function TreeNode({
     }
   }, [node.isDir, node.fullPath, node.name, loaded, open, loadChildren, onOpenFile, onToggleExpanded]);
 
+  // Capture the current time once per node mount (outside of render purity
+  // checks) so formatChangeTime can label "today / this year / older".
+  const [now] = useState(() => Date.now());
+  const changeTime = useMemo(
+    () => formatChangeTime(node.modified, now),
+    [node.modified, now],
+  );
+
   return (
     <div>
       <div
@@ -338,6 +363,23 @@ function TreeNode({
         >
           {node.name}
         </span>
+        {/* Hide the change-time stamp while hovering so the mention / download
+            quick actions have room to breathe. */}
+        {changeTime && !hovered && !loading && (
+          <span
+            title={node.modified}
+            style={{
+              flexShrink: 0,
+              fontSize: 10,
+              color: "var(--text-dim)",
+              fontFamily: "var(--font-mono)",
+              whiteSpace: "nowrap",
+              paddingRight: highlighted || (!node.isDir && gitStatus) || containsGitChanges ? 2 : 0,
+            }}
+          >
+            {changeTime}
+          </span>
+        )}
         {highlighted && (
           <span
             title={t("files.newlyUploaded")}
@@ -485,8 +527,13 @@ function ChangeRow({
   t: Translate;
 }) {
   const [hovered, setHovered] = useState(false);
+  const [now] = useState(() => Date.now());
   const name = getFileName(status.filePath);
   const rel = getRelativeFilePath(status.filePath, cwd);
+  const changeTime = useMemo(
+    () => formatChangeTime(status.modified, now),
+    [status.modified, now],
+  );
   return (
     <div
       onClick={() => onOpenFile(status.filePath, name, { modeHint: "diff" })}
@@ -522,6 +569,20 @@ function ChangeRow({
       >
         {rel}
       </span>
+      {changeTime && (
+        <span
+          title={status.modified}
+          style={{
+            flexShrink: 0,
+            fontSize: 10,
+            color: "var(--text-dim)",
+            fontFamily: "var(--font-mono)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {changeTime}
+        </span>
+      )}
     </div>
   );
 }
@@ -558,6 +619,24 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
   const gitStatusByPath = useMemo(() => new Map(
     gitFiles.map((status) => [normalizeFilePathSlashes(status.filePath), status]),
   ), [gitFiles]);
+
+  // Sort the changes list by on-disk modification time, newest first. Files
+  // without a mtime (e.g. deleted entries that no longer exist) sink to the
+  // bottom and keep their original relative order.
+  const sortedGitFiles = useMemo(() => {
+    const withTime = [] as { status: GitFileStatus; t: number; i: number }[];
+    let i = 0;
+    for (const status of gitFiles) {
+      withTime.push({
+        status,
+        t: status.modified ? Date.parse(status.modified) : -1,
+        i: i++,
+      });
+    }
+    return withTime
+      .sort((a, b) => (b.t - a.t) || (a.i - b.i))
+      .map((entry) => entry.status);
+  }, [gitFiles]);
 
   const changedDirectoryPaths = useMemo(() => {
     const directories = new Set<string>();
@@ -901,7 +980,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <span style={{ color: GIT_STATUS_COLORS.added, fontFamily: "var(--font-mono)" }}>+{gitLineStats.additions}</span>
             <span style={{ color: GIT_STATUS_COLORS.deleted, fontFamily: "var(--font-mono)" }}>-{gitLineStats.deletions}</span>
           </div>
-          {gitFiles.map((status) => (
+          {sortedGitFiles.map((status) => (
             <ChangeRow key={status.filePath} status={status} cwd={cwd} onOpenFile={onOpenFile} t={t} />
           ))}
         </div>

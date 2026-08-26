@@ -12,6 +12,10 @@ export interface GitFileStatus {
   code: "M" | "A" | "D" | "R" | "U" | "C";
   indexStatus: string;
   worktreeStatus: string;
+  /** ISO mtime of the file on disk (undefined when the file no longer exists,
+   *  e.g. deleted entries). Used by the file explorer to sort the changes
+   *  list by modification time and to show the change time inline. */
+  modified?: string;
 }
 
 export interface GitStatusResponse {

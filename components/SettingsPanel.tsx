@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor, normalizeHex } from "@/hooks/useAccentColor";
+import { useGlowBackground, GLOW_STYLE_IDS, GLOW_INTENSITY_MIN, GLOW_INTENSITY_MAX } from "@/hooks/useGlowBackground";
 import { BranchNavigator } from "./BranchNavigator";
 import { AgentLibraryPanel } from "./AgentLibraryPanel";
 import { TeamTemplatesPanel } from "./TeamTemplatesPanel";
@@ -58,6 +59,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
   const { t, locale, setLocale, supportedLocales } = useI18n();
   const { isDark, toggleTheme } = useTheme();
   const { accent, setAccentColor, resetAccentColor, presets } = useAccentColor({ apply: false });
+  const { enabled: glowEnabled, setGlowEnabled, style: glowStyle, setGlowStyle, intensity: glowIntensity, setGlowIntensity } = useGlowBackground();
   const [customColor, setCustomColor] = useState(accent);
   const [version, setVersion] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
@@ -217,6 +219,19 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         />
       ),
     },
+    {
+      label: t("settings.glowBackground"),
+      desc: t("settings.glowBackgroundDesc"),
+      icon: <IconGlow />,
+      onClick: () => setGlowEnabled(!glowEnabled),
+      trailing: (
+        <Switch
+          checked={glowEnabled}
+          onChange={() => setGlowEnabled(!glowEnabled)}
+          ariaLabel={t("settings.glowBackground")}
+        />
+      ),
+    },
   ];
 
   const renderRow = (row: Row) => (
@@ -319,6 +334,94 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         {divider}
         {sectionTitle(t("settings.appearance"))}
         {appearanceRows.map(renderRow)}
+        {/* 背景样式选择 */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "8px 10px",
+            borderRadius: 8,
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>
+              {t("settings.glowStyle")}
+            </span>
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 6, padding: "0 10px 10px", flexWrap: "wrap" }}>
+          {GLOW_STYLE_IDS.map((id) => {
+            const selected = glowStyle === id;
+            const label = t(`settings.glowStyle${id.charAt(0).toUpperCase()}${id.slice(1)}`);
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setGlowStyle(id)}
+                style={{
+                  height: 26,
+                  padding: "0 10px",
+                  borderRadius: 6,
+                  background: selected ? "var(--accent-soft)" : "var(--bg-hover)",
+                  border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  color: selected ? "var(--accent-hover)" : "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 11.5,
+                  fontWeight: selected ? 550 : 400,
+                  transition: "background 0.1s, color 0.1s",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {/* 光晕强度拖动 */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "8px 10px",
+            borderRadius: 8,
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>
+              {t("settings.glowIntensity")}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 1 }}>
+              {t("settings.glowIntensityDesc")}
+            </span>
+          </span>
+          <input
+            type="range"
+            min={GLOW_INTENSITY_MIN}
+            max={GLOW_INTENSITY_MAX}
+            step={0.05}
+            value={glowIntensity}
+            onChange={(e) => setGlowIntensity(Number(e.target.value))}
+            aria-label={t("settings.glowIntensity")}
+            className="glow-intensity-slider"
+            style={{
+              width: 132,
+              cursor: "pointer",
+              accentColor: "var(--accent)",
+            }}
+          />
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--text-dim)",
+              width: 36,
+              textAlign: "right",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {Math.round(glowIntensity * 100)}%
+          </span>
+        </div>
         </>
         )}
 
@@ -670,6 +773,21 @@ function IconMoon() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+function IconGlow() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2" />
+      <path d="M12 20v2" />
+      <path d="m4.93 4.93 1.41 1.41" />
+      <path d="m17.66 17.66 1.41 1.41" />
+      <path d="M2 12h2" />
+      <path d="M20 12h2" />
+      <path d="m6.34 17.66-1.41 1.41" />
+      <path d="m19.07 4.93-1.41 1.41" />
     </svg>
   );
 }

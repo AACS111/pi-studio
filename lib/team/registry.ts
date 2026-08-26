@@ -6,8 +6,9 @@
  */
 import { randomUUID } from "crypto";
 import { RunManager } from "./runtime.ts";
-import { PiAgentExecutor } from "./executor.ts";
+import { PiAgentExecutor, type AgentExecutorLike } from "./executor.ts";
 import { EventStore, TeamStore } from "./store.ts";
+import { classifyTask } from "./task-classify.ts";
 import { reduce } from "./types.ts";
 import type { TeamDef, TeamEvent, TeamRun } from "./types.ts";
 
@@ -26,14 +27,17 @@ export interface StartTeamRunResult {
 }
 
 /** 发布任务并异步执行（返回 runId，执行进度经 SSE 推送）。
- *  startAgentId：可选，指定起始角色（手动指派）；缺省 = 入口角色。 */
-export function startTeamRun(team: TeamDef, task: string, startAgentId?: string): StartTeamRunResult {
+ *  startAgentId：可选，指定起始角色（手动指派）；缺省 = 入口角色。
+ *  executor：可选注入（测试/自定义执行器）；缺省用真实 PiAgentExecutor。 */
+export function startTeamRun(team: TeamDef, task: string, startAgentId?: string, executor?: AgentExecutorLike): StartTeamRunResult {
   const runId = randomUUID().slice(0, 8);
+  const complexity = classifyTask(task);
   const run: TeamRun = {
     id: runId,
     teamId: team.sessionId,
     status: "pending",
     task,
+    complexity,
     stats: { hopCount: 0, reworkCount: 0, agentExecutions: 0, tokensUsed: 0, durationMs: 0 },
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -49,7 +53,7 @@ export function startTeamRun(team: TeamDef, task: string, startAgentId?: string)
   entry.manager = new RunManager({
     team,
     runId,
-    executor: new PiAgentExecutor(),
+    executor: executor ?? new PiAgentExecutor(),
     onRunUpdate: (r) => {
       entry.run = r;
       for (const cb of entry.runListeners) cb(r);
@@ -89,6 +93,20 @@ export function cancelTeamRun(runId: string): boolean {
   if (!entry) return false;
   entry.manager.cancel();
   return true;
+}
+
+/** P1-2：批准当前等待审批的 transition（LangGraph human-in-loop） */
+export function approveTeamRun(runId: string): boolean {
+  const entry = registry.get(runId);
+  if (!entry) return false;
+  return entry.manager.approve();
+}
+
+/** P1-2：驳回当前等待审批的 transition */
+export function rejectTeamRun(runId: string): boolean {
+  const entry = registry.get(runId);
+  if (!entry) return false;
+  return entry.manager.reject();
 }
 
 /** 订阅 run 事件：先重放全量（已落盘），再实时增量 */

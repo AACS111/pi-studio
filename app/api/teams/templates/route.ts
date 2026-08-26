@@ -53,7 +53,7 @@ export async function POST(req: Request) {
       defaultRoutingMode: body.defaultRoutingMode ?? "hybrid",
       maxHops: body.maxHops ?? 30,
       maxReworkRounds: body.maxReworkRounds ?? 3,
-      maxRunMinutes: body.maxRunMinutes ?? 30,
+      maxRunMinutes: body.maxRunMinutes ?? 60,
       contextScope: body.contextScope ?? "structured",
       createdAt: now,
       updatedAt: now,

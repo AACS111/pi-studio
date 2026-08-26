@@ -25,6 +25,7 @@ import type {
   GatewayType,
   RoutingMode,
   TeamDef,
+  ValidationIssue,
   WorkflowValidationResult,
 } from "@/lib/team/types";
 
@@ -45,12 +46,11 @@ const CONTEXT_SCOPES = ["structured", "summary", "recent"];
 
 export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Props) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<Tab>(initialAgentId ? "agents" : "agents");
+  const [tab, setTab] = useState<Tab>("agents");
   const [team, setTeam] = useState<TeamDef | null>(null);
   const [validation, setValidation] = useState<WorkflowValidationResult | null>(null);
   const [library, setLibrary] = useState<AgentLibraryItem[]>([]);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(initialAgentId ? { [initialAgentId]: true } : {});
   const [templateOptions, setTemplateOptions] = useState<{ id: string; name: string; description?: string; preview: TeamDef; builtin?: boolean }[]>([]);
@@ -97,7 +97,6 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
     if (!team || saving) return;
     setSaving(true);
     setError(null);
-    setSaved(false);
     try {
       const res = await fetch(`/api/teams/${sessionId}`, {
         method: "PATCH",
@@ -119,9 +118,8 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      setSaved(true);
       onSaved?.();
-      void load();
+      onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -252,6 +250,24 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
   const errors = validation?.errors ?? [];
   const warnings = validation?.warnings ?? [];
 
+  /** 校验项点击定位：跳到对应 tab 并展开受影响节点 */
+  const focusIssue = useCallback(
+    (issue: ValidationIssue) => {
+      if (issue.agentId && team?.agents.some((a) => a.id === issue.agentId)) {
+        setTab("agents");
+        setExpanded((e) => ({ ...e, [issue.agentId as string]: true }));
+        return;
+      }
+      if (issue.transitionId && team?.transitions.some((tr) => tr.id === issue.transitionId)) {
+        setTab("workflow");
+        return;
+      }
+      // 无具体节点归属（如 maxHops/入口）默认落到工作流画布
+      setTab("workflow");
+    },
+    [team],
+  );
+
   if (!team) {
     return (
       <DraggableResizableModal title="⚙️ 项目组设置" hint="" onClose={onClose} width={860} height={720}>
@@ -371,6 +387,14 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                           style={styles.input}
                         />
                       </Field>
+                      <Field label="期望产出（验收标准）">
+                        <textarea
+                          value={agent.expectation ?? ""}
+                          onChange={(e) => updateAgent(agent.id, { expectation: e.target.value })}
+                          placeholder="如：产出需求文档路径与验收标准；改动真实写入项目并跑通 typecheck/测试"
+                          style={{ ...styles.input, minHeight: 56, fontFamily: "var(--font-mono)", fontSize: 12 }}
+                        />
+                      </Field>
                       <div style={styles.grid2}>
                         <Field label={t("team.settings.agentRouting")}>
                           <select
@@ -418,16 +442,6 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                             ))}
                           </select>
                         </Field>
-                        <Field label={t("team.settings.agentMaxOutput")}>
-                          <input
-                            type="number"
-                            value={agent.maxOutputChars ?? 4000}
-                            onChange={(e) => updateAgent(agent.id, { maxOutputChars: Number(e.target.value) || undefined })}
-                            style={styles.input}
-                          />
-                        </Field>
-                      </div>
-                      <div style={styles.grid2}>
                         <Field label={t("team.settings.agentMaxTurns")}>
                           <input
                             type="number"
@@ -436,15 +450,15 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                             style={styles.input}
                           />
                         </Field>
-                        <Field label={t("team.settings.agentMaxOutput")}>
-                          <input
-                            type="number"
-                            value={agent.maxOutputChars ?? 4000}
-                            onChange={(e) => updateAgent(agent.id, { maxOutputChars: Number(e.target.value) || undefined })}
-                            style={styles.input}
-                          />
-                        </Field>
                       </div>
+                      <Field label={t("team.settings.agentMaxOutput")}>
+                        <input
+                          type="number"
+                          value={agent.maxOutputChars ?? 4000}
+                          onChange={(e) => updateAgent(agent.id, { maxOutputChars: Number(e.target.value) || undefined })}
+                          style={styles.input}
+                        />
+                      </Field>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button
                           onClick={() => {
@@ -645,7 +659,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
             </div>
             <div style={styles.grid2}>
               <Field label={t("team.settings.maxMinutes")}>
-                <input type="number" value={team.maxRunMinutes} onChange={(e) => updateTeam({ maxRunMinutes: Number(e.target.value) || 30 })} style={styles.input} />
+                <input type="number" value={team.maxRunMinutes} onChange={(e) => updateTeam({ maxRunMinutes: Number(e.target.value) || 60 })} style={styles.input} />
               </Field>
               <Field label={t("team.settings.contextScope")}>
                 <select value={team.contextScope} onChange={(e) => updateTeam({ contextScope: e.target.value as TeamDef["contextScope"] })} style={styles.input}>
@@ -655,6 +669,17 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                 </select>
               </Field>
             </div>
+            <Field label="简单任务降级（solo）">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-muted)" }}>
+                <input
+                  type="checkbox"
+                  checked={team.autoSolo === true}
+                  onChange={(e) => updateTeam({ autoSolo: e.target.checked ? true : undefined })}
+                  style={{ width: 16, height: 16 }}
+                />
+                开启后，被判定为无需拆解的简单任务只由入口角色直接完成，避免跑遍所有角色
+              </label>
+            </Field>
             <Field label={t("team.settings.reworkEdges")}>
               <textarea value={reworkEdgesText} onChange={(e) => setReworkEdgesText(e.target.value)} style={{ ...styles.input, minHeight: 70, fontFamily: "var(--font-mono)", fontSize: 12 }} placeholder="tester,developer&#10;qa,developer" />
             </Field>
@@ -670,7 +695,16 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
               {t("team.settings.errors")}:
               <ul style={{ margin: "4px 0 0 18px", padding: 0 }}>
                 {errors.map((e, i) => (
-                  <li key={i}>{e.message}</li>
+                  <li key={i}>
+                    <button
+                      type="button"
+                      onClick={() => focusIssue(e)}
+                      style={styles.issueItem}
+                      title={t("team.settings.issueLocate")}
+                    >
+                      {e.message}
+                    </button>
+                  </li>
                 ))}
               </ul>
             </div>
@@ -680,7 +714,16 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
               {t("team.settings.warnings")}:
               <ul style={{ margin: "4px 0 0 18px", padding: 0 }}>
                 {warnings.map((w, i) => (
-                  <li key={i}>{w.message}</li>
+                  <li key={i}>
+                    <button
+                      type="button"
+                      onClick={() => focusIssue(w)}
+                      style={styles.issueItem}
+                      title={t("team.settings.issueLocate")}
+                    >
+                      {w.message}
+                    </button>
+                  </li>
                 ))}
               </ul>
             </div>
@@ -695,8 +738,18 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
       {/* Footer */}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
         <button onClick={onClose} style={styles.btnSecondary}>{t("team.cancel")}</button>
-        <button onClick={() => void handleSave()} disabled={saving || errors.length > 0} style={styles.btnPrimary}>
-          {saving ? "…" : "💾"} {t("team.settings.save")}
+        <button
+          onClick={() => void handleSave()}
+          disabled={saving || errors.length > 0}
+          style={styles.btnPrimary}
+          title={errors.length > 0 ? t("team.settings.saveBlocked", { count: errors.length }) : undefined}
+        >
+          {saving ? "…" : "💾"}{" "}
+          {errors.length > 0
+            ? t("team.settings.saveBlocked", { count: errors.length })
+            : warnings.length > 0
+              ? t("team.settings.saveWithWarnings", { count: warnings.length })
+              : t("team.settings.save")}
         </button>
       </div>
       {/* 展开大画布弹窗（可 resize 浮层，拖动右下角调大小） */}
@@ -866,5 +919,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 10,
     padding: "10px 12px",
     background: "var(--bg-soft, rgba(0,0,0,0.02))",
+  },
+  issueItem: {
+    background: "none",
+    border: "none",
+    padding: 0,
+    cursor: "pointer",
+    color: "inherit",
+    textAlign: "left",
+    textDecoration: "underline",
+    textDecorationStyle: "dotted",
+    fontSize: 12,
   },
 };

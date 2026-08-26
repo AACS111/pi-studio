@@ -86,7 +86,7 @@ export function TeamTemplatesPanel({ onBack, onCreate }: Props) {
       defaultRoutingMode: "hybrid",
       maxHops: 30,
       maxReworkRounds: 3,
-      maxRunMinutes: 30,
+      maxRunMinutes: 60,
       contextScope: "structured",
       createdAt: now,
       updatedAt: now,
@@ -196,7 +196,7 @@ function buildDuplicateTemplate(tmpl: TemplateInfo): UserTemplate {
     defaultRoutingMode: p.defaultRoutingMode ?? "hybrid",
     maxHops: p.maxHops ?? 30,
     maxReworkRounds: p.maxReworkRounds ?? 3,
-    maxRunMinutes: p.maxRunMinutes ?? 30,
+    maxRunMinutes: p.maxRunMinutes ?? 60,
     contextScope: p.contextScope ?? "structured",
     createdAt: now,
     updatedAt: now,
@@ -290,7 +290,7 @@ function TemplateCard({
         defaultRoutingMode: tmpl.preview.defaultRoutingMode ?? "hybrid",
         maxHops: tmpl.preview.maxHops ?? 30,
         maxReworkRounds: tmpl.preview.maxReworkRounds ?? 3,
-        maxRunMinutes: tmpl.preview.maxRunMinutes ?? 30,
+        maxRunMinutes: tmpl.preview.maxRunMinutes ?? 60,
         contextScope: tmpl.preview.contextScope ?? "structured",
       };
       const res = await fetch(tmpl.builtin ? "/api/teams/templates" : `/api/teams/templates/${tmpl.id}`, {

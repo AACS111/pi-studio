@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useI18n } from "@/hooks/useI18n";
 import { useTeamRun } from "@/hooks/useTeamRun";
 import { MarkdownBody } from "./MarkdownBody";
+import { resolveFilePath } from "@/lib/file-paths";
 import { ChangedFilesCard } from "./ChangedFilesCard";
 import { TeamSettings } from "./TeamSettings";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
@@ -33,6 +34,29 @@ const ROLE_EMOJI: Record<string, string> = {
 
 /** 执行模式选项（输入框旁选择器顺序） */
 const EXEC_MODES: ExecutionMode[] = ["auto", "solo", "serial", "parallel", "custom"];
+
+/** 从思考/工具文本中提取“引用文件”（含路径分隔符且带常见代码/文档扩展名），去重、限量。
+ *  用于 running 角色的思考区下方生成可点击的文件 chips，用户点击即可在右侧查看器打开。
+ *  启发式：匹配含 / 或 \\ 分隔符的路径 + 扩展名（如 src/views/Mps.vue、C:/a/b/Report.ts），
+ *  过滤掉方法名/数字/URL 等无分隔符噪音。 */
+const REF_FILE_EXT = "vue|ts|tsx|js|jsx|java|md|json|xml|yml|yaml|sql|css|scss|less|py|rb|go|sh|html|txt|ini|env|kt|cs|cpp|c|h|gradle";
+function extractReferencedFiles(texts: string[], max = 12): string[] {
+  const combined = texts.filter(Boolean).join("\n");
+  const re = new RegExp(
+    `(?:[A-Za-z]:[\\\\/]|[\\\\/]|\\.\\.?[\\\\/])?((?:[A-Za-z0-9_@.-]+[\\\\/])+[A-Za-z0-9_@.-]+\\\\.(?:${REF_FILE_EXT})\\b)`,
+    "g",
+  );
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(combined)) && out.length < max) {
+    const p = m[1].replace(/^\\.\[/, "");
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
 
 /** 旧版内置角色中文默认名：若 team.json 里 agent.name 还是这些旧值则回退显示英文 id（保证旧团队也统一英文显示） */
 const LEGACY_CN_NAMES = new Set(["组长", "产品", "开发", "测试", "研究员", "文档"]);
@@ -184,9 +208,9 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
 
   // 执行元数据表：executionId → 状态/统计（供最终消息徽标）
   const execStatusById = useMemo(() => {
-    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[] }> = {};
+    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string }> = {};
     for (const e of data.projections?.executions ?? []) {
-      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost, model: e.model, changedFiles: e.changedFiles };
+      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost, model: e.model, changedFiles: e.changedFiles, sessionPath: e.sessionPath };
     }
     return map;
   }, [data.projections?.executions]);
@@ -472,6 +496,8 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
                 items={b.items}
                 toolCount={b.toolCount}
                 model={b.model}
+                cwd={data.team?.cwd}
+                onOpenFile={onOpenFile}
               />
             ))}
             {running && liveProgressByExec.length === 0 && (
@@ -806,7 +832,7 @@ function MessageBubble({
   roleInfo?: { emoji: string; name: string; dot: string };
   thinking?: string;
   toolCount?: number;
-  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[] };
+  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string };
   onAvatarClick?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
@@ -853,8 +879,41 @@ function MessageBubble({
               {new Date(message.createdAt).toLocaleTimeString()}
             </span>
           </div>
-          {message.kind !== "imported" && (
-            <ThinkingCollapsible thinking={thinking ?? ""} toolCount={toolCount ?? 0} />
+          {message.kind !== "imported" && execStatus?.sessionPath ? (
+            // 历史执行完的角色思考：不再把长篇思考平铺在会话里（否则越滚越长、拖慢渲染），
+            // 只保留「存储文件」入口——用户想看时点击，在右侧查看器打开完整思考会话。
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginTop: 2,
+                fontSize: 11,
+                color: "var(--text-muted)",
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
+              <button
+                type="button"
+                onClick={() => onOpenFile?.(execStatus.sessionPath!)}
+                disabled={!onOpenFile}
+                title={execStatus.sessionPath}
+                style={styles.artifactLink}
+              >
+                {t("team.viewThinkingFile")}
+              </button>
+              <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>
+                {execStatus.sessionPath.split(/[\\/]/).pop()}
+              </span>
+            </div>
+          ) : (
+            message.kind !== "imported" && (
+              <ThinkingCollapsible thinking={thinking ?? ""} toolCount={toolCount ?? 0} />
+            )
           )}
           <div style={styles.bubbleOuter}>
             <div style={{ fontSize: 13, lineHeight: 1.55 }}>
@@ -914,6 +973,8 @@ function LiveRoleBlock({
   items,
   toolCount,
   model,
+  cwd,
+  onOpenFile,
 }: {
   emoji: string;
   name: string;
@@ -922,6 +983,8 @@ function LiveRoleBlock({
   items: Array<{ kind: "thinking" | "tool" | "model"; content: string; timestamp: number }>;
   toolCount: number;
   model?: string;
+  cwd?: string;
+  onOpenFile?: (p: string) => void;
 }) {
   const { t } = useI18n();
   // 窗口化：思考片段随执行增长可能上千段，若全量 join 成一个大字符串再用 MarkdownBody 渲染，
@@ -937,6 +1000,16 @@ function LiveRoleBlock({
   const sliced = segs.length > MAX_THINKING_SEGS ? segs.slice(-MAX_THINKING_SEGS) : segs;
   const skippedCount = segs.length - sliced.length;
   const thinking = (skippedCount > 0 ? `…（已省略前面 ${skippedCount} 段思考）\n` : "") + sliced.join("\n");
+  // 引用文件：从 thinking + 工具调用文本提取，生成可点击 chips（右侧查看器打开），
+  //  否则思考里纯文本文件路径看不清，用户也无法直接点开核实。
+  const referencedFiles = useMemo(() => {
+    const texts: string[] = [];
+    for (const it of items) {
+      if (it.kind === "thinking") texts.push(it.content);
+      else if (it.kind === "tool") texts.push(it.content);
+    }
+    return extractReferencedFiles(texts);
+  }, [items]);
   return (
     <div style={styles.groupRow}>
       <RoleAvatar emoji={emoji} dot={dot} />
@@ -957,6 +1030,22 @@ function LiveRoleBlock({
           </span>
         </div>
         <ThinkingCollapsible thinking={thinking} toolCount={toolCount} live />
+        {referencedFiles.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+            {referencedFiles.map((f) => (
+              <button
+                key={f}
+                type="button"
+                disabled={!onOpenFile}
+                onClick={() => onOpenFile?.(resolveFilePath(f, cwd))}
+                title={f}
+                style={styles.referencedFileChip}
+              >
+                {f.split(/[\\/]/).pop()}
+              </button>
+            ))}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: "var(--text-dim)" }}>… {t("team.stepInProgress")}</div>
         {toolCount > 0 && (
           <div style={{ fontSize: 10, color: "var(--text-muted)" }}>🔧 {toolCount} {t("team.toolCalls")}</div>
@@ -967,6 +1056,23 @@ function LiveRoleBlock({
 }
 
 const styles: Record<string, CSSProperties> = {
+  referencedFileChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    maxWidth: 200,
+    padding: "1px 8px",
+    borderRadius: 9,
+    border: "1px solid var(--border)",
+    background: "var(--bg-soft, rgba(0,0,0,0.03))",
+    color: "var(--text-muted)",
+    fontSize: 10.5,
+    cursor: "pointer",
+    fontFamily: "var(--font-mono)",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   root: {
     height: "100%",
     display: "flex",

@@ -81,6 +81,7 @@ const PRODUCT = {
   // 产品不写代码，但要写方案文档、读代码了解现状：给 read/write/grep/find/ls，禁 bash/edit。
   toolNames: ["read", "write", "grep", "find", "ls"],
   builtin: true,
+  thinkingLevel: "low",
 };
 
 /** 开发：实现功能、修复缺陷 */
@@ -169,6 +170,7 @@ const RESEARCHER = {
   // 研究员只读探索不改代码：给 read/bash/grep/find/ls（读代码+跑命令探查），禁 edit/write。
   toolNames: ["read", "bash", "grep", "find", "ls"],
   builtin: true,
+  thinkingLevel: "low",
 };
 
 /** 文档：整理交付文档 */
@@ -194,6 +196,7 @@ const WRITER = {
   // 文档写文档不写代码：给 read/write/grep/find/ls（读代码写实文档），禁 bash/edit。
   toolNames: ["read", "write", "grep", "find", "ls"],
   builtin: true,
+  thinkingLevel: "low",
 };
 
 /** 前端开发：负责前端 UI / 筛选框 / 页面 / Vue 组件的改造。
@@ -278,6 +281,7 @@ export function agentFromLibrary(item: AgentLibraryItem): {
   toolNames: string[];
   skillIds?: string[];
   expectation?: string;
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 } {
   return {
     id: item.id,
@@ -289,6 +293,7 @@ export function agentFromLibrary(item: AgentLibraryItem): {
     toolNames: [...item.toolNames],
     skillIds: item.skillIds ? [...item.skillIds] : undefined,
     expectation: item.expectation,
+    thinkingLevel: item.thinkingLevel,
   };
 }
 

@@ -238,6 +238,21 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
     [team?.reworkEdges],
   );
 
+  // #fe/be 提示：角色不在任何 transition 的 from/to 也不在 gateway/entry，即「工作流图外」。
+  //   auto/serial/parallel 模式下 workflow tab 不显示，用户易忽略此类角色会闲置，这里在角色列表标出。
+  const notInWorkflow = useMemo(() => {
+    if (!team) return [];
+    const nodes = new Set<string>();
+    for (const tr of team.transitions) {
+      nodes.add(tr.from);
+      nodes.add(tr.to);
+    }
+    for (const gw of team.gateways ?? []) nodes.add(gw.id);
+    return team.agents
+      .filter((a) => a.id !== team.entryAgentId && !nodes.has(a.id))
+      .map((a) => a.id);
+  }, [team]);
+
   const setReworkEdgesText = (text: string) => {
     if (!team) return;
     const edges = text
@@ -346,6 +361,22 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{agent.name}</span>
                     {isEntry && (
                       <span style={styles.entryBadge}>▶ {t("team.settings.entry")}</span>
+                    )}
+                    {notInWorkflow.includes(agent.id) && (
+                      <span
+                        title={t("team.settings.notInWorkflowHint")}
+                        style={{
+                          fontSize: 10,
+                          padding: "1px 6px",
+                          borderRadius: 6,
+                          flexShrink: 0,
+                          background: "color-mix(in srgb, #f59e0b 15%, transparent)",
+                          color: "#f59e0b",
+                          border: "1px solid #f59e0b40",
+                        }}
+                      >
+                        ⚠ {t("team.settings.notInWorkflow")}
+                      </span>
                     )}
                     <span style={{ fontSize: 11, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {agent.role} · {agent.model || t("team.settings.agentModel")}

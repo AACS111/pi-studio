@@ -54,6 +54,8 @@ export interface AgentLibraryItem {
   builtin?: boolean;
   /** 期望产出/验收标准（借鉴 CrewAI expected_output） */
   expectation?: string;
+  /** 推理级别（透传 startRpcSession；缺省=模型默认）。非核心分析/文档角色可设 low 省 token，不影响执行质量 */
+  thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   createdAt: number;
   updatedAt: number;
 }

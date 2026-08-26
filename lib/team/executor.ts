@@ -75,6 +75,11 @@ export function parseAgentModel(model: string): { provider: string; modelId: str
 
 /** 真实执行器：启动 pi 会话跑完整回合 */
 export class PiAgentExecutor implements AgentExecutorLike {
+  /** 会话工厂：默认调用真实 startRpcSession；测试可注入 mock 会话（发射 thinking/工具事件）验证落盘逻辑 */
+  private sessionFactory: typeof startRpcSession;
+  constructor(sessionFactory?: typeof startRpcSession) {
+    this.sessionFactory = sessionFactory ?? startRpcSession;
+  }
   async run(request: AgentExecutionRequest): Promise<ExecutionResult> {
     const { team, runId, execution, context, existingTasks, onMessage } = request;
     const agent = team.agents.find((a) => a.id === execution.agentId);
@@ -144,7 +149,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
     // 无视 task 字段里的真实需求）。团队内部协作走 team_* 受控工具，不靠个人记忆。
     const TEAM_DENY_TOOLS = ["memory_list", "memory_search", "memory_save", "memory_forget", "memory_restore", "scratchpad"];
 
-    const { session } = await startRpcSession(execution.id, sessionFile, team.cwd, {
+    const { session } = await this.sessionFactory(execution.id, sessionFile, team.cwd, {
       toolNames: effectiveToolNames,
       ...(model && model.provider ? { initialModel: { provider: model.provider, modelId: model.modelId } } : {}),
       ...(effectiveThinkingLevel ? { thinkingLevel: effectiveThinkingLevel } : {}),

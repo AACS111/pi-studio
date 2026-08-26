@@ -27,6 +27,8 @@ export interface ExecutionResult {
   model?: { provider: string; modelId: string };
   /** 本次执行改动/生成的文件（edit/write；站在项目 cwd 内），供 UI 像普通会话那样展示「变更文件」 */
   changedFiles?: { filePath: string; kind: "edit" | "write" }[];
+  /** 本次执行思考流水落盘的 .md 路径（可读，供「查看思考文件」右开；无思考则为 undefined） */
+  thinkingPath?: string;
 }
 
 export interface Route {

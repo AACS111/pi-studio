@@ -208,9 +208,9 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
 
   // 执行元数据表：executionId → 状态/统计（供最终消息徽标）
   const execStatusById = useMemo(() => {
-    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string }> = {};
+    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string; thinkingPath?: string }> = {};
     for (const e of data.projections?.executions ?? []) {
-      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost, model: e.model, changedFiles: e.changedFiles, sessionPath: e.sessionPath };
+      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost, model: e.model, changedFiles: e.changedFiles, sessionPath: e.sessionPath, thinkingPath: e.thinkingPath };
     }
     return map;
   }, [data.projections?.executions]);
@@ -832,7 +832,7 @@ function MessageBubble({
   roleInfo?: { emoji: string; name: string; dot: string };
   thinking?: string;
   toolCount?: number;
-  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string };
+  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string; thinkingPath?: string };
   onAvatarClick?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
@@ -879,9 +879,9 @@ function MessageBubble({
               {new Date(message.createdAt).toLocaleTimeString()}
             </span>
           </div>
-          {message.kind !== "imported" && execStatus?.sessionPath ? (
+          {message.kind !== "imported" && (execStatus?.thinkingPath || execStatus?.sessionPath) ? (
             // 历史执行完的角色思考：不再把长篇思考平铺在会话里（否则越滚越长、拖慢渲染），
-            // 只保留「存储文件」入口——用户想看时点击，在右侧查看器打开完整思考会话。
+            // 只保留「查看思考文件」入口——优先打开可读的 thinking .md（右开即正常 markdown 渲染）。
             <div
               style={{
                 display: "flex",
@@ -899,15 +899,15 @@ function MessageBubble({
               </svg>
               <button
                 type="button"
-                onClick={() => onOpenFile?.(execStatus.sessionPath!)}
+                onClick={() => onOpenFile?.((execStatus.thinkingPath ?? execStatus.sessionPath)!)}
                 disabled={!onOpenFile}
-                title={execStatus.sessionPath}
+                title={execStatus.thinkingPath ?? execStatus.sessionPath}
                 style={styles.artifactLink}
               >
                 {t("team.viewThinkingFile")}
               </button>
               <span style={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>
-                {execStatus.sessionPath.split(/[\\/]/).pop()}
+                {(execStatus.thinkingPath ?? execStatus.sessionPath)!.split(/[\\/]/).pop()}
               </span>
             </div>
           ) : (

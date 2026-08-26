@@ -315,6 +315,7 @@ export class RunManager {
       ...(result.stats ? { stats: result.stats } : {}),
       ...(result.model ? { model: result.model } : {}),
       ...(result.changedFiles?.length ? { changedFiles: result.changedFiles } : {}),
+      ...(result.thinkingPath ? { thinkingPath: result.thinkingPath } : {}),
     });
     this.publish();
 

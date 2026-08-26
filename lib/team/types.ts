@@ -231,6 +231,8 @@ export interface AgentExecution {
   completedAt?: number;
   sessionId: string;          // pi 会话 id（回放/审计；retention 策略基于此）
   sessionPath?: string;
+  /** 思考流水落盘的 .md 路径（可读，用户/下游直接右开查看完整思考；无思考则 undefined） */
+  thinkingPath?: string;
   outputMessageId?: string;   // 群聊里对应的 agent 消息
   handoffTo?: string;
   taskIds?: string[];         // 本次执行关联的 Task
@@ -350,7 +352,7 @@ export type TeamEvent =
   | { type: "artifact_produced"; sequence: number; timestamp: number; artifact: ArtifactRef }
   | { type: "decision_recorded"; sequence: number; timestamp: number; decision: Decision }
   | { type: "handoff_requested"; sequence: number; timestamp: number; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[] }
+  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[]; thinkingPath?: string }
   | { type: "agent_progress"; sequence: number; timestamp: number; executionId: string; agentId: string; kind: "thinking" | "tool" | "model"; content: string }
   | { type: "steer"; sequence: number; timestamp: number; agentId?: string; content: string }
   | { type: "approval_requested"; sequence: number; timestamp: number; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
@@ -370,7 +372,7 @@ export type TeamEventInput =
   | { type: "artifact_produced"; artifact: ArtifactRef }
   | { type: "decision_recorded"; decision: Decision }
   | { type: "handoff_requested"; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[] }
+  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[]; thinkingPath?: string }
   | { type: "agent_progress"; executionId: string; agentId: string; kind: "thinking" | "tool" | "model"; content: string }
   | { type: "steer"; agentId?: string; content: string }
   | { type: "approval_requested"; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
@@ -501,6 +503,7 @@ export function reduce(events: TeamEvent[]): Projections {
           exec.stats = event.stats;
           exec.model = event.model;
           exec.changedFiles = event.changedFiles;
+          exec.thinkingPath = event.thinkingPath;
         }
         for (const taskId of exec?.taskIds ?? []) {
           const task = p.tasks.find((t) => t.id === taskId);

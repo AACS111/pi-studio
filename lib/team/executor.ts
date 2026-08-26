@@ -158,6 +158,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
 
     // 实时进度节流状态（try 外声明，finally 可安全清理）
     let thinkingBuf = "";
+    let thinkingFull = ""; // 本次执行完整思考流水（用于落 .md 供可读查看；区别于 flush 用的 thinkingBuf）
     let thinkingTimer: ReturnType<typeof setInterval> | undefined;
     let unsubscribe: (() => void) | undefined;
     // 本次执行实际生效的模型（agent.model 显式 / 跟随全局默认后由会话解析出的具体模型），供 UI 展示
@@ -246,12 +247,14 @@ export class PiAgentExecutor implements AgentExecutorLike {
             const am = ue.assistantMessageEvent;
             if (am?.type === "thinking_delta" && am.delta) {
               thinkingBuf += am.delta;
+              thinkingFull += am.delta;
               writeTrace(`[thinking] ${am.delta}`);
               if (!thinkingTimer) {
                 thinkingTimer = setInterval(flushThinking, 250);
               }
             } else if (am?.type === "thinking_end" && am.content) {
               thinkingBuf = am.content;
+              thinkingFull = am.content; // thinking_end 的 content 为完整思考，覆盖增量拼接
               writeTrace(`\n[thinking-end] ${am.content}\n`);
               if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = undefined; }
               flushThinking();
@@ -424,6 +427,20 @@ export class PiAgentExecutor implements AgentExecutorLike {
         ].join("\n"));
       } catch { /* 总结写入失败不阻断 */ }
 
+      // 思考流水落 .md（可读）：runs/<runId>/thinking/<agentId>.md，让用户/下游直接右开查看完整思考
+      //   （替代原始 session .jsonl —— JSONL 是事件流，右侧渲染成一坨 JSON，不可读）
+      //   不混入总结 .md 是避免把结论文件撑大；thinking 单独成文件，互不干扰。
+      let thinkingPath: string | undefined;
+      try {
+        if (thinkingFull?.trim()) {
+          const thinkingDir = join(getTeamDir(team.sessionId), "runs", runId, "thinking");
+          mkdirSync(thinkingDir, { recursive: true });
+          const thinkingFile = join(thinkingDir, `${agent.id}.md`);
+          appendFileSync(thinkingFile, `\n---\n## 执行 #${execution.sequence} · ${new Date().toISOString()}\n\n${thinkingFull.trim()}\n`);
+          thinkingPath = thinkingFile;
+        }
+      } catch { /* 思考流水写入失败不阻断 */ }
+
       return {
         status: "completed",
         output: output.trim(),
@@ -433,6 +450,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
         ...(stats ? { stats } : {}),
         ...(actualModel ? { model: actualModel } : {}),
         ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+        ...(thinkingPath ? { thinkingPath } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -58,6 +58,7 @@ export async function PATCH(req: Request, { params }: Params) {
       maxReworkRounds: typeof body.maxReworkRounds === "number" ? body.maxReworkRounds : team.maxReworkRounds,
       maxRunMinutes: typeof body.maxRunMinutes === "number" ? body.maxRunMinutes : team.maxRunMinutes,
       contextScope: typeof body.contextScope === "string" ? (body.contextScope as TeamDef["contextScope"]) : team.contextScope,
+      executionMode: typeof body.executionMode === "string" ? (body.executionMode as TeamDef["executionMode"]) : team.executionMode,
       entryAgentId: typeof body.entryAgentId === "string" && body.entryAgentId ? (body.entryAgentId as TeamDef["entryAgentId"]) : team.entryAgentId,
       updatedAt: Date.now(),
     };

@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { reduce } from "@/lib/team/types";
 import type {
   AgentExecution,
+  ExecutionMode,
   Projections,
   TeamDef,
   TeamEvent,
@@ -50,7 +51,7 @@ export interface TeamChatData {
   loading: boolean;
   error: string | null;
   load: () => Promise<void>;
-  startRun: (task: string, startAgentId?: string) => Promise<string>;
+  startRun: (task: string, startAgentId?: string, mode?: ExecutionMode) => Promise<string>;
   cancelRun: () => Promise<void>;
   steer: (content: string, agentId?: string) => Promise<void>;
   /** P1-2：批准/驳回当前等待审批的 transition */
@@ -162,11 +163,11 @@ export function useTeamRun(sessionId: string): TeamChatData {
   }, []);
 
   const startRun = useCallback(
-    async (task: string, startAgentId?: string): Promise<string> => {
+    async (task: string, startAgentId?: string, mode?: ExecutionMode): Promise<string> => {
       const res = await fetch(`/api/teams/${encodeURIComponent(sessionId)}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task, agentId: startAgentId }),
+        body: JSON.stringify({ task, agentId: startAgentId, mode }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => null);

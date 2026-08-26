@@ -519,11 +519,13 @@ function ChangeRow({
   status,
   cwd,
   onOpenFile,
+  onAtMention,
   t,
 }: {
   status: GitFileStatus;
   cwd: string;
   onOpenFile: OpenFileHandler;
+  onAtMention?: (relativePath: string, isDir: boolean) => void;
   t: Translate;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -569,7 +571,9 @@ function ChangeRow({
       >
         {rel}
       </span>
-      {changeTime && (
+      {/* Hide the change-time stamp while hovering so the mention button has
+          room to breathe (matches the tree rows). */}
+      {changeTime && !hovered && (
         <span
           title={status.modified}
           style={{
@@ -582,6 +586,37 @@ function ChangeRow({
         >
           {changeTime}
         </span>
+      )}
+      {onAtMention && hovered && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            // Changed-file rows are always files (not directories).
+            onAtMention(rel, false);
+          }}
+          title={t("files.insertPath")}
+          style={{
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 4,
+            padding: "0 8px",
+            height: 20,
+            background: "var(--bg-panel)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            color: "var(--accent)",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+          }}
+        >
+          <MentionIcon />
+          {t("files.mention")}
+        </button>
       )}
     </div>
   );
@@ -981,7 +1016,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
             <span style={{ color: GIT_STATUS_COLORS.deleted, fontFamily: "var(--font-mono)" }}>-{gitLineStats.deletions}</span>
           </div>
           {sortedGitFiles.map((status) => (
-            <ChangeRow key={status.filePath} status={status} cwd={cwd} onOpenFile={onOpenFile} t={t} />
+            <ChangeRow key={status.filePath} status={status} cwd={cwd} onOpenFile={onOpenFile} onAtMention={onAtMention} t={t} />
           ))}
         </div>
       )}

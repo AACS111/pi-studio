@@ -4,19 +4,20 @@
  */
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTeamRun } from "@/hooks/useTeamRun";
 import { MarkdownBody } from "./MarkdownBody";
 import { TeamSettings } from "./TeamSettings";
-import { buildAtInsertText, extractAtQuery, type FileIndexEntry } from "@/lib/file-fuzzy";
-import type { SkillInfo } from "@/lib/api-types";
-import type { TeamMessage } from "@/lib/team/types";
+import { ChatInput, type ChatInputHandle } from "./ChatInput";
+import type { ExecutionMode, TeamMessage } from "@/lib/team/types";
 
 interface Props {
   sessionId: string;
   teamName?: string;
   onOpenFile?: (path: string) => void;
+  /** 复用普通会话的输入框句柄：让文件浏览器的「插入路径」能写入项目组的任务输入框 */
+  chatInputRef?: React.RefObject<ChatInputHandle | null>;
 }
 
 const ROLE_EMOJI: Record<string, string> = {
@@ -29,60 +30,29 @@ const ROLE_EMOJI: Record<string, string> = {
   assistant: "🤖",
 };
 
+/** 执行模式选项（输入框旁选择器顺序） */
+const EXEC_MODES: ExecutionMode[] = ["auto", "solo", "serial", "parallel", "custom"];
+
 /** 旧版内置角色中文默认名：若 team.json 里 agent.name 还是这些旧值则回退显示英文 id（保证旧团队也统一英文显示） */
 const LEGACY_CN_NAMES = new Set(["组长", "产品", "开发", "测试", "研究员", "文档"]);
 
-/** 输入提示菜单项 */
-interface AcItem {
-  key: string;
-  type: "agent" | "file" | "skill";
-  icon: string;
-  label: string;
-  sub: string;
-}
 
-interface AcState {
-  kind: "at" | "slash";
-  start: number;
-  query: string;
-  items: AcItem[];
-  active: number;
-}
-
-export function TeamChat({ sessionId, teamName, onOpenFile }: Props) {
+export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Props) {
   const { t } = useI18n();
   const data = useTeamRun(sessionId);
-  const [task, setTask] = useState("");
-  const [steerText, setSteerText] = useState("");
   const [posting, setPosting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
+  // 执行模式与「项目组设置 → 团队参数 → 执行模式」共用同一个存储变量（TeamDef.executionMode）：
+  // 外部下拉与设置弹窗改的是同一个值，双向同步。
+  const executionMode = data.team?.executionMode ?? "auto";
+  const [execHelp, setExecHelp] = useState(false);
+  const [execMenuOpen, setExecMenuOpen] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsAgentId, setSettingsAgentId] = useState<string | undefined>(undefined);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
-  const taskRef = useRef<HTMLTextAreaElement | null>(null);
-  // —— 输入框高度（上下拖拽调整）——
-  const [composerH, setComposerH] = useState(48);
-  const composerDragRef = useRef<{ startY: number; startH: number } | null>(null);
-  const startComposerDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    composerDragRef.current = { startY: e.clientY, startH: composerH };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const moveComposerDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = composerDragRef.current;
-    if (!d) return;
-    const delta = d.startY - e.clientY; // 向上拖动增大高度
-    const h = Math.max(40, Math.min(320, d.startH + delta));
-    setComposerH(h);
-  };
-  const endComposerDrag = () => { composerDragRef.current = null; };
-  // —— 输入提示（@ 角色/文件、/ skill）——
-  const [ac, setAc] = useState<AcState | null>(null);
-  const acRef = useRef<AcState | null>(null);
-  const fileIndexCache = useRef<Record<string, FileIndexEntry[]>>({});
-  const fileIndexTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [skills, setSkills] = useState<SkillInfo[] | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -214,201 +184,67 @@ export function TeamChat({ sessionId, teamName, onOpenFile }: Props) {
     return map;
   }, [data.projections?.executions]);
 
-  const handlePost = async () => {
-    const text = task.trim();
-    if (!text || posting) return;
+  const handlePost = useCallback(async (text: string) => {
+    const msg = (text ?? "").trim();
+    if (!msg || posting) return;
     setPosting(true);
     setPostError(null);
     try {
       // 起始角色固定 = 项目组设置的入口角色（entryAgentId），不再在对话窗口重复选择
-      await data.startRun(text);
-      setTask("");
+      await data.startRun(msg, undefined, executionMode);
     } catch (e) {
       setPostError(e instanceof Error ? e.message : String(e));
     } finally {
       setPosting(false);
     }
-  };
+  }, [posting, data, executionMode]);
 
-  const handleSteer = async () => {
-    const text = steerText.trim();
+  const handleSteer = useCallback(async (msg: string) => {
+    const text = (msg ?? "").trim();
     if (!text) return;
     try {
       await data.steer(text);
-      setSteerText("");
+      setPostError(null);
     } catch {
       setPostError("steer failed");
     }
-  };
+  }, [data]);
 
-  // —— 输入提示逻辑 ——
-  const setAcState = (s: AcState | null) => {
-    setAc(s);
-    acRef.current = s;
-  };
-
-  const loadSkills = async () => {
-    if (skills) return;
+  /** 变更执行模式：写同一个 TeamDef.executionMode 存储变量（与项目组设置共享），并刷新 */
+  const changeExecutionMode = useCallback(async (mode: ExecutionMode) => {
+    setExecHelp(false);
+    setExecMenuOpen(false);
     try {
-      const cwd = data.team?.cwd;
-      if (!cwd) return;
-      const res = await fetch(`/api/skills?cwd=${encodeURIComponent(cwd)}`);
-      if (!res.ok) return;
-      const d = (await res.json()) as { skills?: SkillInfo[] };
-      setSkills(d.skills ?? []);
+      await fetch(`/api/teams/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ executionMode: mode }),
+      });
+      await data.load();
     } catch {
-      /* ignore */
+      /* 失败静默；下次打开设置可再改 */
     }
-  };
+  }, [sessionId, data]);
 
-  /** @ 菜单：角色（匹配 name/role/emoji）+ 文件（file-index，立即拉取） */
-  const buildAtMenu = (query: string, start: number) => {
-    const agents = data.team?.agents ?? [];
-    const q = query.toLowerCase();
-    const agentItems: AcItem[] = agents
-      .filter((a) => !q || a.name.toLowerCase().includes(q) || a.role.toLowerCase().includes(q) || (a.emoji ?? "").includes(query))
-      .map((a) => ({
-        key: `agent-${a.id}`,
-        type: "agent" as const,
-        icon: a.emoji ?? ROLE_EMOJI[a.id] ?? "🤖",
-        label: LEGACY_CN_NAMES.has(a.name) ? a.id : a.name,
-        sub: a.role,
-      }));
-
-    // 立即出角色菜单（文件异步合并，失败不影响）
-    setAcState({ kind: "at", start, query, items: agentItems.slice(0, 20), active: 0 });
-
-    // 文件：立即拉取（带缓存）
-    const cwd = data.team?.cwd;
-    if (cwd) {
-      if (fileIndexTimer.current) clearTimeout(fileIndexTimer.current);
-      fileIndexTimer.current = setTimeout(async () => {
-        try {
-          const cached = fileIndexCache.current[cwd];
-          if (cached && query === "") {
-            const fileItems: AcItem[] = cached.map((m) => ({
-              key: `file-${m.path}`,
-              type: "file" as const,
-              icon: m.isDir ? "📁" : "📄",
-              label: m.path,
-              sub: m.isDir ? "directory" : "file",
-            }));
-            setAcState({ kind: "at", start, query, items: [...agentItems, ...fileItems].slice(0, 20), active: 0 });
-            return;
-          }
-          const res = await fetch(`/api/file-index?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(query)}`);
-          if (!res.ok) return;
-          const d = (await res.json()) as { matches?: FileIndexEntry[] };
-          const matches = d.matches ?? [];
-          fileIndexCache.current[cwd] = matches;
-          const fileItems: AcItem[] = matches.map((m) => ({
-            key: `file-${m.path}`,
-            type: "file" as const,
-            icon: m.isDir ? "📁" : "📄",
-            label: m.path,
-            sub: m.isDir ? "directory" : "file",
-          }));
-          setAcState({ kind: "at", start, query, items: [...agentItems, ...fileItems].slice(0, 20), active: 0 });
-        } catch {
-          /* 文件拉取失败：保留角色菜单 */
-        }
-      }, 60);
-    }
-  };
-
-  /** / 菜单：skill 列表（空态提示 + 加载完成后自动刷新） */
-  const buildSlashMenu = (query: string, start: number) => {
-    void loadSkills();
-    const q = query.toLowerCase();
-    const items: AcItem[] = (skills ?? [])
-      .filter((s) => !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
-      .map((s) => ({ key: `skill-${s.name}`, type: "skill" as const, icon: "🧩", label: s.name, sub: s.description }));
-    setAcState({ kind: "slash", start, query, items: items.slice(0, 20), active: 0 });
-  };
-
-  // skills 加载完成后若 / 菜单仍开，自动刷新
-  useEffect(() => {
-    const state = acRef.current;
-    if (state?.kind === "slash") {
-      buildSlashMenu(state.query, state.start);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skills]);
-
-  /** 输入变化时检测 @ // 并构建菜单 */
-  const updateAutocomplete = (value: string, cursor: number) => {
-    const before = value.slice(0, cursor);
-    const at = extractAtQuery(before);
-    const slash = /(?:^|\n)\/([^\s/]*)$/.exec(before);
-    if (at) {
-      buildAtMenu(at.query, at.start);
-    } else if (slash) {
-      buildSlashMenu(slash[1], cursor - slash[0].length);
-    } else {
-      if (fileIndexTimer.current) clearTimeout(fileIndexTimer.current);
-      setAcState(null);
-    }
-  };
-
-  /** 应用选中项：替换 token */
-  const applyAc = (item: AcItem) => {
-    const state = acRef.current;
-    const el = taskRef.current;
-    if (!state || !el) return;
-    const cursor = el.selectionStart ?? task.length;
-    const before = task.slice(0, state.start);
-    const after = task.slice(cursor);
-    let insert = "";
-    let caret = 0;
-    if (item.type === "agent") {
-      insert = `@${item.label} `;
-      caret = insert.length;
-    } else if (item.type === "file") {
-      const r = buildAtInsertText(item.label, item.sub === "directory");
-      insert = r.text;
-      caret = r.cursorOffset;
-    } else {
-      insert = `skill:${item.label} `;
-      caret = insert.length;
-    }
-    const newValue = before + insert + after;
-    setTask(newValue);
-    setAcState(null);
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(before.length + caret, before.length + caret);
-    });
-  };
-
-  /** 输入区按键：菜单导航 + Enter/Ctrl+Enter 发送 */
-  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const state = acRef.current;
-    if (state && state.items.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setAcState({ ...state, active: (state.active + 1) % state.items.length });
-        return;
+  /** 上传文件：放入上传管理器，并把文件路径插入任务输入框，方便项目组引用 */
+  const handleUploadFiles = useCallback(async (files: File[]) => {
+    if (!files.length || uploadBusy) return;
+    setUploadBusy(true);
+    const formData = new FormData();
+    for (const f of files) formData.append("files", f, f.name);
+    try {
+      const res = await fetch("/api/uploads", { method: "POST", body: formData });
+      const data = (await res.json().catch(() => ({}))) as { uploaded?: Array<{ path: string }> };
+      const paths = (data.uploaded ?? []).map((u) => u.path).filter(Boolean);
+      if (paths.length && chatInputRef?.current) {
+        chatInputRef.current.insertText(paths.join(" "));
       }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setAcState({ ...state, active: (state.active - 1 + state.items.length) % state.items.length });
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        applyAc(state.items[state.active]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setAcState(null);
-        return;
-      }
+    } catch {
+      /* 上传失败静默；用户可从上传管理器重试 */
+    } finally {
+      setUploadBusy(false);
     }
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      void handlePost();
-    }
-  };
+  }, [uploadBusy, chatInputRef]);
 
   const runStatus = data.run;
   const running = runStatus?.status === "running" || runStatus?.status === "pending";
@@ -447,6 +283,12 @@ export function TeamChat({ sessionId, teamName, onOpenFile }: Props) {
         };
       });
   }, [data.progress, data.projections?.executions, running, data.team?.agents]);
+
+  // 是否已画自定义工作流（transitions 或 gateways 非空 → 允许选「自定义」模式）
+  const hasWorkflow = useMemo(
+    () => (data.team?.transitions?.length ?? 0) > 0 || (data.team?.gateways?.length ?? 0) > 0,
+    [data.team?.transitions, data.team?.gateways],
+  );
 
   // 本轮参与 vs 未参与角色（编排可见性）
   const participation = useMemo(() => {
@@ -605,100 +447,127 @@ export function TeamChat({ sessionId, teamName, onOpenFile }: Props) {
 
       {postError && <div style={styles.error}>{postError}</div>}
 
-      {/* 输入区（与普通会话一致：单组合输入框 + 框内内联操作） */}
+      {/* 输入区（复用普通会话 ChatInput：@ 文件 / / 技能 自动补全、发送、流式介入/停止，与普通会话完全一致） */}
       <div style={styles.inputArea}>
-        {/* 输入提示菜单 */}
-        {ac && ac.items.length > 0 && (
-          <div style={styles.acMenu}>
-            {ac.items.map((item, i) => (
-              <button
-                key={item.key}
-                type="button"
-                onMouseDown={(e) => { e.preventDefault(); applyAc(item); }}
-                onMouseEnter={() => setAcState({ ...ac, active: i })}
-                style={{
-                  ...styles.acItem,
-                  ...(i === ac.active ? { background: "var(--bg-hover, rgba(0,0,0,0.06))", color: "var(--text)" } : {}),
-                }}
-              >
-                <span style={{ fontSize: 13, flexShrink: 0 }}>{item.icon}</span>
-                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.label}</span>
-                <span style={{ fontSize: 10, color: "var(--text-dim)", maxWidth: "40%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.sub}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div style={styles.composer}>
-          <div style={styles.composerRow}>
-            <textarea
-              ref={taskRef}
-              value={task}
-              onChange={(e) => {
-                const v = e.target.value;
-                setTask(v);
-                updateAutocomplete(v, e.target.selectionStart ?? v.length);
-              }}
-              onKeyDown={handleInputKeyDown}
-              placeholder={t("team.inputPlaceholder")}
-              style={{ ...styles.composerTextarea, height: composerH }}
-            />
-            {running ? (
-              <button
-                onClick={() => void data.cancelRun()}
-                style={styles.btnDangerInline}
-                title={t("team.stopRun")}
-                aria-label={t("team.stopRun")}
-              >
-                ⏹ {t("team.stopRun")}
-              </button>
+        <ChatInput
+          ref={chatInputRef}
+          onSend={(msg) => void handlePost(msg)}
+          onAbort={() => void data.cancelRun()}
+          onSteer={(msg) => void handleSteer(msg)}
+          isStreaming={running}
+          cwd={data.team?.cwd ?? undefined}
+          draftKey={`team-${sessionId}`}
+          placeholder={t("team.inputPlaceholder")}
+          hideAttach
+        />
+        {/* 输入框下方工具条：上传文件 + 执行模式下拉（与普通会话底部工具条一致；对齐输入框居中；run 级生效，运行中锁定） */}
+        <div style={{ maxWidth: 820, margin: "0 auto" }}>
+        <div style={styles.inputToolbar}>
+          {/* 上传文件 */}
+          <button
+            type="button"
+            disabled={uploadBusy || running}
+            onClick={() => fileInputRef.current?.click()}
+            title={uploadBusy ? t("chat.uploadFileBusy") : t("chat.uploadFile")}
+            aria-label={t("chat.uploadFile")}
+            style={styles.inputToolbarBtn}
+          >
+            {uploadBusy ? (
+              <span style={{ width: 13, height: 13, borderRadius: "50%", border: "2px solid var(--border)", borderTopColor: "var(--accent)", animation: "spin 0.8s linear infinite", display: "inline-block" }} />
             ) : (
-              <button
-                onClick={() => void handlePost()}
-                disabled={posting || !task.trim()}
-                style={styles.btnPrimaryInline}
-                title={t("team.startRun")}
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <line x1="2" y1="7" x2="11" y2="7" />
-                  <polyline points="7.5 3 12 7 7.5 11" />
-                </svg>
-                {t("chat.send")}
-              </button>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+            )}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            disabled={uploadBusy || running}
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (files.length) void handleUploadFiles(files);
+              e.target.value = "";
+            }}
+          />
+          {/* 执行模式下拉（系统判断/单独/串行/并行/自定义） */}
+          <div style={styles.execModeRow}>
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => setExecMenuOpen((o) => !o)}
+              title={t("team.execMode.title")}
+              aria-haspopup="listbox"
+              aria-expanded={execMenuOpen}
+              style={{
+                ...styles.execModeSelect,
+                ...(execMenuOpen ? styles.execModeSelectOpen : {}),
+                ...(running ? styles.execModePillDisabled : {}),
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.8 }} aria-hidden="true">
+                <polyline points="9 5 4 9 9 13" />
+                <polyline points="15 5 20 9 15 13" />
+              </svg>
+              <span style={{ flex: 1, textAlign: "left", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t(`team.execMode.${executionMode}`)}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.7 }} aria-hidden="true">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+            {execMenuOpen && (
+              <>
+                <div style={styles.execModeBackdrop} onClick={() => setExecMenuOpen(false)} aria-hidden="true" />
+                <div style={styles.execModeMenu} role="listbox" aria-label={t("team.execMode.title")}>
+                  {(EXEC_MODES as ExecutionMode[]).map((m) => {
+                    const blocked = m === "custom" && !hasWorkflow;
+                    const active = executionMode === m;
+                    return (
+                      <button
+                        key={m}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onClick={() => {
+                          if (blocked) {
+                            setExecHelp(true);
+                            return;
+                          }
+                          void changeExecutionMode(m);
+                        }}
+                        title={blocked ? t("team.execMode.customNeedWorkflow") : t(`team.execMode.desc.${m}`)}
+                        style={{
+                          ...styles.execModeMenuItem,
+                          ...(active ? styles.execModeMenuItemActive : {}),
+                          ...(blocked ? styles.execModeMenuItemBlocked : {}),
+                        }}
+                      >
+                        <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+                          <span style={{ fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t(`team.execMode.${m}`)}</span>
+                          <span style={{ fontSize: 10.5, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t(`team.execMode.desc.${m}`)}</span>
+                        </span>
+                        {active && (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
-
-          {running && (
-            <div style={styles.composerSteer}>
-              <input
-                value={steerText}
-                onChange={(e) => setSteerText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void handleSteer();
-                }}
-                placeholder={t("team.steerPlaceholder")}
-                style={{ ...styles.steerInput, flex: 1 }}
-              />
-              <button onClick={() => void handleSteer()} style={styles.btnSecondary}>
-                {t("team.steer")}
-              </button>
-            </div>
-          )}
-          {/* 上下拖动：调整输入框高度 */}
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label={t("team.resizeHint")}
-            title={t("team.resizeHint")}
-            onPointerDown={startComposerDrag}
-            onPointerMove={moveComposerDrag}
-            onPointerUp={endComposerDrag}
-            onPointerCancel={endComposerDrag}
-            style={styles.composerResizer}
-          >
-            <span style={{ width: 44, height: 3, borderRadius: 2, background: "var(--border)", flexShrink: 0 }} />
-          </div>
         </div>
+        </div>
+        {execHelp && (
+          <div style={styles.execModeHint}>
+            {t("team.execMode.customHelp")}
+          </div>
+        )}
 
         {/* 运行结果简档（仅非运行态简述；运行中的“谁在思考”显示在消息区底部） */}
         {((runStatus && !running) || data.connected) && (
@@ -1157,7 +1026,6 @@ const styles: Record<string, CSSProperties> = {
     background: "rgba(220,38,38,0.08)",
   },
   inputArea: {
-    borderTop: "1px solid var(--border)",
     padding: "12px 16px",
     background: "var(--bg)",
     position: "relative",
@@ -1262,6 +1130,105 @@ const styles: Record<string, CSSProperties> = {
   composerSteer: {
     display: "flex",
     gap: 6,
+  },
+  inputToolbar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 8,
+  },
+  inputToolbarBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 34,
+    height: 34,
+    padding: 0,
+    border: "1px solid var(--border)",
+    borderRadius: 9,
+    background: "var(--bg-soft, rgba(0,0,0,0.03))",
+    color: "var(--text-muted)",
+    cursor: "pointer",
+    transition: "background 0.12s, color 0.12s, border-color 0.12s",
+  },
+  execModeRow: {
+    position: "relative",
+    display: "flex",
+    alignItems: "center",
+  },
+  execModeSelect: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 132,
+    padding: "6px 10px",
+    border: "1px solid var(--border)",
+    borderRadius: 9,
+    background: "var(--bg-soft, rgba(0,0,0,0.03))",
+    color: "var(--text-muted)",
+    fontSize: 12,
+    cursor: "pointer",
+    transition: "background 0.12s, color 0.12s, border-color 0.12s",
+  },
+  execModeSelectOpen: {
+    background: "var(--bg-hover, rgba(0,0,0,0.06))",
+    color: "var(--text)",
+    borderColor: "color-mix(in srgb, var(--accent) 45%, var(--border))",
+  },
+  execModePillDisabled: {
+    opacity: 0.5,
+    cursor: "not-allowed",
+  },
+  execModeBackdrop: {
+    position: "fixed",
+    inset: 0,
+    zIndex: 90,
+    background: "transparent",
+  },
+  execModeMenu: {
+    position: "absolute",
+    bottom: "calc(100% + 6px)",
+    right: 0,
+    zIndex: 100,
+    minWidth: 240,
+    background: "var(--bg-panel)",
+    border: "1px solid var(--border)",
+    borderRadius: 10,
+    boxShadow: "0 -6px 20px rgba(0,0,0,0.14)",
+    overflow: "hidden",
+    padding: 4,
+    display: "flex",
+    flexDirection: "column",
+    gap: 1,
+  },
+  execModeMenuItem: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    padding: "7px 10px",
+    background: "transparent",
+    border: "none",
+    borderRadius: 7,
+    color: "var(--text-muted)",
+    fontSize: 12.5,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  execModeMenuItemActive: {
+    background: "var(--bg-selected, rgba(0,0,0,0.06))",
+    color: "var(--text)",
+    fontWeight: 600,
+  },
+  execModeMenuItemBlocked: {
+    opacity: 0.45,
+    cursor: "not-allowed",
+    textDecoration: "line-through",
+  },
+  execModeHint: {
+    fontSize: 11,
+    color: "var(--accent)",
+    padding: "2px 4px",
   },
   btnPrimaryInline: {
     flexShrink: 0,

@@ -125,6 +125,16 @@ export interface ValidationIssue {
 /** ==================== 项目组（TeamDef） ==================== */
 
 export type RoutingMode = "strict" | "hybrid" | "autonomous";
+
+/**
+ * 执行模式（输入框旁选择器；run 级生效，不持久化为团队字段）。
+ *  - auto    系统判断（默认）：按复杂度自动分流（simple→solo，complex→多角色编排）
+ *  - solo    单独：强制入口角色单会话闭环（等同普通会话，给全套工具）
+ *  - serial  串行：强制使用内置串行工作流（组长→产品→开发→测试 + 返工闭环）
+ *  - parallel 并行：强制使用内置并行网关（parallel 分叉 + merge 汇聚 + 交叉验证）
+ *  - custom  自定义：使用团队自己在流程图画布画的工作流（transitions/gateways）
+ */
+export type ExecutionMode = "auto" | "solo" | "serial" | "parallel" | "custom";
 export type ContextScope = "structured" | "summary" | "recent";
 export type SessionRetention = "full" | "summary" | "delete_after_days";  // Phase 1 默认 full
 
@@ -139,6 +149,14 @@ export interface TeamDef {
   cwd: string;
   entryAgentId: string;       // 入口角色（Runtime 不用 __entry__ 节点）
   agents: AgentDef[];
+  /** 执行模式默认档位（auto=系统判断；run 级选择器可覆盖）。
+   *  决定「设置里是否显示流程图画布」：仅 custom 才渲染 workflow tab（< 方案 v3>）。
+   *  - auto     系统判断：按复杂度自动分流（simple→solo，complex→多角色编排，按 defaultRoutingMode 路由）
+   *  - solo     单独：入口角色（leader）带全套工具单会话闭环，等同普通会话
+   *  - serial   串行：内置串行工作流（组长→产品→开发→测试+返工闭环）
+   *  - parallel 并行：内置并行网关（parallel 分叉 + merge 汇聚 + 交叉验证）
+   *  - custom   自定义：使用用户自绘工作流（transitions/gateways），设置里显示画布 */
+  executionMode?: ExecutionMode;  // 默认 "auto"
   transitions: Transition[];
   gateways?: GatewayDef[];    // 网关节点（排他/并行/包容/汇聚）
   nodePositions?: Record<string, { x: number; y: number }>;  // 画布节点位置（拖动持久化；缺省用自动布局）

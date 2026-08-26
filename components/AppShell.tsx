@@ -1090,7 +1090,6 @@ export function AppShell() {
           onOpenSkills={() => setSkillsConfigOpen(true)}
           onOpenPlugins={() => setPluginsConfigOpen(true)}
           onOpenUploads={() => setUploadsManagerOpen(true)}
-          onOpenTeamTemplateCreate={() => {/* 模板从项目组设置中配置 */}}
           onViewHistory={handleViewFullHistory}
           onAutoName={() => { void handleAutoName(); }}
         />
@@ -1687,6 +1686,7 @@ export function AppShell() {
                 sessionId={selectedSession.id}
                 teamName={selectedSession.teamName ?? selectedSession.name}
                 onOpenFile={handleOpenLinkedFile}
+                chatInputRef={chatInputRef}
               />
             ) : (
             <ChatWindow

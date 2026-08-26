@@ -16,7 +16,7 @@ import {
 } from "../session-reader.ts";
 import { sessionPathKey } from "../session-path.ts";
 import { TeamStore, getChatFile, EventStore } from "./store.ts";
-import { createTeamDef, type UserTemplate } from "./templates.ts";
+import { createTeamDef } from "./templates.ts";
 import { getUserTemplates } from "./store.ts";
 import type { TeamDef, TeamMessage, TeamMessageKind } from "./types.ts";
 
@@ -125,7 +125,7 @@ export function createTeam(options: CreateTeamOptions): CreateTeamResult {
   };
   writeFileSync(sessionFile, JSON.stringify(header) + "\n" + JSON.stringify(infoEntry) + "\n", "utf8");
 
-  const team = createTeamDef(sessionId, cwd, teamName, templateId, getUserTemplates<UserTemplate>(), options.agentIds);
+  const team = createTeamDef(sessionId, cwd, teamName, templateId, getUserTemplates(), options.agentIds);
   TeamStore.write(team);
   TeamStore.upsertIndex(sessionId, { teamId: sessionId, name: teamName, uiMode: "team" });
   invalidateSessionListCache();
@@ -194,7 +194,7 @@ export async function convertTeam(options: ConvertTeamOptions): Promise<ConvertT
   }
 
   const teamName = name?.trim() || "";
-  const team = createTeamDef(sessionId, manager.getCwd(), teamName, templateId, getUserTemplates<UserTemplate>(), options.agentIds);
+  const team = createTeamDef(sessionId, manager.getCwd(), teamName, templateId, getUserTemplates(), options.agentIds);
   TeamStore.write(team);
   TeamStore.upsertIndex(sessionId, { teamId: sessionId, name: teamName, uiMode: "team" });
   invalidateSessionListCache();

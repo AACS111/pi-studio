@@ -82,6 +82,10 @@ interface Props {
   onUploadFiles?: (files: File[]) => void;
   fileUploadBusy?: boolean;
   fileUploadError?: string | null;
+  /** 空闲态占位文案覆盖（默认 chat.messagePlaceholder；流式态用 steer/agent 占位） */
+  placeholder?: string;
+  /** 隐藏左侧「附件」按钮（项目组任务只收文本，上传文件无意义时用） */
+  hideAttach?: boolean;
 }
 
 export interface ChatInputHandle {
@@ -358,6 +362,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onUploadFiles,
   fileUploadBusy,
   fileUploadError,
+  placeholder,
+  hideAttach,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -1763,7 +1769,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               isStreaming && (onSteer || onFollowUp)
                 ? t("chat.steerPlaceholder")
                 : isStreaming ? t("chat.agentPlaceholder")
-                : t("chat.messagePlaceholder")
+                : placeholder ?? t("chat.messagePlaceholder")
             }
             rows={1}
             style={{
@@ -1909,6 +1915,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           {/* LEFT: attach + model selector (idle) or steer/followup toggle (streaming) */}
           <div style={{ flex: isMobile ? "1 1 auto" : "0 0 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 2 }}>
+            {!hideAttach && (
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming || fileUploadBusy}
@@ -1945,6 +1952,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </svg>
               )}
             </button>
+            )}
             {/* Model selector — visible always, disabled during streaming */}
             {(modelOptions.length > 0 || currentName || modelError) && onModelChange && (
                 <div ref={dropdownRef} style={{ position: "relative", flex: isMobile ? "1 1 auto" : undefined, minWidth: 0 }}>

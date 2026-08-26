@@ -21,6 +21,7 @@ import { THINKING_LEVELS } from "@/lib/team/ui-constants";
 import type {
   AgentDef,
   AgentLibraryItem,
+  ExecutionMode,
   GatewayDef,
   GatewayType,
   RoutingMode,
@@ -41,6 +42,15 @@ interface Props {
 type Tab = "agents" | "workflow" | "team";
 
 const ROUTING_MODES: RoutingMode[] = ["strict", "hybrid", "autonomous"];
+
+/** 执行模式：仅 custom 在设置里显示流程图画布；流程模式使用内置流程，无画布 */
+const EXEC_MODES: { id: ExecutionMode; label: string; desc: string }[] = [
+  { id: "auto", label: "系统判断", desc: "按复杂度自动分流（simple→单独，complex→多角色编排）" },
+  { id: "solo", label: "单独", desc: "入口角色（leader）带全套工具单会话闭环，等同普通会话" },
+  { id: "serial", label: "串行", desc: "内置串行工作流（组长→产品→开发→测试+返工闭环）" },
+  { id: "parallel", label: "并行", desc: "内置并行网关（分叉+汇聚+交叉验证）" },
+  { id: "custom", label: "自定义", desc: "使用你自己在画布上画的流程（此项才会显示工作流画布）" },
+];
 const ROUTING_POLICIES = ["inherit", "strict", "hybrid", "autonomous"];
 const CONTEXT_SCOPES = ["structured", "summary", "recent"];
 
@@ -53,18 +63,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>(initialAgentId ? { [initialAgentId]: true } : {});
-  const [templateOptions, setTemplateOptions] = useState<{ id: string; name: string; description?: string; preview: TeamDef; builtin?: boolean }[]>([]);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
-
-  // 拉取模板列表供空团队应用
-  const loadTemplates = useCallback(async () => {
-    try {
-      const res = await fetch("/api/teams/templates");
-      const data = await res.json();
-      if (!res.ok) return;
-      setTemplateOptions(data.templates ?? []);
-    } catch { /* ignore */ }
-  }, []);
 
   /** 拉取团队详情 + 校验 + 角色库 */
   const load = useCallback(async () => {
@@ -81,16 +80,21 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
         const libData = await libRes.json();
         setLibrary(libData.items ?? []);
       }
-      // 加载模板列表（工作流首行始终可导入，空团队尤其需要）
-      void loadTemplates();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [sessionId, loadTemplates]);
+  }, [sessionId]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 执行模式非 custom 时不展示工作流画布：若当前停留在 workflow tab 则回退到 agents
+  useEffect(() => {
+    if (team && tab === "workflow" && team.executionMode !== "custom") {
+      setTab("agents");
+    }
+  }, [team, tab]);
 
   /** 保存：整体 PATCH，提交后重新拉取 */
   const handleSave = async () => {
@@ -110,6 +114,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
           reworkEdges: team.reworkEdges,
           entryAgentId: team.entryAgentId,
           defaultRoutingMode: team.defaultRoutingMode,
+          executionMode: team.executionMode,
           maxHops: team.maxHops,
           maxReworkRounds: team.maxReworkRounds,
           maxRunMinutes: team.maxRunMinutes,
@@ -259,11 +264,12 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
         return;
       }
       if (issue.transitionId && team?.transitions.some((tr) => tr.id === issue.transitionId)) {
-        setTab("workflow");
+        // 非 custom 模式不展示工作流画布：跳到团队参数（执行模式）提示
+        setTab(team?.executionMode === "custom" ? "workflow" : "team");
         return;
       }
-      // 无具体节点归属（如 maxHops/入口）默认落到工作流画布
-      setTab("workflow");
+      // 无具体节点归属（如 maxHops/入口）默认落到工作流画布 / 团队参数
+      setTab(team?.executionMode === "custom" ? "workflow" : "team");
     },
     [team],
   );
@@ -282,7 +288,9 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
     <DraggableResizableModal title={`⚙️ ${t("team.settings.title")}`} hint="" onClose={onClose} width={860} height={720}>
       {/* Tabs */}
       <div style={{ display: "flex", alignItems: "center", gap: 4, borderBottom: "1px solid var(--border)", marginBottom: 12 }}>
-        {(["agents", "workflow", "team"] as Tab[]).map((key) => (
+        {(["agents", "workflow", "team"] as Tab[])
+          .filter((key) => key !== "workflow" || team.executionMode === "custom")
+          .map((key) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -531,43 +539,6 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                 onExpand={() => setCanvasExpanded(true)}
               />
             )}
-            {/* 首行：团队模板导入（选模板 → 带出对应角色与工作流流程图） */}
-            <div style={{ ...styles.input, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: 4 }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap" }}>🗂️ {t("team.settings.applyTemplate")}:</span>
-              <select
-                value=""
-                onChange={(e) => {
-                  const id = e.target.value;
-                  if (!id || !team) return;
-                  const tmpl = templateOptions.find((x) => x.id === id);
-                  if (!tmpl) return;
-                  const p = tmpl.preview;
-                  if (!p) return;
-                  updateTeam({
-                    agents: p.agents.map((a) => ({ ...a, toolNames: [...a.toolNames], ...(a.skillIds ? { skillIds: [...a.skillIds] } : {}) })),
-                    transitions: p.transitions.map((tr) => ({ ...tr, trigger: { ...tr.trigger, ...(tr.trigger.condition ? { condition: { ...tr.trigger.condition } } : {}) } })),
-                    gateways: p.gateways?.map((g) => ({ ...g })),
-                    nodePositions: p.nodePositions ? JSON.parse(JSON.stringify(p.nodePositions)) : undefined,
-                    entryAgentId: p.entryAgentId,
-                    reworkEdges: p.reworkEdges?.map((e) => ({ ...e })),
-                    defaultRoutingMode: p.defaultRoutingMode ?? team.defaultRoutingMode,
-                    maxHops: p.maxHops ?? team.maxHops,
-                    maxReworkRounds: p.maxReworkRounds ?? team.maxReworkRounds,
-                    maxRunMinutes: p.maxRunMinutes ?? team.maxRunMinutes,
-                    contextScope: p.contextScope ?? team.contextScope,
-                  });
-                  e.target.value = "";
-                }}
-                style={{ ...styles.input, flex: 1, minWidth: 160 }}
-              >
-                <option value="">— {t("team.settings.selectTemplate")} —</option>
-                {templateOptions.map((tmpl) => (
-                  <option key={tmpl.id} value={tmpl.id}>
-                    {tmpl.builtin ? "📦" : "📋"} {tmpl.name}
-                  </option>
-                ))}
-              </select>
-            </div>
             {team.agents.length === 0 && (
               <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>{t("team.settings.applyTemplateHint")}</div>
             )}
@@ -629,6 +600,29 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
 
         {tab === "team" && (
           <>
+            <Field label="执行模式">
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <select
+                  value={team.executionMode ?? "auto"}
+                  onChange={(e) => {
+                    const next = e.target.value as ExecutionMode;
+                    updateTeam({ executionMode: next });
+                    if (next !== "custom") setTab("agents");
+                  }}
+                  style={styles.input}
+                >
+                  {EXEC_MODES.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+                <span style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.4 }}>
+                  {EXEC_MODES.find((m) => m.id === (team.executionMode ?? "auto"))?.desc}
+                </span>
+                <span style={{ fontSize: 10.5, color: "var(--accent)", lineHeight: 1.4 }}>
+                  {team.executionMode !== "custom" ? "仅选择「自定义」时，本设置里才显示「工作流」画布；其他模式使用内置流程，无需画图" : "当前为「自定义」：请在「工作流」标签页绘制流程"}
+                </span>
+              </div>
+            </Field>
             <Field label={t("team.name")}>
               <input value={team.name} onChange={(e) => updateTeam({ name: e.target.value })} style={styles.input} />
             </Field>

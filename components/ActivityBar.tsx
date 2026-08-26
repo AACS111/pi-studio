@@ -18,7 +18,7 @@ export type ActivityOrPlugin = Activity | PluginActivityId;
 interface ActivityItem {
   id: Activity;
   titleKey: string;
-  /** 图标主色（解决“无色简单图标”——给每个功能一个可识别的 accent 色） */
+  /** 图标主色——仅主会话保留品牌色，其余走中性 text-muted，整体单色导航栏。 */
   tint?: string;
   icon: (active: boolean) => ReactNode;
 }
@@ -88,7 +88,6 @@ const ITEMS: ActivityItem[] = [
   {
     id: "skills",
     titleKey: "activity.skills",
-    tint: "#8b5cf6",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M14.5 6.5v-3a1 1 0 0 0-1-1h-3a1 1 0 0 0-1 1v3" />
@@ -102,7 +101,6 @@ const ITEMS: ActivityItem[] = [
   {
     id: "dsh",
     titleKey: "activity.dshMarket",
-    tint: "#2ec27e",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M3 9l1.5-5h15L21 9" />
@@ -337,17 +335,9 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
         })}
       </nav>
 
-      {/* Bottom: right panel toggle + settings + collapse */}
+      {/* Bottom: settings + collapse. The right-panel toggle lives in the top
+          bar (left of window controls) — the duplicate here was removed. */}
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", marginTop: 4 }}>
-        <RailButton
-          label={t("files.showPanel")}
-          active={active === "rightPanel"}
-          onClick={() => onSelect("rightPanel")}
-        >
-          <IconSvg active={active === "rightPanel"}>
-            <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
-          </IconSvg>
-        </RailButton>
         <RailButton label={t("common.settings")} active={active === "settings"} onClick={() => onSelect("settings")}>
           <IconSvg active={active === "settings"}>
             <circle cx="12" cy="12" r="3" />

@@ -9,8 +9,9 @@ import { RunManager } from "./runtime.ts";
 import { PiAgentExecutor, type AgentExecutorLike } from "./executor.ts";
 import { EventStore, TeamStore } from "./store.ts";
 import { classifyTask } from "./task-classify.ts";
+import { parallelFlow, serialFlow } from "./templates.ts";
 import { reduce } from "./types.ts";
-import type { TeamDef, TeamEvent, TeamRun } from "./types.ts";
+import type { ExecutionMode, TeamDef, TeamEvent, TeamRun } from "./types.ts";
 
 interface RunningEntry {
   manager: RunManager;
@@ -27,11 +28,46 @@ export interface StartTeamRunResult {
 }
 
 /** 发布任务并异步执行（返回 runId，执行进度经 SSE 推送）。
- *  startAgentId：可选，指定起始角色（手动指派）；缺省 = 入口角色。
- *  executor：可选注入（测试/自定义执行器）；缺省用真实 PiAgentExecutor。 */
-export function startTeamRun(team: TeamDef, task: string, startAgentId?: string, executor?: AgentExecutorLike): StartTeamRunResult {
+ *  - executionMode：执行模式（run 级生效）——auto(默认，按复杂度分流)/solo/serial/parallel/custom。
+ *  - serial/parallel 时用内置流程覆盖团队 transitions/gateways 生成「有效团队视图」（设置里不显示画布）。
+ *  - solo 强制 run.complexity=simple（复用 runtime 的 shouldSolo 单会话闭环）。
+ *  - custom 使用团队自绘流程（原样）。
+ *  - startAgentId：可选起始角色；缺省 = 入口角色。
+ *  - executor：可选注入（测试/自定义执行器）。 */
+export function startTeamRun(
+  team: TeamDef,
+  task: string,
+  executionMode?: ExecutionMode,
+  startAgentId?: string,
+  executor?: AgentExecutorLike,
+): StartTeamRunResult {
   const runId = randomUUID().slice(0, 8);
-  const complexity = classifyTask(task);
+  // —— 执行模式解析：未显式传入时回退团队默认档位（auto=系统判断） ——
+  const mode = executionMode ?? team.executionMode ?? "auto";
+  // —— 按执行模式构造有效团队视图：serial/parallel 复用内置流程，custom/auto 用原队 ——
+  let effective = team;
+  if (mode === "serial") {
+    effective = {
+      ...team,
+      transitions: serialFlow(),
+      gateways: undefined,
+      reworkEdges: [{ from: "tester", to: "developer" }],
+    };
+  } else if (mode === "parallel") {
+    const flow = parallelFlow();
+    effective = {
+      ...team,
+      transitions: flow.transitions,
+      gateways: flow.gateways,
+      reworkEdges: flow.gateways ? [] : [{ from: "tester", to: "developer" }],
+    };
+  }
+  // —— 复杂度定阶：
+  //    auto  → classfTask 分流（simple→solo，complex→编排）
+  //    solo  → 强制 simple（走 shouldSolo 单会话闭环）
+  //    serial/parallel/custom → 强制 complex（必须走对应工作流，不被 solo 降级短路）
+  const complexity =
+    mode === "solo" ? "simple" : mode === "serial" || mode === "parallel" || mode === "custom" ? "complex" : classifyTask(task);
   const run: TeamRun = {
     id: runId,
     teamId: team.sessionId,
@@ -44,14 +80,14 @@ export function startTeamRun(team: TeamDef, task: string, startAgentId?: string,
   };
   const entry: RunningEntry = {
     manager: null as never,
-    team,
+    team: effective,
     run,
     listeners: new Set(),
     runListeners: new Set(),
   };
 
   entry.manager = new RunManager({
-    team,
+    team: effective,
     runId,
     executor: executor ?? new PiAgentExecutor(),
     onRunUpdate: (r) => {

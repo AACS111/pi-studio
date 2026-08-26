@@ -96,6 +96,10 @@ export interface RpcSessionStartOptions {
   systemPrompt?: string;
   /** 覆盖上下文自动压缩设置（团队角色执行等长任务会话可单独调优；缺省跟随全局 settings.json） */
   compaction?: Partial<CompactionSettings>;
+  /** 禁用的工具名（在自动纳入的扩展工具里排除这些）。
+   *  团队角色默认屏蔽 memory_xxx / scratchpad 等个人记忆工具——
+   *  防止角色读历史会话日志后被带偏，把本次任务当成历史里的某个「自动检查/待办」。 */
+  denyToolNames?: string[];
 }
 
 // 完整颜色表来自 lib/pi-compat-check.ts（单一来源，冒烟测试共用）。
@@ -132,16 +136,17 @@ class PlainTextTheme extends Theme {
 const PLAIN_TEXT_THEME = new PlainTextTheme();
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 
-function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
+function withExtensionTools(session: AgentSessionLike, toolNames: string[], denyToolNames?: string[]): string[] {
   if (toolNames.length === 0) return [];
 
   const codingToolNames = new Set(CODING_TOOL_NAMES);
+  const deny = new Set(denyToolNames ?? []);
   const extensionToolNames = session
     .getAllTools()
     .map((t) => t.name)
-    .filter((name) => !codingToolNames.has(name));
+    .filter((name) => !codingToolNames.has(name) && !deny.has(name));
 
-  return [...new Set([...toolNames, ...extensionToolNames])];
+  return [...new Set([...toolNames.filter((n) => !deny.has(n)), ...extensionToolNames])];
 }
 
 // ============================================================================
@@ -166,8 +171,11 @@ export class AgentSessionWrapper {
   private onDestroyCallback: (() => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private _alive = true;
+  readonly inner: AgentSessionLike;
 
-  constructor(public readonly inner: AgentSessionLike) {}
+  constructor(inner: AgentSessionLike) {
+    this.inner = inner;
+  }
 
   get sessionId(): string {
     return this.inner.sessionId;
@@ -1212,7 +1220,7 @@ export async function startRpcSession(
   cwd: string | undefined,
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
-  const { toolNames, initialModel, thinkingLevel, customTools, systemPrompt, compaction } = options;
+  const { toolNames, initialModel, thinkingLevel, customTools, systemPrompt, compaction, denyToolNames } = options;
   const registry = getRegistry();
   const locks = getLocks();
 
@@ -1224,7 +1232,13 @@ export async function startRpcSession(
 
   let sessionManager: SessionManager;
   if (sessionFile) {
-    sessionManager = SessionManager.open(sessionFile, undefined);
+    // open 已存在的会话文件时也必须传 cwdOverride：团队成员会话文件统一放在
+    // <pi-web项目>/.internal/teams/<id>/sessions/ 下，若不覆盖 cwd 会回退到 pi 进程
+    // 的 cwd（pi-web 本体目录），导致角色在错的仓库里跑 ls/tsc/git（找不到业务代码）。
+    // 传入 team.cwd 作为 cwdOverride，确保会话工作目录 = 团队目标项目。
+    sessionManager = cwd
+      ? SessionManager.open(sessionFile, undefined, cwd)
+      : SessionManager.open(sessionFile, undefined);
   } else {
     if (!cwd) throw new Error("cwd is required for a new session");
     sessionManager = SessionManager.create(cwd, undefined);
@@ -1316,7 +1330,7 @@ export async function startRpcSession(
     // requested builtin coding tools PLUS all extension/package tools, so installed
     // extensions stay usable in Pi Studio just like in the `pi` CLI.
     if (toolNames && toolNames.length > 0) {
-      inner.setActiveToolsByName(withExtensionTools(inner, toolNames));
+      inner.setActiveToolsByName(withExtensionTools(inner, toolNames, denyToolNames));
     }
 
     // 团队角色：覆盖默认系统提示词（角色 systemPrompt + 共享上下文已在其中）

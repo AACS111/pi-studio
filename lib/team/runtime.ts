@@ -17,7 +17,7 @@
  *  - 容错 join：merge 缺分支（exclusive 走了另一路）且整场无其它工作（inflight=0 && ready 空）时容忍推进。
  */
 import { EventStore, getTeamDir } from "./store.ts";
-import { WorkflowEngine, type LlmJudge, type Route } from "./engine.ts";
+import { WorkflowEngine, type ExecutionResult, type LlmJudge, type Route } from "./engine.ts";
 import { buildContext } from "./context.ts";
 import type { AgentExecutorLike } from "./executor.ts";
 import { join } from "path";
@@ -58,6 +58,8 @@ export interface RunManagerOptions {
   onRunUpdate?: (run: TeamRun) => void;
   /** 每写一个事件回调（SSE 原始事件用） */
   onEvent?: (event: TeamEvent) => void;
+  /** 取消后强制收敛的兜底等待（毫秒）：executor 对 abort 无响应时也保证 run 停止。默认 3000。 */
+  cancelForceMs?: number;
 }
 
 export class RunManager {
@@ -71,6 +73,9 @@ export class RunManager {
 
   private run!: TeamRun;
   private cancelled = false;
+  private finished = false;                                         // finish 最多执行一次（避免 cancel 兜底与正常路径双重收尾）
+  private cancelForceTimer: ReturnType<typeof setTimeout> | undefined;
+  private cancelForceMs = 3000;                                      // 取消后 executor 无响应时的强制收敛等待
   /** P0-fix：用户停止对话 → abort() 下发给正在执行的所有 inflight 会话，让它们立即中止 */
   private readonly controller = new AbortController();
   private agentExecutionCounts = new Map<string, number>();
@@ -89,6 +94,9 @@ export class RunManager {
   private lastOutput = "";                                           // 网关 exclusive/inclusive 判定输入
   private lastStatus: ExecutionStatus | "timeout" = "completed";
   private pendingMerges = 0;                                         // 仍在等待分支的 merge 数（用于终态判断）
+  private completedAgentIds = new Set<string>();                      // 已成功完成 ≥1 次的下游角色（no-progress 循环守卫用）
+  private entryHandoffCounts = new Map<string, number>();             // 入口角色(leader)交接给每个角色的次数（守卫用）
+  private static readonly NO_PROGRESS_HANDOFF_THRESHOLD = 2;          // 同一角色被 leader 重复交接 ≥2 次且已成功完成 → 判定无进展循环
 
   constructor(options: RunManagerOptions) {
     this.team = options.team;
@@ -98,6 +106,7 @@ export class RunManager {
     this.store = new EventStore(options.team.sessionId, options.runId);
     this.onRunUpdate = options.onRunUpdate;
     this.onEvent = options.onEvent;
+    if (options.cancelForceMs) this.cancelForceMs = options.cancelForceMs;
   }
 
   /** 发布任务并执行（阻塞直至 run 结束；取消用 cancel()）。
@@ -247,14 +256,18 @@ export class RunManager {
     const seq = (this.agentExecutionCounts.get(agentId) ?? 0) + 1;
     this.agentExecutionCounts.set(agentId, seq);
     const execution: AgentExecution = {
+      // execution.id 保持每次执行唯一（事件路由/审计用），而 sessionId/sessionPath 收敛为
+      // 「每角色一份」：同一个角色多次执行（返工/重进）复用同一份 pi 会话 .jsonl 与总结 .md，
+      // 避免两个角色跑几轮就堆出十几个文件（用户反馈）。PiAgentExecutor 用 SessionManager.open
+      // 对已存在文件走「加载续跑」分支，未存在则新建；兼顾角色跨轮次上下文连续性。
       id: `${this.runId}-${agentId}-${seq}`,
       runId: this.runId,
       agentId,
       sequence: seq,
       status: "running",
       startedAt: Date.now(),
-      sessionId: `${this.runId}-${agentId}-${seq}`,
-      sessionPath: join(getTeamDir(this.team.sessionId), "sessions", `${this.runId}-${agentId}-${seq}.jsonl`),
+      sessionId: `${this.runId}-${agentId}`,
+      sessionPath: join(getTeamDir(this.team.sessionId), "sessions", `${this.runId}-${agentId}.jsonl`),
     };
     this.append({ type: "execution_started", execution });
 
@@ -265,18 +278,29 @@ export class RunManager {
       ? buildContext({ team: this.team, run: this.run, projections, agent })
       : this.run.task;
 
-    const result = await this.executor.run({
-      team: this.team,
-      runId: this.runId,
-      execution,
-      context,
-      existingTasks: projections.tasks,
-      mode: this.solo ? "solo" : "orchestrated",
-      // 把取消信号传给 executor：用户停止对话时立即 abort 本次会话
-      signal: this.controller.signal,
-      onEvent: (e) => this.append(e as TeamEventInput),
-      onMessage: (m) => this.append({ type: "message_created", message: m as TeamMessage }),
-    });
+    let result: ExecutionResult;
+    try {
+      result = await this.executor.run({
+        team: this.team,
+        runId: this.runId,
+        execution,
+        context,
+        task: this.run.task,
+        existingTasks: projections.tasks,
+        mode: this.solo ? "solo" : "orchestrated",
+        // 把取消信号传给 executor：用户停止对话时立即 abort 本次会话
+        signal: this.controller.signal,
+        onEvent: (e) => this.append(e as TeamEventInput),
+        onMessage: (m) => this.append({ type: "message_created", message: m as TeamMessage }),
+      });
+    } catch (error) {
+      // 执行器抛异常（如会话启动失败/未知错误）：不把异常冒泡到外层让 execution 悬空
+      // （此前 launchAgent 无 try/catch，executor.run 一旦 throw，execution 卡 running、
+      //  execution_completed 事件缺失、run 直接 agent_failed、投影状态不一致）。
+      // 这里闭合为 failed，保持事件流与投影一致。
+      const message = error instanceof Error ? error.message : String(error);
+      result = { status: "failed", output: "", failureReason: `执行器异常：${message}` };
+    }
 
     this.run.stats.hopCount++;
     this.run.stats.agentExecutions++;
@@ -289,21 +313,86 @@ export class RunManager {
       status: result.status === "timeout" ? "failed" : result.status,
       failureReason: result.failureReason ?? (result.status === "timeout" ? "执行超时" : undefined),
       ...(result.stats ? { stats: result.stats } : {}),
+      ...(result.model ? { model: result.model } : {}),
+      ...(result.changedFiles?.length ? { changedFiles: result.changedFiles } : {}),
     });
     this.publish();
+
+    // 成功完成：①记入「已完成角色」集合 ②自动完结该角色名下仍 open 的子任务。
+    // 根因：下游角色完成但任务没被 team_complete_task 标完成时，leader 重派时看到「任务未完成」
+    // 就再次重派同一角色 → 无限 ping-pong 直到 max_rework。这里兜底把名下任务自动收口。
+    if (result.status === "completed") {
+      this.completedAgentIds.add(agentId);
+      this.completeOpenTasksFor(agentId);
+    }
 
     // 记录最近输出/状态（网关 exclusive/inclusive 判定输入）
     this.lastOutput = result.output;
     this.lastStatus = result.status === "timeout" ? "timeout" : result.status;
 
-    // P0-1：solo 降级 — 简单任务只跑入口角色即收尾，不做多角色拆解接力
+    // P0-1：solo 降级 — 简单任务只跑入口角色即收尾，不做多角色拆解接力。
+    // 若入口角色在 solo 下仍显式请求交接给下游（team_handoff 非 __end__），记录该交接
+    // 意图（不再静默丢弃），但 solo 定位为单角色闭环，run 仍按入口结果收尾。
     if (this.solo) {
-      this.terminal = { code: "completed", message: "简单任务由入口角色直接完成" };
+      if (result.handoffTool && result.handoffTool.to !== END_NODE) {
+        this.append({
+          type: "handoff_requested",
+          executionId: execution.id,
+          from: agentId,
+          to: result.handoffTool.to,
+          kind: "tool",
+          reason: "solo 单角色模式：入口角色请求交接，但按 solo 约定由入口直接收尾（未实际交接）",
+        });
+        this.publish();
+      }
+      this.terminal = { code: "completed", message: "简单任务由入口角色直接完成（solo）" };
       return;
     }
 
     // —— 路由决策 ——
     const route = await this.workflow.resolveRoute({ agentId, status: result.status }, result, seq);
+
+    // —— no-progress 循环守卫 ——
+    // 入口角色(leader)用 team_handoff（kind=tool）重复交接给「已成功完成过、且名下已无未完成任务」的
+    // 下游角色：这是 leader 反复空转的典型信号（本轮真实故障「leader ⇄ be-developer」无限 ping-pong
+    // 直到 max_rework）。检测到即收敛收尾：让 run 以 best-effort 完成（而非 max_rework 硬失败），
+    // 避免多 Agent 空转烧 token。仅针对 handoff 工具造成的循环（transitions 构成的循环仍交给
+    // maxHops 保险丝，避免语义混淆）。
+    // 判定：①入口角色 ②交接目标是已成功完成过的角色 ③该角色名下无未完成任务（leader 没派新活，纯重派）
+    //       ④入口角色已重复交接该角色 ≥2 次。
+    if (
+      agentId === this.team.entryAgentId &&
+      route &&
+      route.kind === "tool" &&
+      route.to !== END_NODE &&
+      route.to !== this.team.entryAgentId
+    ) {
+      const to = route.to;
+      this.entryHandoffCounts.set(to, (this.entryHandoffCounts.get(to) ?? 0) + 1);
+      if (
+        this.entryHandoffCounts.get(to)! >= RunManager.NO_PROGRESS_HANDOFF_THRESHOLD &&
+        this.completedAgentIds.has(to) &&
+        !this.hasOpenTask(to)
+      ) {
+        const agent = this.team.agents.find((a) => a.id === to);
+        this.append({
+          type: "message_created",
+          message: {
+            id: `msg-${execution.id}-noloop`,
+            kind: "system",
+            executionId: execution.id,
+            agentId,
+            role: agent?.name ?? agentId,
+            content: `检测到组长反复交接给「${agent?.name ?? to}」而无进展（该角色已成功完成且名下无未完成任务）。为避免空转，自动收敛收尾。`,
+            createdAt: Date.now(),
+          },
+        });
+        this.publish();
+        this.terminal = { code: "completed", message: "组长反复交接无进展，自动收敛为完成" };
+        return;
+      }
+    }
+
 
     // P1-2：人工审批闸门 — 命中 approval 边时暂停等待用户批准/驳回（借鉴 LangGraph human-in-loop）
     if (route && route.transitionId) {
@@ -383,6 +472,37 @@ export class RunManager {
       this.terminal = { code: "completed", message: "入口角色收尾完成" };
       return;
     }
+    // 并行/包容编排中某分支失败（event=failed 无匹配边）：不应回入口破坏 merge 汇聚。
+    // 若该角色原本的出边指向某 merge（它是并行区一个分支），则以其失败态直接到达该 merge，
+    // 让 merge 计数完整、仍能推进汇聚下游（如 tester 交叉验证），失败信息也随事件下游客可见。
+    if (result.status === "failed") {
+      const mergeTarget = this.mergeTargetForAgent(agentId);
+      if (mergeTarget) {
+        this.append({
+          type: "message_created",
+          message: {
+            id: `msg-${execution.id}-fail`,
+            kind: "system",
+            executionId: execution.id,
+            agentId,
+            role: agent?.name ?? agentId,
+            content: `⚠️ ${agent?.name ?? agentId} 执行失败：${result.failureReason ?? "未知"}`,
+            createdAt: Date.now(),
+          },
+        });
+        this.append({
+          type: "handoff_requested",
+          executionId: execution.id,
+          from: agentId,
+          to: mergeTarget,
+          kind: "transition",
+          reason: `分支失败，以失败态到达汇聚点：${result.failureReason ?? ""}`,
+        });
+        this.publish();
+        this.arriveMerge(mergeTarget, execution.id);
+        return;
+      }
+    }
     // hybrid 兜底：回入口总结
     this.run.stats.reworkCount++;
     this.append({
@@ -413,6 +533,12 @@ export class RunManager {
 
   private isMergeNode(nodeId: string): boolean {
     return this.team.gateways?.some((g) => g.id === nodeId && g.type === "merge") ?? false;
+  }
+
+  /** 该角色是否为某 merge 的入边来源（并行/包容区一个分支）；是则返回该 merge id（供失败分支以失败态汇聚） */
+  private mergeTargetForAgent(agentId: string): string | null {
+    const t = this.team.transitions.find((tr) => tr.enabled !== false && tr.from === agentId && this.isMergeNode(tr.to));
+    return t ? t.to : null;
   }
 
   private mergeInDegree(mergeId: string): number {
@@ -474,9 +600,18 @@ export class RunManager {
 
   /** 请求取消（异步：立即 abort 所有 inflight 会话，下次波次循环检查时定终态） */
   cancel(): void {
+    if (this.cancelled) return;
     this.cancelled = true;
     this.abortInflight();
     this.approvalResolver?.(false);
+    // 兜底：即使 executor 对 abort 无响应（真实 prompt 卡死），也强制在 cancelForceMs 后收敛为取消，
+    // 避免用户点停止但 run 一直卡在「正在执行」。正常路径（executor 响应 abort）会先 finish，此定时器即空转。
+    this.cancelForceTimer = setTimeout(() => {
+      if (!this.finished) {
+        this.finish("user_cancelled", "用户取消（执行器未响应中止，强制收敛）");
+      }
+    }, this.cancelForceMs);
+    (this.cancelForceTimer as NodeJS.Timeout).unref?.();
   }
 
   /** 返工边判定：reworkEdges 显式配置优先；兜底启发式（验证类角色→非 entry） */
@@ -491,9 +626,36 @@ export class RunManager {
     return from !== undefined && /测试|QA|审|验证|质检/i.test(from.role) && route.to !== this.team.entryAgentId;
   }
 
+  /** 当前任务列表（从事件流重建投影） */
+  private tasks(): TeamTask[] {
+    return this.store.rebuildProjections().projections.tasks;
+  }
+
+  /** 某角色名下是否还有未完成任务（pending/running） */
+  private hasOpenTask(agentId: string): boolean {
+    return this.tasks().some((t) => t.assignedAgentId === agentId && (t.status === "pending" || t.status === "running"));
+  }
+
+  /** 成功执行后自动完结该角色名下所有 open 的任务（补 team_complete_task 漏标） */
+  private completeOpenTasksFor(agentId: string): void {
+    let changed = false;
+    for (const t of this.tasks()) {
+      if (t.assignedAgentId === agentId && (t.status === "pending" || t.status === "running")) {
+        this.append({ type: "task_completed", taskId: t.id });
+        changed = true;
+      }
+    }
+    if (changed) this.publish();
+  }
+
+
   /** 简单任务 solo 降级判定：complexity=simple 时只跑入口角色，像普通会话直接交付
-   *  （发布时已由 classifyTask 判定写入 run.complexity；不再依赖 autoSolo 开关与旧关键词表） */
+   *  （发布时已由 classifyTask 判定写入 run.complexity；不再依赖旧关键词表）。
+   *  autoSolo 仍作为显式开关生效：autoSolo===false 时，即使复杂度 simple 也走完整编排
+   *  （用户取消「简单任务降级」即关闭 solo）；undefined/true 时默认 simple→solo。
+   *  修复：此前只读 run.complexity，导致 UI 里该开关勾选与否都无区别（完全失效）。 */
   private shouldSolo(run: TeamRun): boolean {
+    if (this.team.autoSolo === false) return false;
     return run.complexity === "simple";
   }
 
@@ -537,6 +699,8 @@ export class RunManager {
   }
 
   private finish(code: RunStopCode, message: string): void {
+    if (this.finished) return;
+    this.finished = true;
     this.run.status = code === "completed" ? "completed" : code === "user_cancelled" ? "cancelled" : "failed";
     this.run.statusReason = { code, message };
     const evType = code === "completed" ? "run_completed" : code === "user_cancelled" ? "run_cancelled" : "run_failed";

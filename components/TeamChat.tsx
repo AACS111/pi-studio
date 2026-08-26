@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { useI18n } from "@/hooks/useI18n";
 import { useTeamRun } from "@/hooks/useTeamRun";
 import { MarkdownBody } from "./MarkdownBody";
+import { ChangedFilesCard } from "./ChangedFilesCard";
 import { TeamSettings } from "./TeamSettings";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import type { ExecutionMode, TeamMessage } from "@/lib/team/types";
@@ -35,6 +36,12 @@ const EXEC_MODES: ExecutionMode[] = ["auto", "solo", "serial", "parallel", "cust
 
 /** 旧版内置角色中文默认名：若 team.json 里 agent.name 还是这些旧值则回退显示英文 id（保证旧团队也统一英文显示） */
 const LEGACY_CN_NAMES = new Set(["组长", "产品", "开发", "测试", "研究员", "文档"]);
+
+/** 展示用模型名：直接显示具体模型 id（跟随系统时后端已解析出实际模型名）；太长则截断 */
+function modelDisplayName(modelId: string): string {
+  if (!modelId) return "跟随系统";
+  return modelId.length > 26 ? modelId.slice(0, 23) + "…" : modelId;
+}
 
 
 export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Props) {
@@ -150,7 +157,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
 
   // 思考过程按执行（execution）归组：从完整事件流抽取 agent_progress（运行中实时追加，历史 run 的最近一次也在内存里）
   const thinkingByExecution = useMemo(() => {
-    const groups: Record<string, Array<{ kind: "thinking" | "tool"; content: string; timestamp: number }>> = {};
+    const groups: Record<string, Array<{ kind: "thinking" | "tool" | "model"; content: string; timestamp: number }>> = {};
     for (const ev of data.events) {
       if (ev.type !== "agent_progress") continue;
       const g = groups[ev.executionId] ?? (groups[ev.executionId] = []);
@@ -177,9 +184,9 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
 
   // 执行元数据表：executionId → 状态/统计（供最终消息徽标）
   const execStatusById = useMemo(() => {
-    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number }> = {};
+    const map: Record<string, { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[] }> = {};
     for (const e of data.projections?.executions ?? []) {
-      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost };
+      map[e.id] = { status: e.status, toolCalls: e.stats?.toolCalls, totalTokens: e.stats?.totalTokens, cost: e.stats?.cost, model: e.model, changedFiles: e.changedFiles };
     }
     return map;
   }, [data.projections?.executions]);
@@ -258,7 +265,8 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
     emoji: string;
     name: string;
     toolCount: number;
-    items: Array<{ kind: "thinking" | "tool"; content: string; timestamp: number }>;
+    model?: string;
+    items: Array<{ kind: "thinking" | "tool" | "model"; content: string; timestamp: number }>;
   }>>(() => {
     if (!running) return [];
     const execs = data.projections?.executions ?? [];
@@ -272,6 +280,9 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
         const items = data.progress
           .filter((p) => p.executionId === e.id)
           .sort((a, b) => a.timestamp - b.timestamp);
+        // 运行中实际生效模型：executor 会话就绪后实时推送（含「跟随系统」解析出的具体模型名）
+        const modelItems = items.filter((i) => i.kind === "model");
+        const model = modelItems.length ? modelItems[modelItems.length - 1].content : undefined;
         return {
           executionId: e.id,
           agentId: e.agentId,
@@ -279,6 +290,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
           emoji: agent?.emoji ?? ROLE_EMOJI[e.agentId] ?? "🤖",
           name: agent ? (LEGACY_CN_NAMES.has(agent.name) ? agent.id : agent.name) : e.agentId,
           toolCount: items.filter((i) => i.kind === "tool").length,
+          model,
           items,
         };
       });
@@ -412,7 +424,33 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
         ))}
         {running && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {/* 本轮参与 vs 未参与角色（编排可见性） */}
+            {/* 本轮参与角色总览：清晰展示「参与中/已完成/未参与」，避免只见正在跑的角色而误以为其他人消失 */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center", fontSize: 11, color: "var(--text-muted)" }}>
+              <span style={{ opacity: 0.85 }}>{t("team.participated")}：</span>
+              {participation.involved.map((a) => {
+                const runningNow = liveProgressByExec.some((b) => b.agentId === a.id);
+                return (
+                  <span
+                    key={a.id}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 3,
+                      padding: "1px 8px",
+                      borderRadius: 10,
+                      border: `1px solid ${runningNow ? "var(--accent)" : "var(--border)"}`,
+                      background: runningNow
+                        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
+                        : "var(--bg-soft, rgba(0,0,0,0.03))",
+                      color: runningNow ? "var(--accent)" : "var(--text-muted)",
+                    }}
+                  >
+                    {a.emoji ?? ROLE_EMOJI[a.id] ?? "🤖"} {LEGACY_CN_NAMES.has(a.name) ? a.id : a.name}
+                    <span style={{ fontSize: 10 }}>{runningNow ? "●" : "✓"}</span>
+                  </span>
+                );
+              })}
+            </div>
             {participation.skipped.length > 0 && (
               <div style={styles.skipHint}>
                 {t("team.skipHint")}：
@@ -433,6 +471,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
                 dot={roleInfoById[b.agentId]?.dot ?? "#888"}
                 items={b.items}
                 toolCount={b.toolCount}
+                model={b.model}
               />
             ))}
             {running && liveProgressByExec.length === 0 && (
@@ -660,7 +699,9 @@ function RoleAvatar({ emoji, dot, size = 34, clickable, onClick, title }: { emoj
   return avatar;
 }
 
-/** 可折叠思考区：灰底面板，折叠态显示摘要行，展开态完整展示 thinking 流水（Markdown 化 + 工具行）。 */
+/** 可折叠思考区：灰底面板，折叠态显示摘要行，展开态完整展示 thinking 流水（Markdown 化 + 工具行）。
+ *  live=true（执行中实时追加）时默认展开——用户要像普通会话一样实时看到思考过程；
+ *  非 live（已完成的消息气泡）默认折叠。 */
 function ThinkingCollapsible({
   thinking,
   toolCount,
@@ -671,7 +712,7 @@ function ThinkingCollapsible({
   live?: boolean;
 }) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(live);
   // prefers-reduced-motion 用户：跳过过渡动画
   const reduced = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
   const hasThinking = thinking.trim().length > 0;
@@ -682,6 +723,23 @@ function ThinkingCollapsible({
     : toolCount > 0
       ? `${t("team.thinkingCollapsed")} · 🔧 ${toolCount} ${t("team.toolCalls")}`
       : t("team.thinkingCollapsed");
+
+  // 执行中流式思考自动滚到底部：保持最新思考可见（用户滚到上方回看时不打断）
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open || !live) return;
+    const el = bodyRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) {
+      // rAF 节流：避免每段 thinking 到达都同步碰 DOM 引发滚动抖动/重排
+      const raf = requestAnimationFrame(() => {
+        const node = bodyRef.current;
+        if (node) node.scrollTop = node.scrollHeight;
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [thinking, open, live]);
 
   if (!hasThinking && !live) return null;
   return (
@@ -700,13 +758,26 @@ function ThinkingCollapsible({
       </button>
       {open && (
         <div
+          ref={bodyRef}
           style={{
             ...styles.thinkBody,
             transition: reduced ? "none" : "max-height 0.25s ease",
           }}
         >
           {hasThinking ? (
-            <MarkdownBody className="markdown-team-thinking" >{thinking}</MarkdownBody>
+            <div
+              className="markdown-team-thinking"
+              style={{
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: "var(--text)",
+              }}
+            >
+              {thinking}
+            </div>
           ) : (
             <span style={{ color: "var(--text-dim)" }}>⏳ {t("team.stepInProgress")}…</span>
           )}
@@ -735,7 +806,7 @@ function MessageBubble({
   roleInfo?: { emoji: string; name: string; dot: string };
   thinking?: string;
   toolCount?: number;
-  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number };
+  execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[] };
   onAvatarClick?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
@@ -767,6 +838,14 @@ function MessageBubble({
             {execStatus && execStatus.status && (
               <span style={runStatusChip(execStatus.status)}>{execStatus.status}</span>
             )}
+            {execStatus?.model?.modelId && (
+              <span
+                title={`${execStatus.model.provider}/${execStatus.model.modelId}`}
+                style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: 6 }}
+              >
+                {modelDisplayName(execStatus.model.modelId)}
+              </span>
+            )}
             {toolCount && toolCount > 0 && (
               <span style={{ fontSize: 10, color: "var(--text-muted)" }}>🔧 {toolCount}</span>
             )}
@@ -793,6 +872,11 @@ function MessageBubble({
                     📎 {a.path}
                   </button>
                 ))}
+              </div>
+            )}
+            {execStatus?.changedFiles && execStatus.changedFiles.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <ChangedFilesCard files={execStatus.changedFiles} cwd={cwd} onOpenFile={onOpenFile} />
               </div>
             )}
           </div>
@@ -829,21 +913,30 @@ function LiveRoleBlock({
   dot,
   items,
   toolCount,
+  model,
 }: {
   emoji: string;
   name: string;
   seq: number;
   dot: string;
-  items: Array<{ kind: "thinking" | "tool"; content: string; timestamp: number }>;
+  items: Array<{ kind: "thinking" | "tool" | "model"; content: string; timestamp: number }>;
   toolCount: number;
+  model?: string;
 }) {
   const { t } = useI18n();
+  // 窗口化：思考片段随执行增长可能上千段，若全量 join 成一个大字符串再用 MarkdownBody 渲染，
+  // 每来一段新 thinking 都触发整段 reparse → 滚动卡顿。这里只保留最近 MAX_THINKING_SEGS 段，
+  // 旧段折叠为「已省略」，把 DOM 大小控制在有限范围（流畅优先，仍能实时看到最新思考）。
+  const MAX_THINKING_SEGS = 60;
   const segs: string[] = [];
   for (const it of items) {
     if (it.kind === "thinking") segs.push(it.content);
-    else segs.push(`\n> 🔧 ${it.content}`);
+    else if (it.kind === "tool") segs.push(`\n> 🔧 ${it.content}`);
+    // kind === "model"：已在 groupMeta 单独展示模型 chip，不混入思考流水
   }
-  const thinking = segs.join("\n");
+  const sliced = segs.length > MAX_THINKING_SEGS ? segs.slice(-MAX_THINKING_SEGS) : segs;
+  const skippedCount = segs.length - sliced.length;
+  const thinking = (skippedCount > 0 ? `…（已省略前面 ${skippedCount} 段思考）\n` : "") + sliced.join("\n");
   return (
     <div style={styles.groupRow}>
       <RoleAvatar emoji={emoji} dot={dot} />
@@ -851,6 +944,14 @@ function LiveRoleBlock({
         <div style={styles.groupMeta}>
           <span style={{ fontWeight: 600, fontSize: 12.5 }}>{name}</span>
           {seq > 1 && <span style={{ fontSize: 10, color: "var(--text-muted)" }}>#{seq}</span>}
+          {model && (
+            <span
+              title={model}
+              style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: 6 }}
+            >
+              {modelDisplayName(model.split("/").pop() ?? model)}
+            </span>
+          )}
           <span style={{ ...runStatusChip("running"), marginLeft: "auto" }}>
             <span className="team-live-dot">●</span> {t("team.stepInProgress")}
           </span>
@@ -1002,6 +1103,9 @@ const styles: Record<string, CSSProperties> = {
     borderLeft: "3px solid var(--border)",
     maxHeight: 380,
     overflowY: "auto",
+    // 性能：离屏思考区跳过渲染（虚拟化），大幅缓解长思考滚动卡顿
+    contentVisibility: "auto",
+    containIntrinsicSize: "auto 300px",
   },
   systemLine: {
     textAlign: "center",

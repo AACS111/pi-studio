@@ -26,6 +26,7 @@ export function ModelSelect({ value, onChange, style, cwd }: Props) {
   const { t } = useI18n();
   const [grouped, setGrouped] = useState<[string, ModelOption[]][]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [defaultModel, setDefaultModel] = useState<{ provider: string; modelId: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,6 +36,7 @@ export function ModelSelect({ value, onChange, style, cwd }: Props) {
       .then((data) => {
         if (cancelled) return;
         const list = (data?.modelList ?? []) as { id: string; name: string; provider: string }[];
+        setDefaultModel(data?.defaultModel ?? null);
         const byProvider = new Map<string, ModelOption[]>();
         for (const m of list) {
           const p = m.provider || "other";
@@ -67,7 +69,10 @@ export function ModelSelect({ value, onChange, style, cwd }: Props) {
 
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)} style={style} disabled={!loaded}>
-      <option value="">{t("team.settings.defaultModel")}</option>
+      <option value="">
+        {t("team.settings.defaultModel")}
+        {defaultModel?.modelId ? ` · ${defaultModel.modelId}` : ""}
+      </option>
       {allGrouped.map(([provider, opts]) => (
         <optgroup key={provider} label={provider}>
           {opts.map((o) => (

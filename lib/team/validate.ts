@@ -9,6 +9,16 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
   const warnings: WorkflowValidationResult["warnings"] = [];
   const agentIds = new Set(team.agents.map((a) => a.id));
 
+  // 仅「自定义」模式下 transitions/gateways 才是用户自绘的工作流，此时才做结构质量校验
+  // （不可达 / 环 / 优先级重叠 / 裁决重叠 / 网关警告）。
+  // 其余模式（auto/solo/serial/parallel）用内置预设流程（serialFlow/parallelFlow），
+  // 角色由组长动态派活（team_create_task + team_handoff）即可触达，预设本身又含返工环与
+  // 多条优先级边——静态校验这些预设会产生误导性警告：
+  //   - 未连边的角色（如 researcher/writer/fe/be-developer）实际能被动态派活，并非「永远不可达」；
+  //   - developer→tester→developer 是串行的返工闭环（设计如此）；
+  //   - leader/tester 同事件多条边靠 priority 区分（设计如此）。
+  const isCustom = (team.executionMode ?? "auto") === "custom";
+
   const pushError = (code: string, message: string, extra: { transitionId?: string; agentId?: string } = {}) =>
     errors.push({ code, message, ...extra });
   const pushWarning = (code: string, message: string, extra: { transitionId?: string; agentId?: string } = {}) =>
@@ -62,16 +72,16 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
     if (gw.type === "exclusive" && out === 0) {
       pushError("gateway_no_out", `排他网关 "${gw.name}" 没有任何出边`, { agentId: gw.id });
     }
-    if ((gw.type === "parallel" || gw.type === "inclusive") && out === 0) {
+    if (isCustom && (gw.type === "parallel" || gw.type === "inclusive") && out === 0) {
       pushWarning("gateway_no_out", `网关 "${gw.name}" 没有任何出边`);
     }
-    if (gw.type === "parallel" && out === 1) {
+    if (isCustom && gw.type === "parallel" && out === 1) {
       pushWarning("gateway_single_out", `并行网关 "${gw.name}" 只有一条出边（并行无意义）`);
     }
-    if (gw.type === "merge" && inn === 0) {
+    if (isCustom && gw.type === "merge" && inn === 0) {
       pushWarning("gateway_no_in", `汇聚网关 "${gw.name}" 没有任何入边`);
     }
-    if (gw.type === "merge" && inn === 1) {
+    if (isCustom && gw.type === "merge" && inn === 1) {
       pushWarning("gateway_single_in", `汇聚网关 "${gw.name}" 只有一条入边（汇聚无意义）`);
     }
   }
@@ -93,7 +103,8 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
   }
 
   // ⑥ 不可达（无 incoming）—— 空工作流时（无 transitions）由组长自动安排角色执行，不报 warning
-  if (team.transitions.length > 0) {
+  // 仅 custom 模式校验：非 custom 下角色可被动态派活，不判定不可达
+  if (isCustom && team.transitions.length > 0) {
     const incoming = new Map<string, number>();
     for (const t of team.transitions) incoming.set(t.to, (incoming.get(t.to) ?? 0) + 1);
     for (const agent of team.agents) {
@@ -105,7 +116,8 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
   }
 
   // ⑦ 环检测（可达环）—— 空工作流时跳过
-  if (team.transitions.length > 0) {
+  // 仅 custom 模式校验：预设串行/并行流含返工环（设计如此）
+  if (isCustom && team.transitions.length > 0) {
     const graph = new Map<string, string[]>();
     for (const t of team.transitions) {
       const list = graph.get(t.from) ?? [];
@@ -119,7 +131,8 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
   }
 
   // ⑧ 优先级重叠（同 from 同 event 多条 keyword/llm）—— 空工作流时跳过
-  if (team.transitions.length > 0) {
+  // 仅 custom 模式校验：预设流本就靠 priority 区分多条边
+  if (isCustom && team.transitions.length > 0) {
     const byFromEvent = new Map<string, Transition[]>();
     for (const t of team.transitions) {
       const key = `${t.from}:${t.trigger.event}`;
@@ -139,7 +152,8 @@ export function validateWorkflow(team: TeamDef): WorkflowValidationResult {
   }
 
   // ⑨ 重复裁决边（同 from 同 verdictGuard 多条）—— 语义冲突，仅提示
-  if (team.transitions.length > 0) {
+  // 仅 custom 模式校验
+  if (isCustom && team.transitions.length > 0) {
     const byGuard = new Map<string, Transition[]>();
     for (const t of team.transitions) {
       if (!t.verdictGuard) continue;

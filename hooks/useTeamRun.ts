@@ -30,7 +30,7 @@ export interface RunMeta {
 export interface ExecutionProgress {
   executionId: string;
   agentId: string;
-  kind: "thinking" | "tool";
+  kind: "thinking" | "tool" | "model";
   content: string;
   timestamp: number;
 }

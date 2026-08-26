@@ -668,7 +668,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                 <input
                   type="checkbox"
                   checked={team.autoSolo === true}
-                  onChange={(e) => updateTeam({ autoSolo: e.target.checked ? true : undefined })}
+                  onChange={(e) => updateTeam({ autoSolo: e.target.checked ? true : false })}
                   style={{ width: 16, height: 16 }}
                 />
                 开启后，被判定为无需拆解的简单任务只由入口角色直接完成，避免跑遍所有角色

@@ -801,6 +801,8 @@ export const enLocale: LocalePlugin = {
     "team.toolCalls": "tool calls",
     "team.thinkingCollapsed": "🧠 Thinking process — click to view",
     "team.thinkingLive": "🧠 Thinking…",
+    "team.participated": "Participated this round",
+    "team.done": "done",
     "team.skipHint": "Skipped this round",
     "team.tokensShort": "tok",
     "team.tokenTooltip": "Total tokens (incl. cache)",

@@ -801,6 +801,8 @@ export const zhCNLocale: LocalePlugin = {
     "team.toolCalls": "次工具调用",
     "team.thinkingCollapsed": "🧠 思考过程 — 点击展开查看",
     "team.thinkingLive": "🧠 思考中…",
+    "team.participated": "本轮参与",
+    "team.done": "已完成",
     "team.skipHint": "本轮未参与",
     "team.tokensShort": "tok",
     "team.tokenTooltip": "总 token 消耗（含缓存）",

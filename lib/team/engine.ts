@@ -22,6 +22,11 @@ export interface ExecutionResult {
   verdict?: "pass" | "fail";
   failureReason?: string;
   stats?: ExecutionStats;                      // 回合统计（token/成本/消息数）
+  /** 本次执行实际生效的模型（agent.model 显式指定，或空=跟随全局默认后由会话解析出的具体模型）。
+   *  供 UI 在角色输出/执行徽标处展示「用了什么模型」，尤其「跟随系统」时也能显示具体模型名。 */
+  model?: { provider: string; modelId: string };
+  /** 本次执行改动/生成的文件（edit/write；站在项目 cwd 内），供 UI 像普通会话那样展示「变更文件」 */
+  changedFiles?: { filePath: string; kind: "edit" | "write" }[];
 }
 
 export interface Route {

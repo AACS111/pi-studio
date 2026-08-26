@@ -34,7 +34,7 @@ export interface AgentDef {
     scope: "structured" | "summary" | "recent";  // 覆盖团队默认
     recentCount?: number;
   };
-  maxTurns?: number;          // 单次执行最大会话内轮次（默认 20）
+  maxTurns?: number;          // 单次执行最大会话内轮次（默认 60；不填则用 60）
   maxOutputChars?: number;    // 产出截断上限（默认 4000）
   timeoutMs?: number;         // 单次执行超时（默认继承 maxRunMinutes）
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";  // 推理级别（透传 startRpcSession；缺省=模型默认）
@@ -233,8 +233,18 @@ export interface AgentExecution {
   handoffTo?: string;
   taskIds?: string[];         // 本次执行关联的 Task
   failureReason?: string;
+  /** 本次执行实际生效的模型（agent.model 显式 / 跟随全局默认后由会话解析出的具体模型），供 UI 展示 */
+  model?: { provider: string; modelId: string };
   /** 执行统计（回合结束后采集；token/成本/消息数） */
   stats?: ExecutionStats;
+  /** 本次执行改动/生成的文件（edit/write；站在项目 cwd 内），供 UI 像普通会话那样展示「变更文件」 */
+  changedFiles?: TeamChangedFile[];
+}
+
+/** 单次角色执行改动/生成的文件（比对齐普通会话 ChangedFile 的 display 语义） */
+export interface TeamChangedFile {
+  filePath: string;
+  kind: "edit" | "write";
 }
 
 /** 单次角色执行的资源统计（来自 pi 会话 get_session_stats） */
@@ -338,8 +348,8 @@ export type TeamEvent =
   | { type: "artifact_produced"; sequence: number; timestamp: number; artifact: ArtifactRef }
   | { type: "decision_recorded"; sequence: number; timestamp: number; decision: Decision }
   | { type: "handoff_requested"; sequence: number; timestamp: number; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats }
-  | { type: "agent_progress"; sequence: number; timestamp: number; executionId: string; agentId: string; kind: "thinking" | "tool"; content: string }
+  | { type: "execution_completed"; sequence: number; timestamp: number; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[] }
+  | { type: "agent_progress"; sequence: number; timestamp: number; executionId: string; agentId: string; kind: "thinking" | "tool" | "model"; content: string }
   | { type: "steer"; sequence: number; timestamp: number; agentId?: string; content: string }
   | { type: "approval_requested"; sequence: number; timestamp: number; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
   | { type: "approval_resolved"; sequence: number; timestamp: number; runId: string; transitionId: string; approved: boolean; by: "user" | "runtime" }
@@ -358,8 +368,8 @@ export type TeamEventInput =
   | { type: "artifact_produced"; artifact: ArtifactRef }
   | { type: "decision_recorded"; decision: Decision }
   | { type: "handoff_requested"; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats }
-  | { type: "agent_progress"; executionId: string; agentId: string; kind: "thinking" | "tool"; content: string }
+  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[] }
+  | { type: "agent_progress"; executionId: string; agentId: string; kind: "thinking" | "tool" | "model"; content: string }
   | { type: "steer"; agentId?: string; content: string }
   | { type: "approval_requested"; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }
   | { type: "approval_resolved"; runId: string; transitionId: string; approved: boolean; by: "user" | "runtime" }
@@ -487,6 +497,8 @@ export function reduce(events: TeamEvent[]): Projections {
           exec.handoffTo = event.handoffTo;
           exec.failureReason = event.failureReason;
           exec.stats = event.stats;
+          exec.model = event.model;
+          exec.changedFiles = event.changedFiles;
         }
         for (const taskId of exec?.taskIds ?? []) {
           const task = p.tasks.find((t) => t.id === taskId);

@@ -24,6 +24,18 @@ export async function register(): Promise<void> {
     /* best-effort */
   }
 
+  // 打包分发关键路径：把随应用分发的内置技能（.agents/skills，electron-builder
+  // 已白名单进 resources/app）同步到用户全局 ~/.agents/skills（SDK 全局信任），
+  // 终端用户在任何 cwd 下发「创建 PPT」都能加载 office-edit 骨架流水线；
+  // 同时向 agent bash 暴露 UNIVER_CLI / PI_WEB_PORT。幂等且失败不阻塞启动。
+  try {
+    const { ensureBuiltinSkillsSynced, ensureAgentEnvExposed } = await import("./lib/bundled-skills");
+    ensureBuiltinSkillsSynced();
+    ensureAgentEnvExposed();
+  } catch {
+    /* best-effort */
+  }
+
   // Warm the univer daemon in the background so the first .univer command from
   // the user isn't paying the cold-start cost (~4s + race retries). The warm-up
   // is idempotent and failure-tolerant (see lib/univer-cli.ts); boot must never

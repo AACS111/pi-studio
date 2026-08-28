@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { existsSync, realpathSync } from "fs";
 import { execFile, spawn } from "child_process";
+import path from "path";
 import { promisify } from "util";
 import { getAllowedFileRoots, isFilePathAllowed } from "@/lib/file-access";
 import { isApiRequestAllowed } from "@/lib/request-security";
@@ -12,6 +13,89 @@ export const runtime = "nodejs";
 const execFileAsync = promisify(execFile);
 
 const MAX_PATH_LENGTH = 2048;
+
+// explorer.exe exits ~immediately after forwarding the request to the running
+// shell; any async spawn error (e.g. ENOENT) surfaces within this window.
+// explorer.exe 直接 spawn：窗口会被 Windows 前台锁压住（后台进程激活的窗
+// 口不置前——落在应用后面，用户以为「点了没反应」，见 electron/main.cjs
+// pi-open-uploads-dir 同款结论）。改用 shell32 COM API 精确选中并尝试置前。
+const REVEAL_PS_TIMEOUT_MS = 12_000;
+const SHELL32_SELECT_MEMBERS =
+  '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]'
+  + "public static extern System.IntPtr ILCreateFromPathW(string pszPath);"
+  + '[System.Runtime.InteropServices.DllImport("shell32.dll")]'
+  + "public static extern int SHOpenFolderAndSelectItems(System.IntPtr pidl, uint cidl, System.IntPtr apidl, uint dwFlags);"
+  + '[System.Runtime.InteropServices.DllImport("shell32.dll")]'
+  + "public static extern void ILFree(System.IntPtr pidl);";
+
+/** PowerShell 单引号字面量：内部单引号翻倍转义。 */
+function psSingleQuoted(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+interface RevealPsResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function runPowerShellWithTimeout(args: string[], timeoutMs: number): Promise<RevealPsResult> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn> | null = null;
+    let settled = false;
+    const timer = setTimeout(() => finish({ code: -1, stdout: "", stderr: "PowerShell timed out" }), timeoutMs);
+    const finish = (r: RevealPsResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { child?.kill(); } catch { /* 已退出 */ }
+      resolve(r);
+    };
+    try {
+      child = spawn("powershell.exe", args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (err) {
+      finish({ code: -1, stdout: "", stderr: String(err) });
+      return;
+    }
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", (err) => {
+      finish({ code: -1, stdout, stderr: `${stderr}\n${err.message}`.trim() });
+    });
+    child.on("exit", (code) => {
+      finish({ code: code ?? -1, stdout, stderr });
+    });
+  });
+}
+
+/** 在资源管理器中打开文件夹并选中文件；随后尽力把窗口调到前台。抛错表示彻底失败。 */
+async function revealInWindowsExplorer(realPath: string): Promise<void> {
+  const winPath = realPath.replace(/\//g, "\\");
+  const folderName = path.win32.basename(path.win32.dirname(winPath));
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `Add-Type -Namespace PiReveal -Name ShellApi -MemberDefinition ${psSingleQuoted(SHELL32_SELECT_MEMBERS)} | Out-Null`,
+    `$pidl = [PiReveal.ShellApi]::ILCreateFromPathW(${psSingleQuoted(winPath)})`,
+    "$hr = [PiReveal.ShellApi]::SHOpenFolderAndSelectItems($pidl, 0, [System.IntPtr]::Zero, 0)",
+    "[PiReveal.ShellApi]::ILFree($pidl)",
+    "Write-Output ('HR={0:X8}' -f $hr)",
+    `if ($hr -eq 0) { $ws = New-Object -ComObject WScript.Shell; for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 400; if ($ws.AppActivate(${psSingleQuoted(folderName)})) { break } } }`,
+  ].join("; ");
+  const result = await runPowerShellWithTimeout(
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+    REVEAL_PS_TIMEOUT_MS,
+  );
+  const match = /HR=([0-9A-Fa-f]+)/.exec(result.stdout);
+  const hr = match ? Number.parseInt(match[1], 16) : null;
+  if (hr !== 0) {
+    const detail = hr !== null && !Number.isNaN(hr)
+      ? `SHOpenFolderAndSelectItems failed (HR=0x${hr.toString(16)})`
+      : (result.stderr.trim().split(/\r?\n/)[0] || `exit code ${result.code}`);
+    throw new Error(detail);
+  }
+}
 
 /**
  * Open the containing folder of a file in the OS file manager, with the file
@@ -58,15 +142,9 @@ export async function POST(request: NextRequest) {
 
   try {
     if (process.platform === "win32") {
-      // explorer.exe 是 GUI 程序：成功打开后也会立即以非零退出码结束，execFile
-      // 等待退出码会误报失败，因此用 spawn 分离启动、不等待直接返回成功。
-      // explorer 不认正斜杠路径，先转成 Windows 原生反斜杠路径。
-      const winPath = realPath.replace(/\//g, "\\");
-      const child = spawn("explorer.exe", [`/select,${winPath}`], { detached: true, stdio: "ignore", windowsHide: true });
-      child.on("error", () => {
-        // spawn 失败（找不到 explorer）——响应已返回 ok，无需处理
-      });
-      child.unref();
+      // shell32 COM：打开文件夹并选中，且尝试把窗口调到前台（后台进程直接
+      // spawn explorer 的窗口会被前台锁压在应用后面）。失败会抛错→统一 500。
+      await revealInWindowsExplorer(realPath);
     } else if (process.platform === "darwin") {
       await execFileAsync("open", ["-R", realPath], { windowsHide: true });
     } else {

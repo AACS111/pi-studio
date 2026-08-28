@@ -160,6 +160,10 @@ function waitForServerUrl(child) {
         settled = true;
         clearTimeout(timer);
         child.stdout.off("data", onData);
+        // 修复（中危）：就绪后不能让 stdout 无人排空 —— Node 子进程的 stdout 管道
+        // 缓冲写满（~64KB）后 next 的 console 输出会阻塞整个服务（应用假死）。
+        // resume() 进入 flowing 模式丢弃后续输出，避免刷屏的同时保持管道畅通。
+        child.stdout.resume();
         resolve(`http://${HOST}:${m[1]}`);
       }
     };
@@ -573,6 +577,13 @@ function createWindow(url) {
     return { action: "deny" };
   });
   // 无原生菜单后，重新注册几个常用快捷键（开发者工具/刷新/全屏）。
+  // 修复（中危）：主窗口 reload 时主进程持有的 WebContentsView（右侧浏览器 tabs）
+  // 不会随 renderer 重建而销毁，新 AppShell 初始化后又会创建新视图 —— 旧视图作为
+  // 幽灵叠加在页面上（destroyWebView 不触发）。在主窗口自身开始重载时销毁全部
+  // 浏览器视图，由重载后的 AppShell 按需重建。
+  mainWindow.webContents.on("did-start-loading", () => {
+    for (const tabId of [...webViews.keys()]) destroyWebView(tabId);
+  });
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
     const ctrl = input.control || input.meta;
@@ -678,6 +689,55 @@ if (!gotLock) {
         return err ? { ok: false, error: String(err), dir } : { ok: true, dir };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    });
+    // 在资源管理器中显示文件（变更文件卡的 📁 按钮）：必须走主进程的
+    // shell.showItemInFolder —— 服务进程（后台进程）spawn explorer 会被 Windows
+    // 前台锁压在应用后面，用户以为「点了没反应」（同 pi-open-uploads-dir 结论）。
+    // .univer 对外动作解析为同名 .xlsx（与 /api/files/reveal 行为一致）。
+    ipcMain.handle("pi-reveal-path", async (_event, rawPath) => {
+      try {
+        if (typeof rawPath !== "string" || !rawPath.trim()) {
+          return { ok: false, error: "filePath is required" };
+        }
+        const target = path.resolve(rawPath.trim());
+        if (!fs.existsSync(target)) {
+          return { ok: false, error: "File not found" };
+        }
+        let revealTarget = target;
+        if (path.extname(target).toLowerCase() === ".univer") {
+          const sibling = `${target.slice(0, -".univer".length)}.xlsx`;
+          if (fs.existsSync(sibling)) revealTarget = sibling;
+        }
+        shell.showItemInFolder(revealTarget);
+        return { ok: true, filePath: revealTarget };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    });
+    // 任务区「文件/表格」卡片：弹出系统原生「打开文件」对话框，让用户挑选本地
+    // 文件直接在右侧面板预览。渲染层拿不到真实本地路径，必须由主进程的
+    // dialog.showOpenDialog 返回绝对路径。用户主动选择即授权；随后渲染层会调
+    // POST /api/files/allow-local 把该文件所在目录加入本次进程的可读根。
+    ipcMain.handle("pi-pick-open-file", async (_event, opts) => {
+      const o = opts && typeof opts === "object" ? opts : {};
+      const options = { properties: ["openFile"] };
+      if (typeof o.title === "string" && o.title.trim()) options.title = o.title.trim();
+      if (Array.isArray(o.filters) && o.filters.length) {
+        // Electron 过滤器的 extensions 必须是不带点的小写扩展名数组
+        options.filters = o.filters
+          .filter((f) => f && typeof f.name === "string" && Array.isArray(f.extensions))
+          .map((f) => ({ name: String(f.name), extensions: f.extensions.map((x) => String(x).replace(/^\./, "")) }));
+      }
+      try {
+        const win = BrowserWindow.fromWebContents(_event.sender);
+        const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+        return {
+          canceled: Boolean(result.canceled),
+          filePath: (result.filePaths && result.filePaths[0]) || null,
+        };
+      } catch (e) {
+        return { canceled: true, filePath: null, error: e instanceof Error ? e.message : String(e) };
       }
     });
     try {

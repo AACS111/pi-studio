@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { writeFileSync } from "fs";
-import { getAllowedFileRoots, isFilePathAllowed } from "@/lib/file-access";
+import { getAllowedFileRoots, isFilePathAllowed, isExistingFilePathAllowed } from "@/lib/file-access";
 import { isWindowsAbsolutePath } from "@/lib/file-access";
 
 const MAX_SAVE_BYTES = 25 * 1024 * 1024;
@@ -37,7 +37,10 @@ export async function POST(request: NextRequest) {
     }
 
     const allowedRoots = await getAllowedFileRoots();
-    if (!isFilePathAllowed(filePath, allowedRoots)) {
+    // 安全：用 realpath 解析后校验（isExistingFilePathAllowed），字符串前缀检查不防
+    // symlink 逃逸 —— allowed root 内的链接指向外部文件时 writeFileSync 会写穿到根外。
+    // save 的目标必须已存在（见顶部注释），realpath 校验与该前提一致。
+    if (!isFilePathAllowed(filePath, allowedRoots) || !isExistingFilePathAllowed(filePath, allowedRoots)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 

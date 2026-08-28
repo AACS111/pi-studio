@@ -104,7 +104,18 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(marker);
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  // compare-and-delete：带 id 时只清自己消费掉的那个 marker。旧实现无条件清——
+  // UI 处理 .univer marker 需 2-3s 探测单位类型，窗口期内 agent 连续推送的第二个
+  // marker（新 id）会被误删，文件永不打开（丢事件）。不带 id 保留旧行为（强制清，
+  // 兼容 skill/agent 直接清场的用法）。
+  const expectId = request.nextUrl.searchParams.get("id");
+  if (expectId) {
+    const current = readMarker();
+    if (current && current.id !== expectId) {
+      return NextResponse.json({ ok: false, currentId: current.id });
+    }
+  }
   try {
     rmSync(MARKER_PATH, { force: true });
   } catch {

@@ -45,9 +45,13 @@ export function normalizeDirectory(directory: string): string {
 }
 
 export function getParentDirectory(directory: string): string | null {
+  // 修复（Windows 平台 bug）：POSIX 风格路径（无盘符、正斜杠）必须用 path.posix 解析。
+  // 旧实现用平台默认 path——Windows 上即 path.win32，normalize("/Users/alex/project")
+  // 返回 "\\Users\\alex\\project" → 返回反斜杠路径，与 allowed-roots 的 normalizeSlashes
+  // （统一正斜杠）风格失配，cwd/browse 的 parentPath 在 Windows 上返回反斜杠路径。
   const pathApi = /^[a-zA-Z]:[\\/]/.test(directory) || directory.startsWith("\\\\")
     ? path.win32
-    : path;
+    : path.posix;
   const normalized = pathApi.normalize(directory);
   const parent = pathApi.dirname(normalized);
   return parent === normalized ? null : parent;

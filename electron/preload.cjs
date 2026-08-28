@@ -16,6 +16,11 @@ ipcRenderer.on("pi-webview-navigated", (_event, info) => {
 contextBridge.exposeInMainWorld("piElectron", {
   isElectron: true,
   openUploadsDir: () => ipcRenderer.invoke("pi-open-uploads-dir"),
+  // 在资源管理器中显示指定文件（变更/生成文件卡的 📁 按钮，主进程原生置前）。
+  revealFile: (filePath) => ipcRenderer.invoke("pi-reveal-path", filePath),
+  // 任务区「文件/表格」卡片：主进程原生「打开文件」对话框，返回用户挑选的真实
+  // 绝对路径（ canceled=true 表示用户取消）。仅 Electron 桌面模式存在。
+  pickOpenFile: (opts) => ipcRenderer.invoke("pi-pick-open-file", opts),
   // 自定义窗口控制（WindowControls 组件使用，原生控件已通过 titleBarOverlay:false 关闭）。
   window: {
     minimize: () => ipcRenderer.send("pi-window-minimize"),

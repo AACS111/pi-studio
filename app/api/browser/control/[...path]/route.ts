@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getInternalDir } from "@/lib/storage-config";
+import { isApiRequestAllowed } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,6 +24,12 @@ type RouteContext = { params: Promise<{ path: string[] }> };
  * POST /api/browser/control/execute|open|click|type|fill|select|check|press|scroll|wait|assert|back|forward|reload|input|close
  */
 async function forward(request: NextRequest, pathSegments: string[]) {
+  // 安全：浏览器控制桥可任意执行页面 JS/读取登录态（含持久分区的会话），与其他敏感
+  // API 同样走 isApiRequestAllowed（同源放行；curl 等 Agent 直连无 Origin 头也放行；
+  // 拦截跨站 CSRF 与 dev:lan 下局域网任意机器的调用）。
+  if (!isApiRequestAllowed(request)) {
+    return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
+  }
   if (pathSegments.length === 0) {
     return NextResponse.json({ error: "missing browser control path" }, { status: 400 });
   }

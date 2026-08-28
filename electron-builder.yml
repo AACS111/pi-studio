@@ -27,7 +27,7 @@ files:
   - "electron/**"
   - "bin/**"
   - "public/**"
-  - "skills/**"
+  - ".agents/skills/**"
   - ".agents/**"
   - "packages/pi-memory-zh/**"   # 内置中文记忆插件（pi-memory-zh），随应用分发
   - "next.config.mjs"

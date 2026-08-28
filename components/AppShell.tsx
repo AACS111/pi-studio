@@ -58,6 +58,22 @@ type AutoNameStatus =
   | { kind: "success" }
   | { kind: "error"; message: string };
 
+// 任务区「文件/表格」卡片点击后选择本地文件打开：Electron 桥（preload.cjs）
+// 提供 pi-pick-open-file 原生对话框；纯浏览器模式退化为 <input type=file> 上传副本。
+interface PiElectronPickApi {
+  pickOpenFile?: (opts: {
+    title?: string;
+    filters?: Array<{ name: string; extensions: string[] }>;
+  }) => Promise<{ canceled: boolean; filePath: string | null; error?: string }>;
+}
+
+function getNativePickApi(): PiElectronPickApi["pickOpenFile"] | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { piElectron?: PiElectronPickApi }).piElectron?.pickOpenFile;
+}
+
+type HomeCardPickKind = "files" | "sheets";
+
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
 /** 右侧面板点击「打开网站」按钮时默认打开的网址。 */
 const DEFAULT_WEB_URL = "https://bing.com";
@@ -101,6 +117,18 @@ function excerpt(text: string, query: string, max = 80): string {
   return prefix + text.slice(start, end) + suffix;
 }
 
+/** Which right-panel mode owns a file tab: explicit homeMode wins; legacy tabs
+ *  (created before the field existed) fall back to the extension rule so old
+ *  sessions keep their tabs in the same bars as before. One tab → one bar:
+ *  the same file must not appear in both the 文件 and 表格 tab strips. */
+function tabHomeMode(tab: Pick<Tab, "homeMode" | "filePath">): "files" | "sheets" {
+  if (tab.homeMode) return tab.homeMode;
+  const lower = (tab.filePath ?? "").toLowerCase();
+  return lower.endsWith(".xlsx") || lower.endsWith(".univer") || lower.endsWith(".csv") || lower.endsWith(".xls")
+    ? "sheets"
+    : "files";
+}
+
 export function AppShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -135,8 +163,19 @@ export function AppShell() {
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
-  // Codex-style right-panel function tabs: browser | files | sheets | terminal
-  const [rightPanelMode, setRightPanelMode] = useState<"browser" | "files" | "sheets" | "terminal">("files");
+  // Codex-style right-panel function modes. "home" is the Codex-style card
+  // launcher shown when the panel opens with nothing to display yet — it is
+  // also the startup default so a fresh session never lands on a bare mode.
+  const [rightPanelMode, setRightPanelMode] = useState<"home" | "browser" | "files" | "sheets" | "terminal">("home");
+  // Declared early: handleSelectActivity reads it to decide whether opening
+  // the panel should land on the card home (no content to show).
+  const [fileTabs, setFileTabs] = useState<Tab[]>([]);
+  // Last non-home mode — clicking the grid icon while on the card home toggles
+  // back to the tab view the user came from instead of trapping them there.
+  const lastNonHomeModeRef = useRef<"browser" | "files" | "sheets" | "terminal">("browser");
+  useEffect(() => {
+    if (rightPanelMode !== "home") lastNonHomeModeRef.current = rightPanelMode;
+  }, [rightPanelMode]);
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   // First-level activity (一级导航) — the second column swaps its content.
@@ -334,10 +373,22 @@ export function AppShell() {
     setSidebarOpen((open) => !open);
   }, [isMobile]);
 
+  /** Toggle the right panel. Opening with nothing to show (no file/web tabs)
+   *  and no live terminal session lands on the Codex-style task-card home,
+   *  never a bare empty mode. Shared by the top-bar button and the activity
+   *  rail / command palette so every entry point behaves the same. */
+  const toggleRightPanel = useCallback(() => {
+    const willOpen = !rightPanelOpen;
+    setRightPanelOpen(willOpen);
+    if (willOpen && fileTabs.length === 0 && rightPanelMode !== "terminal") {
+      setRightPanelMode("home");
+    }
+  }, [rightPanelOpen, rightPanelMode, fileTabs]);
+
   const handleSelectActivity = useCallback((activity: ActivityOrPlugin) => {
     // "rightPanel" just toggles the right panel — it's a one-off action, not a mode.
     if (activity === "rightPanel") {
-      setRightPanelOpen((v) => !v);
+      toggleRightPanel();
       if (isMobile) setSidebarOpen(false);
       return;
     }
@@ -347,7 +398,7 @@ export function AppShell() {
     // Switching capability should reveal the second column it controls.
     setSidebarOpen(true);
     if (isMobile) setActiveTopPanel(null);
-  }, [isMobile]);
+  }, [isMobile, toggleRightPanel]);
 
   const handleOpenPiSearch = useCallback((target: "plugins" | "skills", query: string) => {
     setPiSearchRequest((prev) => ({ target, query, nonce: (prev?.nonce ?? 0) + 1 }));
@@ -450,7 +501,6 @@ export function AppShell() {
   }, [contentSearchOpen]);
 
   // Right panel — file tabs only
-  const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
 
   // Same @mention format as the chat input's @ autocomplete, so the agent's
@@ -708,13 +758,19 @@ export function AppShell() {
     }
   }, [selectedSession, router]);
 
+  // Mirror of fileTabs for stable callbacks that must not depend on the array
+  // identity (handleOpenFile keeps a [isMobile] dep on purpose).
+  const fileTabsRef = useRef<Tab[]>([]);
+  fileTabsRef.current = fileTabs;
+
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
-    options?: { sourceSessionId?: string | null; modeHint?: "diff" },
+    options?: { sourceSessionId?: string | null; modeHint?: "diff"; homeMode?: "files" | "sheets" },
   ) => {
     const sourceSessionId = options?.sourceSessionId;
     const modeHint = options?.modeHint;
+    const homeMode = options?.homeMode;
     const tabId = `file:${filePath}`;
     setFileTabs((prev) => {
       const existing = prev.find((t) => t.id === tabId);
@@ -726,27 +782,29 @@ export function AppShell() {
           filePath,
           sourceSessionId,
           initialDisplayMode: modeHint,
+          ...(homeMode ? { homeMode } : {}),
         }];
       }
       const sourceUnchanged = !sourceSessionId || existing.sourceSessionId === sourceSessionId;
       const modeUnchanged = !modeHint || existing.initialDisplayMode === modeHint;
-      if (sourceUnchanged && modeUnchanged) return prev;
+      const homeUnchanged = !homeMode || existing.homeMode === homeMode;
+      if (sourceUnchanged && modeUnchanged && homeUnchanged) return prev;
       return prev.map((t) => {
         if (t.id !== tabId) return t;
         const next: Tab = { ...t };
         if (sourceSessionId) next.sourceSessionId = sourceSessionId;
         if (modeHint) next.initialDisplayMode = modeHint;
+        if (homeMode) next.homeMode = homeMode;
         return next;
       });
     });
     setActiveFileTabId(tabId);
-    // Auto-switch to the right mode when a file is opened
-    const lower = fileName.toLowerCase();
-    if (lower.endsWith(".xlsx") || lower.endsWith(".univer") || lower.endsWith(".csv") || lower.endsWith(".xls")) {
-      setRightPanelMode("sheets");
-    } else {
-      setRightPanelMode("files");
-    }
+    // Auto-switch to the tab's HOME mode (see tabHomeMode): office-derived
+    // .univer files stay in 文件, spreadsheets go to 表格. Pure extension
+    // switching used to yank the panel to 表格 even for a slide deck.
+    const existing = fileTabsRef.current.find((t) => t.id === tabId);
+    const homeSource: Tab = existing ?? { id: tabId, kind: "file", label: fileName, filePath };
+    setRightPanelMode(homeMode ?? tabHomeMode(homeSource));
     setRightPanelOpen(true);
     // On mobile the file panel is full-screen; close the drawer so it shows.
     if (isMobile) setSidebarOpen(false);
@@ -756,19 +814,13 @@ export function AppShell() {
     handleOpenFile(filePath, getFileName(filePath), { sourceSessionId: selectedSession?.id ?? null });
   }, [handleOpenFile, selectedSession?.id]);
 
-  // Opened from a changed-files card: show the git diff view directly.
+  // Opened from the unified changed-files card: edit-kind rows show the git
+  // diff view directly; write-kind (generated) rows have no diff history and
+  // FileViewer falls back to the normal view for those automatically.
   const handleOpenChangedFile = useCallback((filePath: string) => {
     handleOpenFile(filePath, getFileName(filePath), {
       sourceSessionId: selectedSession?.id ?? null,
       modeHint: "diff",
-    });
-  }, [handleOpenFile, selectedSession?.id]);
-
-  // Opened from a generated-files card: show the file in the right panel in
-  // normal view mode (generated deliverables are not diff targets).
-  const handleOpenGeneratedFile = useCallback((filePath: string) => {
-    handleOpenFile(filePath, getFileName(filePath), {
-      sourceSessionId: selectedSession?.id ?? null,
     });
   }, [handleOpenFile, selectedSession?.id]);
 
@@ -789,21 +841,29 @@ export function AppShell() {
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error));
     }
-    const data = (await res.json().catch(() => ({}))) as { file?: string; error?: string };
+    const data = (await res.json().catch(() => ({}))) as { file?: string; kind?: string; error?: string };
     if (!res.ok || !data.file) {
       throw new Error(data.error ?? `HTTP ${res.status}`);
     }
 
-    handleOpenFile(data.file, getFileName(data.file), { sourceSessionId: selectedSession?.id ?? null });
+    // Office docs (doc/slide units) belong to the 文件 bar; spreadsheets to
+    // 表格. Passing the home explicitly keeps the tab out of the other bar.
+    const isOffice = data.kind === "doc" || data.kind === "slide";
+    handleOpenFile(data.file, getFileName(data.file), {
+      sourceSessionId: selectedSession?.id ?? null,
+      homeMode: isOffice ? "files" : "sheets",
+    });
 
-    // Remember the sheet-edit context. It is prepended to the user's next
-    // message so they can type their edit instruction directly — no prompt
-    // sits in the input box where it could be deleted.
-    const prompt = translate("chat.aiEditPrompt", { file: data.file });
+    // Remember the edit context. It is prepended to the user's next message so
+    // they can type their instruction directly — no prompt sits in the input
+    // box where it could be deleted.
+    const prompt = translate(isOffice ? "chat.officeEditPrompt" : "chat.aiEditPrompt", { file: data.file });
     setAiEditContext({ file: data.file, prompt });
   }, [handleOpenFile, selectedSession?.id, translate]);
 
   const handleCloseFileTab = useCallback((tabId: string) => {
+    const closed = fileTabs.find((t) => t.id === tabId);
+    const closedHome = closed ? tabHomeMode(closed) : null;
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
       if (next.length === 0) setRightPanelOpen(false);
@@ -811,10 +871,113 @@ export function AppShell() {
     });
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
-      const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
+      // Succeed within the closed tab's own mode first; the per-mode derived
+      // active in the render falls back to the most recent tab otherwise.
+      const sameHome = fileTabs.filter((t) => t.id !== tabId && (closedHome === null || tabHomeMode(t) === closedHome));
+      const pool = sameHome.length > 0 ? sameHome : fileTabs.filter((t) => t.id !== tabId);
+      return pool.length > 0 ? pool[pool.length - 1].id : null;
     });
   }, [fileTabs]);
+
+  // ---- 任务区卡片：选择本地文件打开（Electron 原生对话框；浏览器模式上传副本） ----
+
+  const [homePickError, setHomePickError] = useState<string | null>(null);
+  const homePickErrorTimerRef = useRef<number | null>(null);
+  const localPickInputRef = useRef<HTMLInputElement | null>(null);
+  const localPickKindRef = useRef<HomeCardPickKind>("files");
+
+  const showHomePickError = useCallback((message: string) => {
+    setHomePickError(message);
+    if (homePickErrorTimerRef.current != null) window.clearTimeout(homePickErrorTimerRef.current);
+    homePickErrorTimerRef.current = window.setTimeout(() => setHomePickError(null), 6000);
+  }, []);
+
+  // 纯浏览器模式兑底：无本地路径桥（File 对象没有绝对路径），把选中文件
+  // 上传为工作副本（数据目录是允许根），再打开副本。
+  const openViaBrowserUpload = useCallback(async (picked: FileList | File[] | null) => {
+    const file = picked && picked[0];
+    if (!file) return;
+    try {
+      const form = new FormData();
+      form.append("files", file);
+      const res = await fetch("/api/uploads", { method: "POST", body: form });
+      const data = (await res.json().catch(() => ({}))) as {
+        uploaded?: Array<{ name: string; path: string }>;
+        error?: string;
+      };
+      const entry = data.uploaded?.[0];
+      if (!res.ok || !entry?.path) throw new Error(data.error ?? `HTTP ${res.status}`);
+      handleOpenFile(entry.path, entry.name || getFileName(entry.path));
+    } catch (error) {
+      showHomePickError(translate("rightPanel.pickFailed", { message: error instanceof Error ? error.message : String(error) }));
+    }
+  }, [handleOpenFile, showHomePickError, translate]);
+
+  /** 任务区「文件」「表格」卡片：让用户挑选本地文件直接在右侧面板打开。 */
+  // 纯浏览器模式/主进程旧版兑底：退化为隐藏 <input type=file>，选择后上传副本再打开
+  const startBrowserPick = useCallback((kind: HomeCardPickKind) => {
+    localPickKindRef.current = kind;
+    const input = localPickInputRef.current;
+    if (!input) return;
+    input.accept = kind === "sheets" ? ".xlsx,.xlsm,.xls,.csv,.tsv,.univer" : "";
+    input.value = "";
+    input.click();
+  }, []);
+
+  /** 任务区「文件」「表格」卡片：让用户挑选本地文件直接在右侧面板打开。 */
+  const pickLocalAndOpen = useCallback((kind: HomeCardPickKind) => {
+    const nativePick = getNativePickApi();
+    if (nativePick) {
+      void (async () => {
+        let picked: { canceled: boolean; filePath: string | null; error?: string };
+        try {
+          picked = await nativePick({
+            title: translate(kind === "sheets" ? "rightPanel.pickSheetTitle" : "rightPanel.pickFileTitle"),
+            ...(kind === "sheets"
+              ? { filters: [
+                  { name: translate("rightPanel.pickSheetFilterName"), extensions: ["xlsx", "xlsm", "xls", "csv", "tsv", "univer"] },
+                  { name: translate("rightPanel.pickAllFiles"), extensions: ["*"] },
+                ] }
+              : {}),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // 版本错配（改了 preload 后未重启 Electron 主进程，或旧打包壳）：
+          // 新 preload 暴露了 pickOpenFile 但旧 main 没注册 handler。静默退到
+          // 浏览器兑底路径而不是报错，功能依旧可用。
+          if (/No handler registered/i.test(message)) {
+            startBrowserPick(kind);
+            return;
+          }
+          showHomePickError(translate("rightPanel.pickFailed", { message }));
+          return;
+        }
+        if (picked && picked.error && !picked.canceled && !picked.filePath) {
+          showHomePickError(translate("rightPanel.pickFailed", { message: picked.error }));
+          return;
+        }
+        if (!picked || picked.canceled || !picked.filePath) return;
+        try {
+          // 把用户选中的文件目录加入本次进程可读根，/api/files 才能伺服原文件
+          const res = await fetch("/api/files/allow-local", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: picked.filePath }),
+          });
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { error?: string };
+            throw new Error(data.error ?? `HTTP ${res.status}`);
+          }
+        } catch (error) {
+          showHomePickError(translate("rightPanel.pickFailed", { message: error instanceof Error ? error.message : String(error) }));
+          return;
+        }
+        handleOpenFile(picked.filePath, getFileName(picked.filePath));
+      })();
+      return;
+    }
+    startBrowserPick(kind);
+  }, [handleOpenFile, showHomePickError, startBrowserPick, translate]);
 
   // ---- Web tabs (right-panel browser, Codex-style page preview) ----
 
@@ -976,10 +1139,40 @@ export function AppShell() {
         if (cancelled || !data.id || !data.filePath) return;
         if (data.id === lastOpenFileRequestIdRef.current) return;
         lastOpenFileRequestIdRef.current = data.id;
-        handleOpenFile(data.filePath, data.title ?? getFileName(data.filePath), {
-          sourceSessionId: selectedSession?.id ?? null,
-        });
-        void fetch("/api/open-file-request", { method: "DELETE" }).catch(() => {});
+        const filePath = data.filePath;
+        const markerId = data.id; // 收窄后提为常量：闭包里 TS 不保留属性收窄
+        const openWith = (homeMode?: "files" | "sheets") =>
+          handleOpenFile(filePath, data.title ?? getFileName(filePath), {
+            sourceSessionId: selectedSession?.id ?? null,
+            ...(homeMode ? { homeMode } : {}),
+          });
+        const lower = filePath.toLowerCase();
+        // 清 marker 用 compare-and-delete（带 id）：只清自己消费掉的那条——窗口期内
+        // agent 连续推送的新 marker（新 id）不被误删，下一轮 poll 正常打开。
+        // .univer 分支还需等 units 探测（2-3s）完成后才清，避免探测期间新 marker 被吞。
+        const clearMarker = () => {
+          void fetch(`/api/open-file-request?id=${encodeURIComponent(markerId)}`, { method: "DELETE" }).catch(() => {});
+        };
+        if (lower.endsWith(".univer")) {
+          // Slide/doc decks belong under Files; sheet workbooks under
+          // Spreadsheets — ask the backend for the unit kinds so agent-pushed
+          // files land in the right tab bar (user report 2026-08-28: a PPT
+          // landed under the Spreadsheets tab). ~2-3s roundtrip, worth it.
+          fetch(`/api/univer/units?file=${encodeURIComponent(filePath)}`)
+            .then((r) => r.json() as Promise<{ units?: Array<{ kind: string }> }>)
+            .then((d) => {
+              const hasSheet = Array.isArray(d.units) && d.units.some((u) => u.kind === "sheet");
+              openWith(hasSheet ? "sheets" : "files");
+            })
+            .catch(() => openWith())
+            .finally(clearMarker);
+        } else if (lower.endsWith(".xlsx") || lower.endsWith(".xls") || lower.endsWith(".csv")) {
+          openWith("sheets");
+          clearMarker();
+        } else {
+          openWith("files");
+          clearMarker();
+        }
       } catch {
         /* transient — next poll retries */
       }
@@ -1198,7 +1391,7 @@ export function AppShell() {
           />
           {/* Right panel toggle — in the top bar, left of the window controls */}
           <button
-            onClick={() => setRightPanelOpen((v) => !v)}
+            onClick={toggleRightPanel}
             aria-controls="file-panel"
             aria-expanded={rightPanelOpen}
             aria-pressed={rightPanelOpen}
@@ -1706,7 +1899,6 @@ export function AppShell() {
               onOpenFile={handleOpenLinkedFile}
               onOpenWebUrl={handleOpenWebUrl}
               onOpenChangedFile={handleOpenChangedFile}
-              onOpenGeneratedFile={handleOpenGeneratedFile}
               jumpTarget={jumpTarget}
               aiEditContext={aiEditContext}
               onAiEditContextConsumed={() => setAiEditContext(null)}
@@ -1778,6 +1970,7 @@ export function AppShell() {
         className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}${rightPanelMaximized ? " right-panel-maximized" : ""}`}
         style={{
           "--right-panel-width": `${rightPanelResizer.width}px`,
+          position: "relative",
           display: "flex",
           flexDirection: "column",
           borderLeft: "1px solid var(--hairline)",
@@ -1797,8 +1990,56 @@ export function AppShell() {
           background: "var(--bg-panel)",
           borderBottom: "1px solid var(--hairline)",
         }}>
-          {/* Function pills: Browser | Files | Sheets | Terminal */}
-          {(["browser", "files", "sheets", "terminal"] as const).map((mode) => {
+          {/* Home (Codex-style task cards) */}
+          <button
+            type="button"
+            onClick={() => {
+              // Toggle: the grid icon opens the task-card home; clicking it
+              // again returns to the previous tab view so already-open file/
+              // web tabs stay reachable.
+              if (rightPanelMode === "home") {
+                let fallback = lastNonHomeModeRef.current;
+                if ((fallback === "files" || fallback === "sheets") && !fileTabs.some((t) => t.kind === "file")) {
+                  fallback = "browser"; // no file tabs left → land somewhere useful
+                }
+                setRightPanelMode(fallback);
+              } else {
+                setRightPanelMode("home");
+              }
+            }}
+            title={translate(rightPanelMode === "home" ? "rightPanel.backToTabs" : "rightPanel.home")}
+            aria-label={translate(rightPanelMode === "home" ? "rightPanel.backToTabs" : "rightPanel.home")}
+            aria-pressed={rightPanelMode === "home"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 28,
+              height: 28,
+              marginRight: 4,
+              background: rightPanelMode === "home" ? "var(--accent-soft)" : "none",
+              border: "none",
+              borderRadius: 7,
+              color: rightPanelMode === "home" ? "var(--accent-hover)" : "var(--text-muted)",
+              cursor: "pointer",
+              flexShrink: 0,
+              transition: "background 0.12s, color 0.12s",
+            }}
+            onMouseEnter={(e) => {
+              if (rightPanelMode !== "home") { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }
+            }}
+            onMouseLeave={(e) => {
+              if (rightPanelMode !== "home") { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--text-muted)"; }
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={rightPanelMode === "home" ? 2 : 1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
+            </svg>
+          </button>
+
+          {/* Function pills: Browser | Files | Sheets | Terminal — hidden on
+              the card home so the launcher stays clean (Codex-style). */}
+          {rightPanelMode !== "home" && (["browser", "files", "sheets", "terminal"] as const).map((mode) => {
             const isActive = rightPanelMode === mode;
             const iconMap = {
               browser: <><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>,
@@ -1919,6 +2160,107 @@ export function AppShell() {
 
         {/* Right-panel content: mode-switched */}
         <div style={{ flex: 1, overflow: "hidden", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          {/* Home: Codex-style task cards */}
+          {rightPanelMode === "home" && (() => {
+            const CARD_ICONS: Record<string, React.ReactNode> = {
+              files: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>,
+              sheets: <><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /></>,
+              browser: <><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>,
+              terminal: <><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></>,
+            };
+            const cards: Array<{ key: "files" | "sheets" | "browser" | "terminal"; color: string; desc: string; onClick: () => void }> = [
+              { key: "files", color: "#2a7aff", desc: translate("rightPanel.cardFilesDesc"), onClick: () => pickLocalAndOpen("files") },
+              { key: "sheets", color: "#14b8a6", desc: translate("rightPanel.cardSheetsDesc"), onClick: () => pickLocalAndOpen("sheets") },
+              { key: "browser", color: "#7c5cff", desc: translate("rightPanel.cardBrowserDesc"), onClick: () => openWebTab(null) },
+              { key: "terminal", color: "#64748b", desc: translate("rightPanel.cardTerminalDesc"), onClick: () => setRightPanelMode("terminal") },
+            ];
+            return (
+              <div style={{ height: "100%", overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 18px" }}>
+                <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text)", marginBottom: 2 }}>{translate("rightPanel.homeTitle")}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: homePickError ? 6 : 18 }}>{translate("rightPanel.homeSubtitle")}</div>
+                  {homePickError && (
+                    <div
+                      role="alert"
+                      style={{
+                        width: "100%",
+                        padding: "7px 11px",
+                        marginBottom: 12,
+                        background: "color-mix(in srgb, #ef4444 10%, transparent)",
+                        border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)",
+                        borderRadius: 9,
+                        fontSize: 11.5,
+                        lineHeight: 1.5,
+                        color: "#ef4444",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {homePickError}
+                    </div>
+                  )}
+                  <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+                    {cards.map((card) => (
+                      <button
+                        key={card.key}
+                        type="button"
+                        onClick={card.onClick}
+                        title={translate(`rightPanel.${card.key}`)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 14,
+                          width: "100%",
+                          padding: "16px 18px",
+                          background: "var(--bg-panel)",
+                          border: "1px solid var(--hairline)",
+                          borderRadius: 14,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                          transition: "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = "translateY(-1px)";
+                          e.currentTarget.style.boxShadow = "0 4px 14px rgba(0,0,0,0.08)";
+                          e.currentTarget.style.borderColor = card.color;
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = "none";
+                          e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.04)";
+                          e.currentTarget.style.borderColor = "var(--hairline)";
+                        }}
+                      >
+                        <span
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            width: 40,
+                            height: 40,
+                            borderRadius: 12,
+                            background: `color-mix(in srgb, ${card.color} 12%, transparent)`,
+                            color: card.color,
+                            flexShrink: 0,
+                          }}
+                        >
+                          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            {CARD_ICONS[card.key]}
+                          </svg>
+                        </span>
+                        <span style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0 }}>
+                          <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--text)" }}>{translate(`rightPanel.${card.key}`)}</span>
+                          <span style={{ fontSize: 11.5, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{card.desc}</span>
+                        </span>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ flexShrink: 0 }}>
+                          <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {/* Browser mode */}
           {rightPanelMode === "browser" && (
             <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -1985,11 +2327,37 @@ export function AppShell() {
             </div>
           )}
 
-          {/* Files mode */}
-          {rightPanelMode === "files" && (
-            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+          {/* Files + Sheets modes — mounted for the WHOLE app lifetime: only
+              closing a tab (X) or quitting the app unmounts a viewer (user
+              request 2026-08-27 — no unmount on mode switches or hiding the
+              panel; the panel container itself is always mounted and just
+              collapses to width 0). Hidden via visibility whenever the panel
+              shows another mode; within the pair the inactive one is hidden
+              too. */}
+          <div style={{
+            position: "absolute",
+            top: "calc(36px + env(safe-area-inset-top))",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            visibility: rightPanelMode === "files" || rightPanelMode === "sheets" ? "visible" : "hidden",
+            zIndex: rightPanelMode === "files" || rightPanelMode === "sheets" ? 1 : 0,
+          }}>
+          {(() => {
+            // A file tab lives in exactly ONE mode (tabHomeMode): the .univer
+            // produced by AI-editing a document stays here in 文件, xlsx/csv
+            // live in 表格 — no duplicate tab in both bars (user report
+            // 2026-08-27). When the global active tab belongs to the other
+            // mode, fall back to this mode's most recent tab so the pane is
+            // never blank.
+            const fileModeTabs = fileTabs.filter((t) => t.kind === "file" && tabHomeMode(t) === "files");
+            const activeId = fileModeTabs.some((t) => t.id === activeFileTabId)
+              ? activeFileTabId
+              : fileModeTabs[fileModeTabs.length - 1]?.id ?? null;
+            return (
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", visibility: rightPanelMode === "files" ? "visible" : "hidden", zIndex: rightPanelMode === "files" ? 1 : 0 }}>
               {/* File tab bar */}
-              {fileTabs.filter((t) => t.kind === "file").length > 0 && (
+              {fileModeTabs.length > 0 && (
                 <div style={{
                   display: "flex", alignItems: "center",
                   height: 34, flexShrink: 0,
@@ -1998,56 +2366,86 @@ export function AppShell() {
                 }}>
                   <div style={{ flex: 1, overflow: "hidden" }}>
                     <TabBar
-                      tabs={fileTabs.filter((t) => t.kind === "file")}
-                      activeTabId={activeFileTabId ?? ""}
+                      tabs={fileModeTabs}
+                      activeTabId={activeId ?? ""}
                       onSelectTab={setActiveFileTabId}
                       onCloseTab={handleCloseFileTab}
                     />
                   </div>
                 </div>
               )}
-              {/* File content */}
-              {fileTabs.filter((t) => t.kind === "file").map((tab) => {
-                const isActive = tab.id === activeFileTabId;
-                if (!isActive || !tab.filePath) return null;
-                return (
-                  <FileViewer
-                    key={tab.id}
-                    filePath={tab.filePath}
-                    cwd={activeCwd ?? undefined}
-                    sourceSessionId={tab.sourceSessionId}
-                    gitRefreshKey={explorerRefreshKey}
-                    initialDisplayMode={tab.initialDisplayMode}
-                    onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
-                    onOpenFile={(filePath) => handleOpenFile(
-                      filePath,
-                      getFileName(filePath),
-                      { sourceSessionId: tab.sourceSessionId },
-                    )}
-                    onAiEdit={handleAiEdit}
-                  />
-                );
-              })}
-              {fileTabs.filter((t) => t.kind === "file").length === 0 && (
-                <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12, flexDirection: "column", gap: 8 }}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
-                  </svg>
-                  <span>{translate("files.noneOpen")}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Sheets mode — only show spreadsheet-related file tabs */}
-          {rightPanelMode === "sheets" && (
-            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+              {/* File content — keep-alive stack: every open tab stays mounted;
+                  inactive tabs are hidden with visibility (NOT unmounted), so
+                  gateway iframes (pptx read-only preview / Univer viewer) and
+                  the Univer grid survive tab switches instead of reloading on
+                  every flip (user feedback 2026-08-27). visibility:hidden keeps
+                  layout boxes sized, so background-mounted viewers measure a
+                  real container and lay out correctly when revealed. */}
               {(() => {
-                const spreadsheetTabs = fileTabs.filter((t) => {
-                  if (t.kind !== "file" || !t.filePath) return false;
-                  const lower = t.filePath.toLowerCase();
-                  return lower.endsWith(".xlsx") || lower.endsWith(".univer") || lower.endsWith(".csv") || lower.endsWith(".xls");
-                });
+                if (fileModeTabs.length === 0) {
+                  return (
+                    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12, flexDirection: "column", gap: 8 }}>
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+                      </svg>
+                      <span>{translate("files.noneOpen")}</span>
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                    {fileModeTabs.map((tab) => {
+                      const isActive = tab.id === activeId;
+                      const p = tab.filePath;
+                      if (!p) return null;
+                      return (
+                        <div
+                          key={tab.id}
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            // "inherit" (NOT "visible"): a descendant with
+                            // explicit visible would punch through the mode
+                            // containers' visibility:hidden and render file
+                            // content in browser/terminal/home modes.
+                            visibility: isActive ? "inherit" : "hidden",
+                            zIndex: isActive ? 1 : 0,
+                            // Hidden stacks must never eat clicks or hold focus.
+                            pointerEvents: isActive ? "auto" : "none",
+                          }}
+                        >
+                          <FileViewer
+                            filePath={p}
+                            cwd={activeCwd ?? undefined}
+                            sourceSessionId={tab.sourceSessionId}
+                            gitRefreshKey={explorerRefreshKey}
+                            initialDisplayMode={tab.initialDisplayMode}
+                            onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
+                            onOpenFile={(filePath) => handleOpenFile(
+                              filePath,
+                              getFileName(filePath),
+                              { sourceSessionId: tab.sourceSessionId },
+                            )}
+                            onAiEdit={handleAiEdit}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+            );
+          })()}
+              {/* Sheets mode — spreadsheet-home tabs only */}
+              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", visibility: rightPanelMode === "sheets" ? "visible" : "hidden", zIndex: rightPanelMode === "sheets" ? 1 : 0 }}>
+              {(() => {
+                const spreadsheetTabs = fileTabs.filter((t) => t.kind === "file" && !!t.filePath && tabHomeMode(t) === "sheets");
+                // Fall back to the most recent sheets tab when the global
+                // active tab is a files-mode one (see the files-mode note).
+                const activeSheetId = spreadsheetTabs.some((t) => t.id === activeFileTabId)
+                  ? activeFileTabId
+                  : spreadsheetTabs[spreadsheetTabs.length - 1]?.id ?? null;
                 if (spreadsheetTabs.length > 0) {
                   return (
                     <>
@@ -2060,35 +2458,50 @@ export function AppShell() {
                         <div style={{ flex: 1, overflow: "hidden" }}>
                           <TabBar
                             tabs={spreadsheetTabs}
-                            activeTabId={activeFileTabId ?? ""}
+                            activeTabId={activeSheetId ?? ""}
                             onSelectTab={setActiveFileTabId}
                             onCloseTab={handleCloseFileTab}
                           />
                         </div>
                       </div>
-                      {(() => {
-                        const activeSheetTab = spreadsheetTabs.find((t) => t.id === activeFileTabId);
-                        if (activeSheetTab?.filePath) {
+                      {/* Keep-alive stack (same as files mode): switching
+                          between spreadsheets keeps each Univer grid and its
+                          gateway iframes alive instead of reloading. */}
+                      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                        {spreadsheetTabs.map((tab) => {
+                          const isActive = tab.id === activeSheetId;
+                          const p = tab.filePath;
+                          if (!p) return null;
                           return (
-                            <FileViewer
-                              key={activeSheetTab.id}
-                              filePath={activeSheetTab.filePath}
-                              cwd={activeCwd ?? undefined}
-                              sourceSessionId={activeSheetTab.sourceSessionId}
-                              gitRefreshKey={explorerRefreshKey}
-                              initialDisplayMode={activeSheetTab.initialDisplayMode}
-                              onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
-                              onOpenFile={(filePath) => handleOpenFile(
-                                filePath,
-                                getFileName(filePath),
-                                { sourceSessionId: activeSheetTab.sourceSessionId },
-                              )}
-                              onAiEdit={handleAiEdit}
-                            />
+                            <div
+                              key={tab.id}
+                              style={{
+                                position: "absolute",
+                                inset: 0,
+                                // Same inherit-not-visible rule as files mode.
+                                visibility: isActive ? "inherit" : "hidden",
+                                zIndex: isActive ? 1 : 0,
+                                pointerEvents: isActive ? "auto" : "none",
+                              }}
+                            >
+                              <FileViewer
+                                filePath={p}
+                                cwd={activeCwd ?? undefined}
+                                sourceSessionId={tab.sourceSessionId}
+                                gitRefreshKey={explorerRefreshKey}
+                                initialDisplayMode={tab.initialDisplayMode}
+                                onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
+                                onOpenFile={(filePath) => handleOpenFile(
+                                  filePath,
+                                  getFileName(filePath),
+                                  { sourceSessionId: tab.sourceSessionId },
+                                )}
+                                onAiEdit={handleAiEdit}
+                              />
+                            </div>
                           );
-                        }
-                        return null;
-                      })()}
+                        })}
+                      </div>
                     </>
                   );
                 }
@@ -2101,8 +2514,8 @@ export function AppShell() {
                   </div>
                 );
               })()}
-            </div>
-          )}
+              </div>
+          </div>
 
           {/* Terminal mode (moved from the left sidebar ActivityBar) */}
           {rightPanelMode === "terminal" && (
@@ -2252,6 +2665,20 @@ export function AppShell() {
         onOpenFile={(path, name) => handleOpenFile(path, name)}
       />
     )}
+    {/* 任务区「文件/表格」卡片的纯浏览器兑底：无 Electron 桥时用隐藏 input 选本地
+        文件上传为工作副本再打开（渲染层拿不到绝对路径）。*/}
+    <input
+      ref={localPickInputRef}
+      type="file"
+      tabIndex={-1}
+      aria-hidden="true"
+      style={{ display: "none" }}
+      onChange={(event) => {
+        const files = event.target.files;
+        event.target.value = "";
+        void openViaBrowserUpload(files);
+      }}
+    />
     <CommandPalette
       open={paletteOpen}
       mode={paletteMode}

@@ -1815,9 +1815,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   // Load session on mount
   useEffect(() => {
+    // 卸载防护：loadSession 的异步续体在组件卸载后到达时，不得再 connectEvents
+    //（旧实现 cleanup closeEvents 后续体又新开 EventSource → 孤儿连接永不关闭 +
+    // 卸载后 setState）。cleanup 置 cancelled，续体入口检查直接返回。
+    let cancelled = false;
     if (session) {
       sessionIdRef.current = session.id;
       loadSession(session.id, true, true).then((agentState) => {
+        if (cancelled) return;
         if (agentState?.running) {
           loadTools(session.id);
           if (agentState.state?.isStreaming || agentState.state?.isPromptRunning) {
@@ -1850,6 +1855,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       });
     }
     return () => {
+      cancelled = true;
       bashRecoveryIdRef.current += 1;
       cancelEventStreamGrace();
       closeEvents();

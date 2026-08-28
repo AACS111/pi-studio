@@ -218,8 +218,7 @@ SkillsConfig.tsx       skills 加载/搜索/安装弹窗
 ProjectTrustDialog.tsx 项目信任确认弹窗
 DirectoryPicker.tsx    目录选择器（盘符/浏览）
 ExtensionStatusBar.tsx 扩展状态条（ANSI 清洗）
-ChangedFilesCard.tsx   助手消息下的变更文件摘要卡
-GeneratedFilesCard.tsx  生成文件卡（.xlsx/.univer/文档/图片等交付物，每行支持右侧打开 / 打开所在文件夹 / 外部打开；.univer 的外部动作解析为同名 .xlsx）
+ChangedFilesCard.tsx   助手消息下的统一文件卡（变更+生成都在这张卡：M/A 徽标 + 扩展名标签 + diff 统计；每行支持右侧打开 / 打开所在文件夹 / 外部打开；.univer 的外部动作解析为同名 .xlsx）
 PwaRegistration.tsx    Service Worker 注册
 MobilePwaLayout.tsx    移动 PWA 布局
 FileIcons.tsx          文件图标

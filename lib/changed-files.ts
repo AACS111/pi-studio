@@ -45,24 +45,6 @@ export function isFilePathInsideCwd(filePath: string, cwd: string): boolean {
   return file === root || file.startsWith(root + "/");
 }
 
-// Deliverable-style extensions: spreadsheets, office docs, data exports,
-// images, PDFs and archives. Source-code changes stay on the changed-files
-// card (with git diff stats); these are the "generated documents" a user
-// wants to open in the viewer / Explorer / external app.
-const GENERATED_EXTENSIONS = new Set([
-  "xlsx", "xls", "univer", "csv", "tsv",
-  "docx", "doc", "pptx", "ppt",
-  "pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico",
-  "zip", "rar", "7z", "tar", "gz",
-  "md", "html", "htm", "txt", "json",
-]);
-
-function getFileExtension(filePath: string): string {
-  const base = filePath.split("/").pop() ?? "";
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
-}
-
 function extractFiles(blocks: AssistantContentBlock[] | undefined | null, cwd?: string): ChangedFile[] {
   if (!blocks || blocks.length === 0) return [];
 
@@ -100,24 +82,29 @@ function extractFiles(blocks: AssistantContentBlock[] | undefined | null, cwd?: 
  * When `cwd` is provided, files outside the project directory are filtered
  * out (temp scripts, system-temp exports, other folders never count).
  */
+/** 提取缓存：blocks 引用 → cwd → 结果（WeakMap 随 blocks 被 GC 自动清）。 */
+const extractCache = new WeakMap<AssistantContentBlock[], Map<string, ChangedFile[]>>();
+
 export function extractChangedFiles(
   blocks: AssistantContentBlock[] | undefined | null,
   cwd?: string,
 ): ChangedFile[] {
+  // 缓存：ChatWindow 渲染循环对同一 message 的 blocks 每帧调用（流式期间每 token
+  // 一帧），extractFiles 是全块遍历解析，是长会话卡顿热点之一。同一 blocks 引用
+  //（React 数据流不可变约定）+ 同 cwd 直接命中；引用被 GC 后自动清（无膨胀）。
+  if (blocks) {
+    let byCwd = extractCache.get(blocks);
+    if (!byCwd) {
+      byCwd = new Map();
+      extractCache.set(blocks, byCwd);
+    }
+    const key = cwd ?? "";
+    const hit = byCwd.get(key);
+    if (hit) return hit;
+    const result = extractFiles(blocks, cwd);
+    byCwd.set(key, result);
+    return result;
+  }
   return extractFiles(blocks, cwd);
 }
 
-/**
- * Extract files the assistant turn *generated* as deliverables — `write`-kind
- * tool calls whose path ends in a document/data/image extension (.xlsx,
- * .univer, .csv, .docx, .pdf, .png, .md, …). Source-code edits are excluded
- * (they stay on the changed-files card); the result feeds the generated-files
- * card with open-in-viewer / reveal-in-folder / open-external actions.
- */
-export function extractGeneratedFiles(
-  blocks: AssistantContentBlock[] | undefined | null,
-  cwd?: string,
-): ChangedFile[] {
-  const all = extractFiles(blocks, cwd);
-  return all.filter((file) => file.kind === "write" && GENERATED_EXTENSIONS.has(getFileExtension(file.filePath)));
-}

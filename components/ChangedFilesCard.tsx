@@ -6,6 +6,17 @@ import { getFileName, getRelativeFilePath, joinFilePath, resolveFilePath } from 
 import { parseUnifiedPatch } from "@/lib/patch";
 import { useI18n } from "@/hooks/useI18n";
 
+// Electron 桥（preload.cjs contextBridge）：revealFile 走主进程原生
+// shell.showItemInFolder，资源管理器窗口才能可靠置前；浏览器模式下不存在。
+interface PiElectronRevealApi {
+  revealFile?: (filePath: string) => Promise<{ ok: boolean; error?: string; filePath?: string }>;
+}
+
+function getNativeReveal(): PiElectronRevealApi["revealFile"] | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { piElectron?: PiElectronRevealApi }).piElectron?.revealFile;
+}
+
 const MAX_COLLAPSED = 8;
 
 const KIND_COLORS: Record<ChangedFile["kind"], string> = {
@@ -28,6 +39,12 @@ interface DiffStatEntry {
 
 function isAbsolutePath(filePath: string): boolean {
   return filePath.startsWith("/") || /^[a-zA-Z]:[\/]/.test(filePath);
+}
+
+function getExt(filePath: string): string {
+  const base = filePath.split("/").pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
 
 function countDiffStats(patch: string): { added: number; removed: number } {
@@ -87,10 +104,11 @@ const diffStatsCache = new Map<string, Promise<DiffStatEntry | null>>();
 
 /**
  * Compact card shown under an assistant message listing the files the turn
- * edited/wrote. Each row opens the file in the right-hand viewer in diff mode
- * (the same git diff view used by the explorer's Changes list) and offers
- * reveal-in-folder / open-external actions. Files the agent wrote and then
- * deleted (scratch scripts) are hidden once the server confirms they are gone.
+ * edited/wrote — the single unified file card. Each row opens the file in the
+ * right-hand viewer (diff mode for tracked changes; plain view for generated
+ * deliverables without git history) and offers reveal-in-folder /
+ * open-external actions. Files the agent wrote and then deleted (scratch
+ * scripts) are hidden once the server confirms they are gone.
  */
 export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
   const { t } = useI18n();
@@ -168,11 +186,28 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
   }, []);
 
   const runAction = async (filePath: string, action: ActionKey) => {
-    const endpoint = action === "reveal" ? "/api/files/reveal" : "/api/files/open-external";
     const resolved = resolveFilePath(filePath, cwd);
     setFeedback((prev) => ({ ...prev, [filePath]: { action, ok: true } }));
     let ok = false;
     let message = "";
+    let nativeHandled = false;
+    if (action === "reveal") {
+      const nativeReveal = getNativeReveal();
+      if (nativeReveal) {
+        // Electron：主进程 shell.showItemInFolder（原生置前，绕过后台进程前台锁）。
+        // 原生成功则跳过 HTTP；原生失败仍回退服务端路由再试一次。
+        nativeHandled = true;
+        try {
+          const res = await nativeReveal(resolved);
+          ok = Boolean(res?.ok);
+          if (!ok) message = res?.error || "Could not open Explorer";
+        } catch (e) {
+          message = e instanceof Error ? e.message : String(e);
+        }
+      }
+    }
+    if (nativeHandled && ok) return;
+    const endpoint = action === "reveal" ? "/api/files/reveal" : "/api/files/open-external";
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -193,7 +228,7 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
     } else {
       setActionError({ filePath, message });
       if (errorTimerRef.current) clearTimeout(errorTimerRef.current);
-      errorTimerRef.current = setTimeout(() => setActionError(null), 5000);
+      errorTimerRef.current = setTimeout(() => setActionError(null), 8000);
     }
     window.setTimeout(() => {
       setFeedback((prev) => {
@@ -377,6 +412,12 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
                   </span>
                 )}
               </button>
+
+              {getExt(file.filePath) && (
+                <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)", letterSpacing: "0.02em" }}>
+                  {getExt(file.filePath)}
+                </span>
+              )}
 
               <span style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
                 <button

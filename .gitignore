@@ -75,3 +75,4 @@ tools/browser-use-server/*.log
 electron/test-*.cjs
 electron/test-*.js
 electron/test-api.js
+.local/agent-work/

@@ -172,6 +172,10 @@ export class AgentSessionWrapper {
   private shutdownPromise: Promise<void> | null = null;
   private _alive = true;
   readonly inner: AgentSessionLike;
+  // 模型偶发把长内容当文本输出并撞上输出上限（stopReason "length"），pi 以此结束
+  // 回合且不自动续跑——任务静默卡死（2026-08-28 实测：PPT 创建会话空转 9 分钟）。
+  private lastAssistantStopReason: string | null = null;
+  private lengthAutoContinues = 0;
 
   constructor(inner: AgentSessionLike) {
     this.inner = inner;
@@ -202,12 +206,50 @@ export class AgentSessionWrapper {
       if (event.type === "agent_end") {
         invalidateSessionListCache();
       }
+      if (event.type === "entry_appended") {
+        const entry = event.entry as { type?: string; message?: { role?: string; stopReason?: string } } | undefined;
+        if (entry?.type === "message" && entry.message?.role === "assistant") {
+          this.lastAssistantStopReason = entry.message.stopReason ?? null;
+        }
+      }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       this.emit(event);
       if (RUNNING_STATE_EVENT_TYPES.has(event.type)) notifyRunningChange();
     });
     this.resetIdleTimer();
     notifyRunningChange();
+  }
+
+  /**
+   * 检测到回合因输出长度截断（stopReason "length"）时自动补一次「继续」，
+   * 避免任务静默卡死。每个外层用户 prompt 最多触发一次（防循环）。
+   */
+  private maybeAutoContinueOnLength(): void {
+    if (this.lastAssistantStopReason !== "length") return;
+    this.lastAssistantStopReason = null;
+    if (this.lengthAutoContinues >= 1) return;
+    this.lengthAutoContinues += 1;
+    console.log("[pi-studio] assistant turn ended with stopReason=length; auto-continuing once");
+    this.promptRunning = true;
+    notifyRunningChange();
+    this.inner
+      .prompt("你的上一条回复因达到输出长度上限被截断。不要重复已输出内容，从中断处继续完成用户任务。", { source: "rpc" })
+      .then(() => {
+        this.promptRunning = false;
+        this.resetIdleTimer();
+        this.emit({ type: "prompt_done" });
+        notifyRunningChange();
+      })
+      .catch((error) => {
+        this.promptRunning = false;
+        this.resetIdleTimer();
+        this.emit({
+          type: "prompt_error",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        this.emit({ type: "prompt_done" });
+        notifyRunningChange();
+      });
   }
 
   setForceEmptySystemPrompt(force: boolean): void {
@@ -378,6 +420,7 @@ export class AgentSessionWrapper {
         const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
         const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
         this.promptRunning = true;
+        this.lengthAutoContinues = 0; // 每个用户 prompt 重置自动续跑预算
         notifyRunningChange();
         this.inner.prompt(command.message as string, {
           ...(promptImages?.length ? { images: promptImages } : {}),
@@ -388,6 +431,7 @@ export class AgentSessionWrapper {
           this.resetIdleTimer();
           if (!streamingBehavior) this.emit({ type: "prompt_done" });
           notifyRunningChange();
+          this.maybeAutoContinueOnLength();
         }).catch((error) => {
           this.promptRunning = false;
           this.resetIdleTimer();

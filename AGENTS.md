@@ -27,7 +27,7 @@
 ## 核心铁律
 
 - **开发期间永远不要跑 `next build`** — 它污染 `.next/` 并搞坏 `npm run dev`。打包构建走独立目录 `.next-pkg`（`PI_WEB_DIST_DIR`），互不干扰。
-- **Agent 永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。sheet-edit 技能强制这条。
+- **Agent 永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。**该铁律对所有 skill 一律适用，不限于 sheet-edit**：任何 skill 模板/流水线**不得写死 `univer worktree merge`**（office-edit 第 3 步已改为 `worktree ready`），编辑完只标记 ready 即停手。
 - **用户说「编辑这张表」又没点名文件时，默认编辑 open-file 标记记录的文件**（右侧查看器里打开的那个）。用 `GET /api/open-file` 或读 `<数据目录>/.internal/pi-web-open-file.json`；缺失/未设置就问用户。
 - 右侧浏览器**仅 Electron 模式可用**（`npm run dev:electron` 或打包应用）；`npm run dev` 纯浏览器模式无桥，`/api/browser/control/*` 返回 502。
 - 每个改动必须过 `tsc --noEmit` + `npm run lint` 再交付；Univer 改动还要 headless 浏览器往返验证。
@@ -80,3 +80,4 @@ npm run pack           # 安装版 + 便携版
 - **提供商列表能力驱动，绝不 id 驱动**（`lib/provider-listing.ts`）；双认证提供商（anthropic、github-copilot）恰好出现一次、绝不双列。
 - **模型测试路由**是 `app/api/models-config/test/route.ts`；`app/api/models/test/` 不是真实路由。
 - **会话文件可整文件重写**：`parentSession` 头字段只是显示元数据，删除会话时用它级联重挂子会话。
+- **办公文档两段式打开**（.doc/.docx/.ppt/.pptx，与表格体验一致）：默认直接原生预览 —— doc/docx 走 mammoth HTML 预览（DocumentViewer），ppt/pptx 走隐藏缓存只读预览（`POST /api/univer/ppt-preview` 转换副本落在 `.internal/univer-view-cache/` 不进任何文件列表 + 网关 iframe）；只有点「AI 编辑」才经 `POST /api/univer/from-xlsx` 生成可见的 `<basename>-ai-edit.univer` 进 worktree 工作流。agent 对话里被要求「创建/编辑 PPT、文档」时一律用 office-edit skill 操作 .univer 文件并 `open-file-request` 推右侧，需要交付原件再 export 回 .docx/.pptx。#坑 UniferFileViewer 对纯 doc/slide 单元绝不能走 `/api/univer/view` 的 xlsx 导出（CLI 报 cannot export doc unit as xlsx），已按 units 含 sheet 与否门控。

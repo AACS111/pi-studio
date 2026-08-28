@@ -7,7 +7,7 @@
 
 ## Changed-files 卡片（每轮变更摘要）
 - `extractChangedFiles()`（`lib/changed-files.ts`）扫描助手 turn 的 toolCall 块里的 `edit`/`write` 工具（input 字段是 `path` 不是 `filePath`），去重返回 `{filePath, kind}`。
-- **非项目文件不显示（2026-08-12）**：两个提取函数都接受 `cwd` 参数，绝对路径在会话 cwd 之外（Temp 脚本、其他目录产物）一律过滤；相对路径视为项目内。`extractGeneratedFiles()` 额外只保留 `write` + 交付物扩展名（.xlsx/.univer/.csv/.docx/.pdf/.png/.md/…）供生成文件卡使用。
+- **非项目文件不显示（2026-08-12）**：提取函数接受 `cwd` 参数，绝对路径在会话 cwd 之外（Temp 脚本、其他目录产物）一律过滤；相对路径视为项目内。~~`extractGeneratedFiles()` 另拆生成文件卡~~（2026-08-27 已合并：生成文件与变更共用同一张 `ChangedFilesCard` 统一展示，避免两张卡重复列出同一批文件；原 `extractGeneratedFiles`/`GeneratedFilesCard` 已删除）。
 - **生成文件自动推右侧（2026-08-12）**：agent 生成表格后 `POST /api/open-file-request`（`{filePath,title?}`），AppShell 每 3s 轮询该标记并自动开文件 tab（作用一次后 DELETE），与 /api/browser 的网页预览同一模式。
 - 卡片由 `ChatWindow` 渲染，**不在 MessageView 内**：assistant turn 被拆成折叠的 `ProcessDetailsGroup`（思考+工具调用）和独立最终回答消息。卡片必须放在**消息 footer 层**（回答文本下方、用量统计上方），否则会被折叠进 process group。
 - 变更文件从**组内所有 assistant 消息**（`userIdx+1..endIdx`）收集，不只看最终回答。
@@ -64,7 +64,7 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 - **每个文件一个 Univer 实例**。`XlsxViewer` 在 scope 切换间保活；scope 变化（分支切换 / 外部 `univer execute` 提交）**就地 diff 应用**（单元格 v/t/f/s 走 `FRange.setValue`，合并走 `merge()` / `sheet.command.remove-worksheet-merge`），不是销毁重建。只有结构性变化（sheet 集合/名称/尺寸、CF/校验/筛选资源、或 >8000 个变更单元格）才回退重建。
 - **解析 scope 缓存**（`loadScopeData`/`warmScopeData`）：每个 scope 的解析工作簿按 `scopeKey = <file>::wt:<id>::<headCommit>`（或 `::trunk::<mtime>`）缓存。`UniverFileViewer` 的轮询只在**正在看的** scope 内容外部变化时才推进 `ackRevRef` — 其他 worktree 的提交、状态变化、用户自己的自动保存（`ownSaveRef`：worktree=headCommit seq，trunk=文件 mtime）永不重同步网格。
 - `/api/univer/worktrees` 返回 `trunkRev`（文件 mtime）供前端缓存 key；合并会使其失效（无论看的是什么）。
-- **Agent 铁律：永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。sheet-edit 技能强制这条。
+- **Agent 铁律：永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。**该铁律对所有 skill 一律适用**：任何 skill 模板/流水线不得写死 `univer worktree merge`，编辑完只标记 ready 即停手。
 - **验证纪律**：每个改动必须过 tsc + eslint + headless 浏览器往返（trunk→worktree→trunk 带样式断言）再交付 — 绝不把未验证状态交给用户（浏览器可能跑着旧 chunk/scope 缓存）。坑位清单见 sheet-edit 技能的交付流程铁律/常见坑（`setValue` 合并语义、`s:null` 是唯一清样式方式、SheetJS 丢对齐、`getCellData().s` 是样式 id 要读 `wb.save().styles[id]`、daemon 文件锁、dev 端口 10141）。
 
 ## 加密 xlsx（KET 桥）
@@ -132,3 +132,29 @@ pi-studio 相关临时产物都落在系统 Temp（`%TEMP%` / `os.tmpdir()`）�
 - `cdp-test-profile` / `piweb-cdp-smoke-*` / `e2e-profile` 等 — 测试/验证临时 profile
 
 全部可在 pi-studio 未运行时安全删除。若想自动清理：在 dev 启动脚本（`restart-dev.ps1` 或 dev 前置命令）里加一步删除这些前缀的旧文件即可；不要删正在运行的会话可能仍要读的 `pi-bash-*`（仅删除超过若干小时的）。
+
+## 多 Agent 项目组：角色边界与产物可读性（run bcfc16cd 复盘修复）
+
+一次真实 run（bcfc16cd，40 分钟被手动停止）暴露 7 项机制缺陷，2026-08-27 全部修复（回归测试 `lib/team/role-boundary.test.mjs`）：
+
+- **写权限策略**（`AgentDef.writePolicy: "all"|"docs"|"none"`，缺省推导 = toolNames 含 edit → all 否则 docs）：leader/product/tester 等 docs 角色在工具层剔除内置 edit/write、注入仅限 .md 且必须在 cwd 内的受控写工具（`createDocWriteTool`），防越权改业务代码。已知局限：bash heredoc 写文件挡不住。
+- **群聊消息恒非空兜底 + 假宣称检测**（`buildFallbackGroupMessage` / `detectPhantomClaims`）：无文本/无交接/无变更也产出可见结论；宣称「重写 X.java」但 X 不在实际变更集 → 群聊追加 ⚠️ 宣称核对行；截断执行诚实标注「回合上限截断」而非「完成」。
+- **verdict 同向多边消歧**：多条件路由的 verdictGuard 边用 record_decision content 的【最早关键词命中位置】选边（否定从句里的反向词如「与后端无关」会晚于真正归属词出现），无命中回退最高 priority。runtime 对「有 verdict 却走了 keyword 路由」发系统警示提示补配 guard 边。
+- **产物指针换向**：`runs/<runId>/thinking/<agentId>.md` 富化为 结论+交接+真实变更清单+工具轨迹+思考流水（~9KB 截断），下游角色的前序上下文指向它而非不可读的 session jsonl（jsonl 仅供引擎 resume/stats/审计）。summaries 注入上限 500→1600 字。
+- **收尾要求强制注入**：每次执行的上下文块必含「record_decision verdict / 交接只许陈述真实发生的事 / 交接写全接续所需信息」，修 0 决策全靠关键词路由的老毛病（根治仍有待 P1-4 LLM judge）。
+
+## 多 Agent 项目组 v2：DAG 编排引擎（plan-then-dispatch）
+
+2026-08-27 第二次重构（起因：run bcfc16cd 40min 空转、关键词误派、交付物丢失，"还不如单 agent"）。核心思想换血：**不做角色自由路由，做任务计划调度**（借鉴 CrewAI hierarchical / LangGraph supervisor / MetaGPT SOP）：
+
+- **引擎选择**：`TeamDef.orchestration: "dag"|"transitions"`。新建团队由 `lifecycle.createTeam` 注入 `"dag"`；存量团队未设置 → 继续 transitions 引擎；PATCH `/api/teams/:id {orchestration}` 可切换。
+- **Phase A 计划**：入口角色作 planner，用 `team_submit_plan` 受控工具一次性提交任务 DAG（工具层校验：agentId 存在 / 依赖引用存在 / Kahn 无环 / ≤12 任务）；校验失败最多纠错 2 轮，仍失败**自动回退 transitions 引擎跑完本 run**（系统消息告知，永不断粮）。
+- **Phase B 调度**（`runtime.ts pumpDag`）：按 dependsOn 就绪集波次派发，无依赖任务真并行；verdict=fail/失败 → 同任务重试并附失败反馈（上限 maxReworkRounds），不扩散到无关角色；重试耗尽 → 下游依赖级联跳过防死锁。每任务执行上下文 = `buildTaskContext()`（任务+验收标准+上游 deliverable 结构化注入），不再灌前序摘要/文件指针/全量聊天。
+- **Phase C 收尾**：全部完成或部分阻塞 → 入口角色出最终报告（❌ 任务如实标注），终态 completed（不再有 max_rework 硬失败路径）。
+- **公共执行体**：launchAgent/pumpDag 共用 `spawnExecution()`（execution 事件流/统计/取消透传）；plan 经 executor 的 `result.plan` 透出（tools.test 覆盖工具校验，dag-scheduler.test.mjs 覆盖调度循环）。
+- planner 轮及全部 DAG 系统消息（📋 计划路线图 / ✅ / 🔁 / ❌ / 回退说明）在群聊可见——用户实时看到「谁在干什么、为什么」，替代黑盒等待。
+
+### 与旧 transitions 引擎的关系
+- resolveRoute/handoff/gateway/rework 边全套保留且为默认编排（存量团队零行为变化）；
+- DAG 引擎不读 transitions/reworkEdges；no-progress ping-pong 守卫、hybrid 关键词兜底等补丁在 dag 模式下天然不需要（就绪集有限 × 重试上限 = 必然终止）；
+- verdictGuard 消歧（decisionContent 最早命中位置）、群聊兜底消息、假宣称检测、写权限策略两条腿共用。

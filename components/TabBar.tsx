@@ -15,6 +15,12 @@ export interface Tab {
   url?: string | null;
   sourceSessionId?: string | null;
   initialDisplayMode?: "source" | "preview" | "diff";
+  /** Which right-panel mode owns this tab. A tab lives in exactly ONE mode's
+   *  bar — the .univer produced by AI-editing a document stays in 文件 while
+   *  xlsx/csv live in 表格 — instead of duplicating in both (user report
+   *  2026-08-27). Legacy tabs without the field fall back to the extension
+   *  rule in AppShell.tabHomeMode. */
+  homeMode?: "files" | "sheets";
 }
 
 interface Props {

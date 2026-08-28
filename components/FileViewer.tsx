@@ -17,6 +17,7 @@ import {
   isAudioPath,
   isDocumentPreviewPath,
   isImagePath,
+  isPptPath,
   isSpreadsheetPath,
   isUniverFilePath,
 } from "@/lib/file-types";
@@ -36,8 +37,9 @@ interface Props {
   onMentionLines?: (relativePath: string, startLine: number, endLine: number) => void;
   gitRefreshKey?: number;
   initialDisplayMode?: DisplayMode;
-  /** "AI 编辑" handler for spreadsheet files (convert .xlsx → .univer + kick off the sheet-edit skill). */
-  onAiEdit?: (xlsxPath: string) => Promise<void> | void;
+  /** "AI 编辑" handler for spreadsheets AND office docs: convert the source
+   *  to a -ai-edit.univer and switch to the editable Univer viewer. */
+  onAiEdit?: (sourcePath: string) => Promise<void> | void;
 }
 
 interface FileData {
@@ -212,7 +214,7 @@ function getFileApiUrl(
   return `/api/files/${encoded}?${searchParams.toString()}`;
 }
 
-function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null }) {
+export function DownloadLink({ filePath, sourceSessionId }: { filePath: string; sourceSessionId?: string | null }) {
   const { t } = useI18n();
   return (
     <a
@@ -666,12 +668,14 @@ function AudioViewer({ filePath, cwd, sourceSessionId }: Props) {
   );
 }
 
-function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
+function DocumentViewer({ filePath, cwd, sourceSessionId, onAiEdit }: Props & { onAiEdit?: (sourcePath: string) => Promise<void> | void }) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [bust, setBust] = useState(0);
   const [size, setSize] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState("");
   const esRef = useRef<EventSource | null>(null);
 
   const ext = getFileExt(filePath);
@@ -751,6 +755,40 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
         </span>
         <span style={{ marginLeft: "auto" }}>{ext === "docx" ? "docx preview" : "pdf"}</span>
         {size != null && <span>{formatSize(size)}</span>}
+        {/* AI 编辑：与 XlsxViewer 同款两段式 —— 点了才转 -ai-edit.univer 进 worktree 工作流 */}
+        {ext === "docx" && onAiEdit && (
+          <button
+            type="button"
+            onClick={() => {
+              setAiError("");
+              setAiBusy(true);
+              Promise.resolve(onAiEdit(filePath))
+                .catch((e) => setAiError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setAiBusy(false));
+            }}
+            disabled={aiBusy}
+            title={t("files.aiEditTitle")}
+            style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "3px 10px",
+              background: "none", border: "1px solid var(--border)", borderRadius: 7,
+              fontSize: 11,
+              color: aiBusy ? "var(--text-dim)" : "var(--accent)",
+              fontWeight: 600, cursor: aiBusy ? "default" : "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {aiBusy ? (
+              <span style={{ width: 11, height: 11, borderRadius: "50%", border: "2px solid var(--border)", borderTopColor: "var(--accent)", animation: "spin 0.8s linear infinite", display: "inline-block" }} />
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" />
+                <circle cx="12" cy="12" r="4" />
+              </svg>
+            )}
+            {aiBusy ? t("files.aiEditBusy") : t("files.aiEdit")}
+          </button>
+        )}
         <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
         <span
           title={watching ? t("i18n.liveSync") : t("i18n.notWatching")}
@@ -769,6 +807,11 @@ function DocumentViewer({ filePath, cwd, sourceSessionId }: Props) {
           {watching ? "live" : "static"}
         </span>
       </div>
+      {aiError && (
+        <div role="alert" style={{ margin: "6px 16px 0", padding: "6px 10px", background: "color-mix(in srgb, #ef4444 10%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", borderRadius: 8, fontSize: 11.5, color: "#ef4444", wordBreak: "break-word", flexShrink: 0 }}>
+          {aiError}
+        </div>
+      )}
       <div style={{ flex: 1, minHeight: 0, background: "var(--bg-panel)" }}>
         {error ? (
           <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, color: "#f87171", fontSize: 13, textAlign: "center" }}>
@@ -799,6 +842,12 @@ const UniverFileViewer = dynamic(
   { ssr: false },
 );
 
+// PowerPoint 只读预览（隐藏缓存副本 + 网关查看器；AI 编辑按钮单独转 .univer）。
+const PptReadonlyPreview = dynamic(
+  () => import("./PptReadonlyPreview").then((m) => m.PptReadonlyPreview),
+  { ssr: false },
+);
+
 export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionLines, gitRefreshKey, initialDisplayMode, onAiEdit }: Props) {
   if (isImagePath(filePath)) {
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
@@ -806,8 +855,13 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMenti
   if (isAudioPath(filePath)) {
     return <AudioViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
   }
+  // PowerPoint: read-only preview via the hidden-cache gateway viewer; only
+  // the explicit 「AI 编辑」 button converts it to an editable -ai-edit.univer.
+  if (isPptPath(filePath)) {
+    return <PptReadonlyPreview filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onAiEdit={onAiEdit} />;
+  }
   if (isDocumentPreviewPath(filePath)) {
-    return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} />;
+    return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} onAiEdit={onAiEdit} />;
   }
   if (isSpreadsheetPath(filePath)) {
     return <XlsxViewer filePath={filePath} sourceSessionId={sourceSessionId} onAiEdit={onAiEdit} />;
@@ -834,10 +888,15 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [selectedLineRange, setSelectedLineRange] = useState<SelectedLineRange | null>(null);
 
+  const contentRequestRef = useRef(0);
   const fetchContent = useCallback((filePath: string) => {
+    // 请求序号：agent 连续写同一文件时（SSE change 事件密集触发），旧响应后到会覆盖
+    // 新内容（乱序回退）。与下方 fetchGitDiff 的序号防护同一模式——只采纳最新请求。
+    const requestId = ++contentRequestRef.current;
     return fetch(getFileApiUrl(filePath, "read", sourceSessionId))
       .then((r) => r.json())
       .then((d: FileData & { error?: string }) => {
+        if (requestId !== contentRequestRef.current) return null;
         if (d.error) {
           // The file may have been created and then deleted by the agent
           // (e.g. a temp script it cleaned up) — surface that instead of a
@@ -850,6 +909,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
         return d;
       })
       .catch((e) => {
+        if (requestId !== contentRequestRef.current) return null;
         setError(String(e));
         return null;
       });

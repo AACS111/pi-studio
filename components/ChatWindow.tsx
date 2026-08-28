@@ -7,8 +7,7 @@ import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { MessageView } from "./MessageView";
 import { ChangedFilesCard } from "./ChangedFilesCard";
-import { GeneratedFilesCard } from "./GeneratedFilesCard";
-import { extractChangedFiles, extractGeneratedFiles } from "@/lib/changed-files";
+import { extractChangedFiles } from "@/lib/changed-files";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
 import { ExtensionStatusBar } from "./ExtensionStatusBar";
@@ -42,7 +41,6 @@ interface Props {
   onOpenFile?: (filePath: string) => void;
   onOpenWebUrl?: (url: string) => void;
   onOpenChangedFile?: (filePath: string) => void;
-  onOpenGeneratedFile?: (filePath: string) => void;
   /** Content-search jump target: scroll to this entry once it is rendered. */
   jumpTarget?: { entryId: string; nonce: number } | null;
   /** Pending sheet-edit context (set by the "AI 编辑" button). */
@@ -213,7 +211,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, onOpenGeneratedFile, jumpTarget, aiEditContext, onAiEditContextConsumed }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, jumpTarget, aiEditContext, onAiEditContextConsumed }: Props) {
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -422,6 +420,55 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   }, [messages.length]);
 
   const isEmptyNew = isNew && messages.length === 0 && !streamState.isStreaming && !sessionBusy;
+
+  // 派生数据缓存（修复流式卡顿主因之一）：IIFE 渲染循环原先每帧重算
+  // toolResultsMap / lastUserIdx / lastAnchorIdx / visibleRefIndexByMessage /
+  // showTimestamp（后者 O(n²)）——流式期间每 token 一次 render，长会话每帧全量
+  // 重建这些 Map/Set。流式增量在 streamState、messages 引用稳定 → memo 命中，
+  // 重算只在消息数组真变时发生。（必须在所有提前 return 之前调用 —— hooks 规则）
+  const chatDerived = useMemo(() => {
+    const toolResultsMap = new Map<string, ToolResultMessage>();
+    for (const msg of messages) {
+      if (msg.role === "toolResult") {
+        toolResultsMap.set((msg as ToolResultMessage).toolCallId, msg as ToolResultMessage);
+      }
+    }
+
+    let lastUserIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") { lastUserIdx = i; break; }
+    }
+    // Anchor for live-tail detection: the last user message, or a compaction
+    // summary when compaction has replaced it mid-turn.
+    let lastAnchorIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (isGroupAnchor(messages[i])) { lastAnchorIdx = i; break; }
+    }
+
+    const visibleRefIndexByMessage = new Map<number, number>();
+    let refIdx = 0;
+    messages.forEach((msg, idx) => {
+      if (msg.role === "user" || msg.role === "assistant") {
+        visibleRefIndexByMessage.set(idx, refIdx++);
+      }
+    });
+
+    // 每条 assistant 是否展示时间戳（原逻辑在 renderMessage 内对每条消息向后扫描，
+    // 总 O(n²)；同样仅在 memo 重算时发生一次）。与原逻辑严格等价，不做裁剪。
+    const showTimestampByIdx = new Set<number>();
+    for (let idx = 0; idx < messages.length; idx++) {
+      if (messages[idx].role !== "assistant") continue;
+      let show = true;
+      for (let j = idx + 1; j < messages.length; j++) {
+        const r = messages[j].role;
+        if (r === "user") break;
+        if (r === "assistant") { show = false; break; }
+      }
+      if (show) showTimestampByIdx.add(idx);
+    }
+    return { toolResultsMap, lastUserIdx, lastAnchorIdx, visibleRefIndexByMessage, showTimestampByIdx };
+  }, [messages]);
+
   const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
 
   const availableThinkingLevels = displayModelValue
@@ -624,34 +671,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             {(() => {
-              const toolResultsMap = new Map<string, ToolResultMessage>();
-              for (const msg of messages) {
-                if (msg.role === "toolResult") {
-                  toolResultsMap.set((msg as ToolResultMessage).toolCallId, msg as ToolResultMessage);
-                }
-              }
-
-              let lastUserIdx = -1;
-              for (let i = messages.length - 1; i >= 0; i--) {
-                if (messages[i].role === "user") { lastUserIdx = i; break; }
-              }
-              // Anchor for live-tail detection: the last user message, or a
-              // compaction summary when compaction has replaced it mid-turn.
-              // Computed independently from lastUserIdx (which is kept for the
-              // scroll-to-user ref) because a compaction summary can sit after
-              // the last user message and anchor the still-streaming segment.
-              let lastAnchorIdx = -1;
-              for (let i = messages.length - 1; i >= 0; i--) {
-                if (isGroupAnchor(messages[i])) { lastAnchorIdx = i; break; }
-              }
-
-              const visibleRefIndexByMessage = new Map<number, number>();
-              let refIdx = 0;
-              messages.forEach((msg, idx) => {
-                if (msg.role === "user" || msg.role === "assistant") {
-                  visibleRefIndexByMessage.set(idx, refIdx++);
-                }
-              });
+              // 派生数据（toolResultsMap/lastUserIdx/lastAnchorIdx/visibleRefIndexByMessage）
+              // 已提升到组件顶层的 chatDerived useMemo —— 流式期间不再每帧重算。
+              const { toolResultsMap, lastUserIdx, lastAnchorIdx, visibleRefIndexByMessage } = chatDerived;
 
               const attachVisibleRef = (idx: number, refIndex: number) => (el: HTMLDivElement | null) => {
                 messageRefs.current[refIndex] = el;
@@ -669,12 +691,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 const keyPrefix = options.keyPrefix ?? "message";
                 let showTimestamp = false;
                 if (msg.role === "assistant") {
-                  showTimestamp = true;
-                  for (let j = idx + 1; j < messages.length; j++) {
-                    const r = messages[j].role;
-                    if (r === "user") break;
-                    if (r === "assistant") { showTimestamp = false; break; }
-                  }
+                  // 向后扫描已提升到 chatDerived 的 showTimestampByIdx（O(n²)→查表）
+                  showTimestamp = chatDerived.showTimestampByIdx.has(idx);
                   // Hide on the currently-streaming tail (the streaming bubble owns the live timestamp)
                   if (showTimestamp && streamState.isStreaming && idx === messages.length - 1) {
                     showTimestamp = false;
@@ -717,18 +735,10 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                   if (msg.role === "assistant") {
                     const msgBlocks = (msg as AssistantMessage).content ?? [];
                     const changedFiles = extractChangedFiles(msgBlocks, messageCwd);
-                    const generatedFiles = extractGeneratedFiles(msgBlocks, messageCwd);
                     if (changedFiles.length > 0) {
                       rendered.push(
                         <div key={`changed-${idx}`} style={{ marginBottom: 16 }}>
                           <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
-                        </div>,
-                      );
-                    }
-                    if (generatedFiles.length > 0) {
-                      rendered.push(
-                        <div key={`generated-${idx}`} style={{ marginBottom: 16 }}>
-                          <GeneratedFilesCard files={generatedFiles} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                         </div>,
                       );
                     }
@@ -759,18 +769,10 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     if (liveMsg?.role === "assistant") {
                       const liveBlocks = (liveMsg as AssistantMessage).content ?? [];
                       const liveChanged = extractChangedFiles(liveBlocks, messageCwd);
-                      const liveGenerated = extractGeneratedFiles(liveBlocks, messageCwd);
                       if (liveChanged.length > 0) {
                         rendered.push(
                           <div key={`changed-live-${renderIdx}`} style={{ marginBottom: 16 }}>
                             <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
-                          </div>,
-                        );
-                      }
-                      if (liveGenerated.length > 0) {
-                        rendered.push(
-                          <div key={`generated-live-${renderIdx}`} style={{ marginBottom: 16 }}>
-                            <GeneratedFilesCard files={liveGenerated} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                           </div>,
                         );
                       }
@@ -825,27 +827,20 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (finalAnswerMessage) {
                   rendered.push(renderMessage(finalAssistantIdx, { messageOverride: finalAnswerMessage }));
                 }
-                // Changed files are gathered from ALL assistant messages in the
-                // group — edit/write tool calls happen in the process messages
-                // (folded into ProcessDetailsGroup), not in the final answer.
+                // Changed/generated files are gathered from ALL assistant messages in
+                // the group into one unified card — edit/write tool calls happen in
+                // the process messages (folded into ProcessDetailsGroup), not in the
+                // final answer.
                 const groupBlocks: AssistantContentBlock[] = [];
                 for (let gi = userIdx + 1; gi < endIdx; gi++) {
                   const gm = messages[gi];
                   if (gm?.role === "assistant") groupBlocks.push(...((gm as AssistantMessage).content ?? []));
                 }
                 const changedFiles = extractChangedFiles(groupBlocks, messageCwd);
-                const generatedFiles = extractGeneratedFiles(groupBlocks, messageCwd);
                 if (changedFiles.length > 0) {
                   rendered.push(
                     <div key={`changed-${userIdx}-${finalAssistantIdx}`} style={{ marginBottom: 16 }}>
                       <ChangedFilesCard files={changedFiles} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
-                    </div>,
-                  );
-                }
-                if (generatedFiles.length > 0) {
-                  rendered.push(
-                    <div key={`generated-${userIdx}-${finalAssistantIdx}`} style={{ marginBottom: 16 }}>
-                      <GeneratedFilesCard files={generatedFiles} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                     </div>,
                   );
                 }
@@ -874,19 +869,11 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 if (sm?.role !== "assistant") return null;
                 const liveBlocks = (sm as AssistantMessage).content ?? [];
                 const liveChanged = extractChangedFiles(liveBlocks, messageCwd);
-                const liveGenerated = extractGeneratedFiles(liveBlocks, messageCwd);
                 const cards: ReactNode[] = [];
                 if (liveChanged.length > 0) {
                   cards.push(
                     <div key="changed" style={{ marginBottom: 16 }}>
                       <ChangedFilesCard files={liveChanged} cwd={messageCwd} onOpenFile={onOpenChangedFile} />
-                    </div>,
-                  );
-                }
-                if (liveGenerated.length > 0) {
-                  cards.push(
-                    <div key="generated" style={{ marginBottom: 16 }}>
-                      <GeneratedFilesCard files={liveGenerated} cwd={messageCwd} onOpenFile={onOpenGeneratedFile} />
                     </div>,
                   );
                 }

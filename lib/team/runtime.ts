@@ -713,22 +713,42 @@ export class RunManager {
     this.lastStatus = result.status === "timeout" ? "timeout" : result.status;
 
     // P0-1：solo 降级 — 简单任务只跑入口角色即收尾，不做多角色拆解接力。
-    // 若入口角色在 solo 下仍显式请求交接给下游（team_handoff 非 __end__），记录该交接
-    // 意图（不再静默丢弃），但 solo 定位为单角色闭环，run 仍按入口结果收尾。
+    // solo 升级为编排：入口角色显式调用 team_handoff 交接下游（非 __end__）= 执行者判断
+    // 任务超出单人闭环。这是对分类器「宁 solo 勿编排」启发式的必要纠错通道：task-classify
+    // 把中型实现任务也判成 simple，leader 执行中发现干不完而交接——旧实现硬吞交接直接收尾
+    //（交接意图只落事件不派发，leader 声称「已交接」而下游永不执行，实锤：
+    // leader 输出「已交接给 fe-developer」但 run 以 solo completed 结束，实现部分没人干）。
+    // 升级后走正常路由实际派发下游；错误代价从「任务没完成」降为「升级成编排」。
     if (this.solo) {
       if (result.handoffTool && result.handoffTool.to !== END_NODE) {
+        this.solo = false; // 后续 spawnExecution 以 orchestrated 跑（工具链/写权限不再按 solo）
         this.append({
           type: "handoff_requested",
           executionId: execution.id,
           from: agentId,
           to: result.handoffTool.to,
           kind: "tool",
-          reason: "solo 单角色模式：入口角色请求交接，但按 solo 约定由入口直接收尾（未实际交接）",
+          reason: `入口角色在 solo 执行中显式交接给 ${result.handoffTool.to} —— 任务超出单人闭环，升级为多角色编排继续执行`,
+        });
+        this.append({
+          type: "message_created",
+          message: {
+            id: `msg-${this.runId}-solo-escalate`,
+            kind: "system",
+            role: "",
+            content: `⬆️ 简单任务分类需纠错：入口角色「${agentId}」在 solo 执行中显式交接给「${result.handoffTool.to}」，已升级为多角色编排继续执行（不再单角色收尾）。`,
+            createdAt: Date.now(),
+          },
         });
         this.publish();
+        // 直接按显式意图路由（不能落 resolveRoute：strict 路由模式会忽略 tool handoff——
+        // engine「strict 忽略工具」；升级路径以执行者的显式交接意图为准）。
+        this.ready.push(result.handoffTool.to);
+        return;
+      } else {
+        this.terminal = { code: "completed", message: "简单任务由入口角色直接完成（solo）" };
+        return;
       }
-      this.terminal = { code: "completed", message: "简单任务由入口角色直接完成（solo）" };
-      return;
     }
 
     // —— 路由决策 ——

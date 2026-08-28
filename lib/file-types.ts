@@ -74,6 +74,14 @@ export function isSpreadsheetPath(filePath: string): boolean {
   return ext === "xlsx" || ext === "xls";
 }
 
+/** PowerPoint files (.ppt/.pptx): read-only preview via the hidden-cache
+ *  gateway viewer (see /api/univer/ppt-preview). AI editing converts them to
+ *  a visible -ai-edit.univer via POST /api/univer/from-xlsx. */
+export function isPptPath(filePath: string): boolean {
+  const ext = getFileExt(filePath);
+  return ext === "ppt" || ext === "pptx";
+}
+
 /** Univer CLI .univer files — rendered via the CLI export + Univer viewer. */
 export function isUniverFilePath(filePath: string): boolean {
   return getFileExt(filePath) === "univer";

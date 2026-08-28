@@ -63,7 +63,14 @@ export function viewCacheKey(file: string, worktree: string, rev: string): strin
 
 export async function exportScopeToXlsx(file: string, worktree: string, cacheKey: string, signal?: AbortSignal): Promise<Buffer> {
   const tmpXlsx = join(tmpdir(), `univer-view-${cacheKey}.xlsx`);
-  const exportArgs = ["export", file, tmpXlsx, "--formula-calculation", "forced"];
+  // xlsx 导出必须锁定单元：不挊 --unit 时，trunk 为空（agent 建了工作区但未合并）
+  // 或多单元文件会被 CLI 拒绝（"Specify --unit: zero or multiple units"）。
+  // 0 单元时抛可读错误（上层 UI 有恢复面板），多单元取第一个单元。
+  const unitId = await resolveUnitIdCached(file);
+  if (!unitId) {
+    throw new Error("主干为空：agent 的工作区可能尚未合并到主干（trunk has no units）");
+  }
+  const exportArgs = ["export", file, tmpXlsx, "--unit", unitId, "--formula-calculation", "forced"];
   if (worktree) exportArgs.push("--worktree", worktree);
   // One extra retry beyond runUniver's default: the export races the daemon's
   // write lock when the agent is mid-edit (SQLITE_BUSY), and a single 800ms

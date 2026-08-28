@@ -21,6 +21,28 @@ interface WorktreeInfo {
   createdAt?: string;
 }
 
+interface UnitInfo {
+  unitId: string;
+  kind: string;
+  name?: string;
+}
+
+/** Width of the gateway viewer's built-in left sidebar (Tailwind w-64). NO
+ *  LONGER CROPPED (2026-08-27 user report: with DPI/zoom/locale variance the
+ *  hard-coded offset cut half the sidebar AND clipped the toolbar — a fixed
+ *  pixel value can never match every environment, and the gateway exposes no
+ *  URL param to hide the sidebar). The full gateway UI renders instead; it
+ *  has its own sidebar-collapse toggle whose state persists in the gateway's
+ *  localStorage, so users who want the full width collapse it once. */
+
+const UNIT_KIND_COLORS: Record<string, string> = {
+  sheet: "#2a7aff",
+  doc: "#7c5cff",
+  slide: "#f59e0b",
+  base: "#14b8a6",
+  board: "#ec4899",
+};
+
 const STATUS_BADGE: Record<string, { label: string; bg: string; color: string }> = {
   draft: { label: "编辑中", bg: "#e6f7ee", color: "#1a7f4b" },
   active: { label: "编辑中", bg: "#e6f7ee", color: "#1a7f4b" },
@@ -65,6 +87,26 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
   // Set by XlsxViewer after its own auto-save; lets the poll skip the reload
   // for exactly that change (the local baseline is already up to date).
   const ownSaveRef = useRef<number | null>(null);
+
+  // Multi-unit support: a .univer file can hold Sheet / Doc / Slide / Base /
+  // Board units. Sheets stay on the native XlsxViewer; every other kind embeds
+  // the official version-matched viewer served by the univer-cli daemon.
+  const [units, setUnits] = useState<UnitInfo[]>([]);
+  // False until the first unit list resolves — pure doc/slide/base/board files
+  // must NOT mount XlsxViewer at all (its /api/unifer/view export fails with
+  // "cannot export doc unit as xlsx"), so we wait before rendering it.
+  const [unitsReady, setUnitsReady] = useState(false);
+  const [activeUnitId, setActiveUnitId] = useState<string | null>(null);
+  const [unitFrame, setUnitFrame] = useState<{ status: "loading" | "error" | "ok"; url?: string } | null>(null);
+  // Export button (pill-row, slide/doc units): busy flag + inline feedback.
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMsg, setExportMsg] = useState("");
+  const unitUrlCacheRef = useRef<Map<string, string>>(new Map());
+  // Bumped when the poll sees the trunk rewritten EXTERNALLY (agent commit /
+  // worktree merge). The gateway iframe renders a snapshot of the file, so it
+  // must remount to show merged content — doc/slide files have no pi-studio
+  // auto-save path, so every trunk mtime bump is external.
+  const [gatewayReloadTick, setGatewayReloadTick] = useState(0);
 
   const fileName = filePath.split(/[\\/]/).pop() || "sheet.univer";
 
@@ -111,9 +153,15 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
       }
       if (!changed) return;
       // Skip the viewer sync when the only change is our own auto-save on the
-      // selected scope (headCommit / trunk mtime matches ownSaveRef) — the
+      // selected scope (worktree headCommit matches ownSaveRef) — the
       // local baseline is already updated, so syncing would just reset the
       // user's view.
+      // 历史 bug 备注（2026-08-28）：这里曾有 trunk 分支用 trunkMtime === ownSaveRef
+      // 判定「自己的 trunk 自动保存」——但 ownSaveRef 存的是 worktree commit 的 seq
+      //（小整数），trunkMtime 是 epoch 毫秒，永不相等；且 viewer 编辑走 worktree-only
+      // 策略（无工作区自动建区切走），代码库里也不存在「pi-auto staging merge」通道
+      //（全文仅剩这条注释）——trunk 从不被 viewer 自写，trunk mtime 变化都是真实
+      // 外部变更（agent 合并/用户点击合并），理应同步。故删除该死分支。
       let ownOnly = false;
       if (ownSaveRef.current != null) {
         if (selected) {
@@ -134,10 +182,6 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
             changedIds.has(selected) &&
             !!sel &&
             sel.headCommit === ownSaveRef.current;
-        } else if (trunkMtime === ownSaveRef.current) {
-          // Trunk auto-save: the pi-auto staging merge rewrites the file, so
-          // the mtime bump is our own — skip the sync.
-          ownOnly = true;
         }
       }
       setWorktrees(list);
@@ -167,6 +211,9 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
           prevList.some((w) => !list.some((x) => x.id === w.id));
         if (mergeOrDelete) ackRevRef.current.trunk = trunkMtime;
       }
+      if (!ownOnly && trunkMtime !== prevTrunkRevRef.current) {
+        setGatewayReloadTick((k) => k + 1);
+      }
       prevTrunkRevRef.current = trunkMtime;
     };
 
@@ -185,6 +232,56 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
     ownSaveRef.current = null;
   }, [selected, refreshKey]);
 
+  // ── Multi-unit: load the unit list for the current scope ──────────────
+  const loadUnits = useCallback(async (): Promise<UnitInfo[]> => {
+    try {
+      const params = new URLSearchParams({ file: filePath });
+      if (selected) params.set("worktree", selected);
+      const response = await fetch(`/api/univer/units?${params.toString()}`);
+      if (!response.ok) return [];
+      const data = await response.json() as { units?: UnitInfo[] };
+      return Array.isArray(data.units) ? data.units : [];
+    } catch {
+      return [];
+    }
+  }, [filePath, selected]);
+
+  // Refresh on scope change / manual refresh / merge (trunkRev bumps). If the
+  // active unit no longer exists in this scope, fall back to the sheet view.
+  useEffect(() => {
+    let cancelled = false;
+    void loadUnits().then((list) => {
+      if (cancelled) return;
+      setUnits(list);
+      setUnitsReady(true);
+    });
+    return () => { cancelled = true; };
+  }, [loadUnits, refreshKey, trunkRev]);
+
+  useEffect(() => {
+    setActiveUnitId((prev) => (prev && units.some((u) => u.unitId === prev) ? prev : null));
+  }, [units]);
+
+  // Files with NO sheet unit (docx/pptx imports): auto-select the first
+  // non-sheet unit once known — there is no grid to fall back to.
+  useEffect(() => {
+    if (!unitsReady || units.length === 0 || units.some((u) => u.kind === "sheet")) return;
+    setActiveUnitId((prev) => (prev && units.some((u) => u.unitId === prev) ? prev : units[0].unitId));
+  }, [unitsReady, units]);
+
+  // While a draft worktree is being viewed, poll for newly added units — the
+  // agent may create Doc/Slide/Base/Board units mid-task via the CLI.
+  useEffect(() => {
+    if (!selected) return;
+    const timer = setInterval(async () => {
+      const list = await loadUnits();
+      setUnits((prev) =>
+        prev.length === list.length && prev.every((p, i) => p.unitId === list[i]?.unitId && p.kind === list[i]?.kind) ? prev : list,
+      );
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [selected, loadUnits]);
+
   // Warm the parsed scope cache for every scope in the background so switching
   // worktrees is instant (first parse per scope takes a moment; unchanged
   // scopes hit the cache — no refetch, no re-parse). Depends on the worktree
@@ -192,7 +289,17 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
   // added/merged/committed, not on every poll. The route re-validates each
   // scope against its headCommit/mtime, so only changed scopes re-export.
   const warmSignature = `${trunkRev}|${worktrees.map((w) => `${w.id}:${w.status}:${w.headCommit}`).join("|")}`;
+  // Warm the xlsx scope exports ONLY for files that actually contain a sheet
+  // unit — pure doc/slide files cannot export to xlsx (CLI errors out).
+  const hasSheetUnit = units.some((u) => u.kind === "sheet");
+  // Pure doc/slide/board file: hide pi-studio's own worktree drawer once the
+  // unit list confirms there is no sheet — the gateway viewer's own changes
+  // board is the change surface for these files (user decision 2026-08-27:
+  // “直接用 CLI 的变更记录看板，不要自定义的”). Hiding it while the unit list
+  // is still resolving also avoids a drawer flash before the gateway loads.
+  const noSheetFile = unitsReady && units.length > 0 && !hasSheetUnit;
   useEffect(() => {
+    if (unitsReady && !hasSheetUnit) return;
     if (worktrees.length === 0) return;
     const scopes = [
       { key: `${filePath}::trunk::${trunkRev}`, url: `/api/univer/view?file=${encodeURIComponent(filePath)}` },
@@ -344,6 +451,76 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
 
   const binaryUrl = `/api/univer/view?file=${encodeURIComponent(filePath)}${selected ? `&worktree=${encodeURIComponent(selected)}` : ""}`;
 
+  // ── Multi-unit: resolve the official viewer URL for a non-sheet unit ──
+  const activeUnit = activeUnitId ? units.find((u) => u.unitId === activeUnitId) ?? null : null;
+  const activeNonSheet = activeUnit !== null && activeUnit.kind !== "sheet" ? activeUnit : null;
+
+  // 导出当前非 sheet 单元（slide→pptx，doc→docx）。The server streams the
+  // bytes; we hand them to the browser as a download with a friendly name.
+  const handleExportUnit = async (): Promise<void> => {
+    if (!activeNonSheet) return;
+    const format = activeNonSheet.kind === "slide" ? "pptx" : "docx";
+    setExportBusy(true);
+    setExportMsg("");
+    try {
+      const params = new URLSearchParams({ file: filePath, unit: activeNonSheet.unitId, format });
+      const res = await fetch(`/api/univer/export?${params.toString()}`);
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error ?? `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const base = (filePath.split("/").pop() ?? "export").replace(/\.univer$/i, "");
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${base}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setExportMsg(`✓ ${t("files.exportUnitDone")}`);
+    } catch (error) {
+      setExportMsg(`${t("files.exportUnitFailed")}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeUnit || activeUnit.kind === "sheet") {
+      setUnitFrame(null);
+      return;
+    }
+    const key = `${filePath}|${selected ?? ""}|${activeUnit.unitId}`;
+    const cached = unitUrlCacheRef.current.get(key);
+    if (cached) {
+      setUnitFrame({ status: "ok", url: cached });
+      return;
+    }
+    setUnitFrame({ status: "loading" });
+    const params = new URLSearchParams({ file: filePath });
+    if (selected) params.set("worktree", selected);
+    params.set("unit", activeUnit.unitId);
+    fetch(`/api/univer/open-url?${params.toString()}`)
+      .then((r) => r.json() as Promise<{ url?: string; error?: string }>)
+      .then((d) => {
+        if (cancelled) return;
+        if (typeof d.url === "string") {
+          unitUrlCacheRef.current.set(key, d.url);
+          setUnitFrame({ status: "ok", url: d.url });
+        } else {
+          setUnitFrame({ status: "error" });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setUnitFrame({ status: "error" });
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- primitive identity only
+  }, [filePath, selected, activeUnit?.unitId, activeUnit?.kind]);
+
   const flushRef = useRef<(() => Promise<void>) | null>(null);
 
   const handleWriteback = async (): Promise<void> => {
@@ -384,8 +561,11 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
 
   return (
     <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
-      {/* ── Left: file/version panel (collapsible) ─────────────── */}
-      {panelCollapsed ? (
+      {/* ── Left: file/version panel (collapsible) — sheet files only.
+          Pure doc/slide/board files hide it entirely: their change records
+          live in the gateway viewer's own sidebar (user decision
+          2026-08-27), and the chat changed-files card surfaces agent edits. */}
+      {!noSheetFile && (panelCollapsed ? (
         <div
           style={{
             width: 30,
@@ -686,12 +866,136 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
           );
         })}
       </div>
-      )}
+      ))}
 
       {/* ── Main area ────────────────────────────────────────────── */}
       <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0, height: "100%", overflow: "hidden" }}>
+        {/* Unit switcher: only rendered once the file actually contains a
+            non-sheet unit — pure-sheet files keep the exact old UI. */}
+        {units.some((u) => u.kind !== "sheet") && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 12px",
+              borderBottom: "1px solid var(--border)",
+              background: "var(--bg-panel)",
+              overflowX: "auto",
+              flexShrink: 0,
+            }}
+          >
+            {units.map((u) => {
+              const isSheetPill = u.kind === "sheet";
+              const active = isSheetPill ? activeNonSheet === null : activeUnit?.unitId === u.unitId;
+              const color = UNIT_KIND_COLORS[u.kind] ?? "var(--text-muted)";
+              return (
+                <button
+                  key={u.unitId}
+                  type="button"
+                  onClick={() => setActiveUnitId(isSheetPill ? null : u.unitId)}
+                  title={u.name || u.kind}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    border: `1px solid ${active ? color : "var(--border)"}`,
+                    borderRadius: 999,
+                    padding: "2px 10px",
+                    fontSize: 11,
+                    background: active ? `color-mix(in srgb, var(--bg-panel), ${color} 8%)` : "transparent",
+                    color: "var(--text)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  <span style={{ width: 7, height: 7, borderRadius: 4, background: color, flexShrink: 0 }} />
+                  {isSheetPill ? t("files.univerUnitSheet") : t(`files.univerUnit${u.kind.charAt(0).toUpperCase()}${u.kind.slice(1)}`)}
+                </button>
+              );
+            })}
+            <span style={{ marginLeft: "auto", flexShrink: 0 }} />
+            {activeNonSheet && (activeNonSheet.kind === "slide" || activeNonSheet.kind === "doc") && (
+              <>
+                {exportMsg && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: exportMsg.startsWith("✓") ? "#1a7f4b" : "#d33",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      maxWidth: 260,
+                      flexShrink: 0,
+                    }}
+                    title={exportMsg}
+                  >
+                    {exportMsg}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleExportUnit()}
+                  disabled={exportBusy}
+                  title={activeNonSheet.kind === "slide" ? t("files.exportUnitSlide") : t("files.exportUnitDoc")}
+                  style={{ ...toolbarBtnStyle, color: "#2a7aff", borderColor: "#2a7aff", whiteSpace: "nowrap", flexShrink: 0 }}
+                >
+                  {exportBusy ? t("files.exportUnitBusy") : activeNonSheet.kind === "slide" ? t("files.exportUnitSlide") : t("files.exportUnitDoc")}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {activeNonSheet && (
+          // All non-sheet units embed the univer-cli gateway viewer; its own
+          // sidebar is the changes board for these files (user decision
+          // 2026-08-27). The reload tick remounts the iframe when the trunk
+          // is rewritten externally (agent commit / worktree merge) so the
+          // merged content shows up without a manual refresh.
+          <div style={{ flex: 1, minHeight: 0, position: "relative", background: "var(--bg-panel)" }}>
+            {!unitFrame || unitFrame.status === "loading" ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
+                {t("files.univerGatewayLoading")}
+              </div>
+            ) : unitFrame.status === "error" ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#d33", fontSize: 12 }}>
+                {t("files.univerGatewayFailed")}
+              </div>
+            ) : (
+              <iframe
+                key={`${unitFrame.url}|g${gatewayReloadTick}`}
+                src={unitFrame.url}
+                title={activeNonSheet.name || activeNonSheet.kind}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  border: "none",
+                  background: "#fff",
+                }}
+                allow="clipboard-read; clipboard-write"
+              />
+            )}
+          </div>
+        )}
+        {/* Unit list still resolving — show a neutral loader instead of the
+            grid so pure doc/slide files never flash a doomed xlsx export. */}
+        {!unitsReady && !activeNonSheet && (
+          <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
+            {t("files.unitsLoading")}
+          </div>
+        )}
         {/* Upper bar: file ops (writeback + exports live in XlsxViewer's header);
-            children render as a second row below with the worktree controls. */}
+            children render as a second row below with the worktree controls.
+            XlsxViewer (and its xlsx export) only mounts once the unit list is
+            known to contain a sheet — pure doc/slide files render the gateway
+            viewer exclusively and must never attempt an xlsx export. */}
+        {/* 主干为空：agent 建了工作区但还没合并（或真正的空文件）。绝不落进
+            xlsx 分支硬试导出（CLI 报 "Specify --unit"），渲染可恢复面板。 */}
+        {unitsReady && units.length === 0 && (
+          <EmptyTrunkPanel filePath={filePath} worktrees={worktrees} onMerged={() => { void refreshAll(); }} />
+        )}
+        {unitsReady && hasSheetUnit && !activeNonSheet && (
         <XlsxViewer
           filePath={filePath}
           sourceSessionId={sourceSessionId}
@@ -775,6 +1079,7 @@ export function UniverFileViewer({ filePath, sourceSessionId }: Props) {
             {busy ? t("files.univerMerging") : t("files.univerMerge")}
           </button>
         </XlsxViewer>
+        )}
 
         {/* Status bar */}
         <div
@@ -814,6 +1119,100 @@ function lastActivity(w: WorktreeInfo): number {
   const t = new Date(w.createdAt ?? "").getTime();
   if (!Number.isNaN(t)) return t;
   return 0;
+}
+
+/**
+ * 主干为空时的恢复面板：agent 建了工作区但回合中断没合并（2026-08-28 打包版
+ * 实测，CLI 报 "Specify --unit: zero or multiple units" 的根源）。给用户一键
+ * 「合并最新工作区」（显式操作，不违反不自动合并铁律）+ 重新检测。
+ */
+function EmptyTrunkPanel({ filePath, worktrees, onMerged }: {
+  filePath: string;
+  worktrees: WorktreeInfo[];
+  onMerged: () => void | Promise<void>;
+}) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  // agent 按铁律只 mark ready（不合并）：draft/active/ready 都视为「待用户合并」
+  const draft = [...worktrees].reverse().find((w) => w.status === "draft" || w.status === "active" || w.status === "ready");
+
+  const mergeDraft = async (): Promise<void> => {
+    if (!draft || busy) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const response = await fetch("/api/univer/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: filePath, worktree: draft.id }),
+      });
+      const data = await response.json().catch(() => null) as { error?: string } | null;
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      setMsg(t("files.univerMerged"));
+      await onMerged();
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ maxWidth: 460, display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{t("files.emptyTrunkTitle")}</div>
+        <div style={{ fontSize: 12, lineHeight: 1.7, color: "var(--text-dim)", wordBreak: "break-word" }}>
+          {draft
+            ? t("files.emptyTrunkHint", { worktree: draft.id, commits: String(draft.headCommit) })
+            : t("files.emptyTrunkNone")}
+        </div>
+        {msg && (
+          <div style={{ fontSize: 12, color: msg.startsWith(t("files.univerMerged")) ? "#1a7f4b" : "#d33", wordBreak: "break-word" }}>
+            {msg}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8 }}>
+          {draft && (
+            <button
+              type="button"
+              onClick={() => void mergeDraft()}
+              disabled={busy}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "6px 14px",
+                background: busy ? "var(--bg-hover)" : "var(--accent-soft)",
+                border: "1px solid var(--accent)",
+                borderRadius: 7,
+                fontSize: 12,
+                fontWeight: 600,
+                color: busy ? "var(--text-dim)" : "var(--accent-hover)",
+                cursor: busy ? "default" : "pointer",
+              }}
+            >
+              {busy ? t("i18n.loading") : t("files.emptyTrunkMerge")}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void onMerged()}
+            style={{
+              display: "inline-flex", alignItems: "center",
+              padding: "6px 14px",
+              background: "none",
+              border: "1px solid var(--border)",
+              borderRadius: 7,
+              fontSize: 12,
+              color: "var(--text)",
+              cursor: "pointer",
+            }}
+          >
+            {t("files.univerRefresh")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const toolbarBtnStyle: React.CSSProperties = {

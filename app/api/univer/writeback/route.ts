@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { closeSync, existsSync, openSync } from "fs";
-import { getAllowedFileRoots, isFilePathAllowed } from "@/lib/file-access";
+import { getAllowedFileRoots, isExistingFilePathAllowed, isFilePathAllowed } from "@/lib/file-access";
+import { resolveBridgeSource } from "@/lib/univer-office-bridge";
 import { runUniver } from "@/lib/univer-cli";
 
 function sleep(ms: number): Promise<void> {
@@ -46,13 +47,25 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    // Original = same basename with .xlsx extension, next to the .univer file.
-    const target = file.replace(/\.univer$/i, ".xlsx");
-    if (target === file || !isFilePathAllowed(target, allowedRoots)) {
+    // Original file resolution: prefer the real mapping from office-bridge (the conversion artifact is fixed as
+    // `<basename>-ai-edit.univer` and lands in the data directory, so guessing the original by extension always leads to 404);
+    // fall back to the same-name .xlsx guess when not found (compatible with hand-created same-named .univer files).
+    const bridged = resolveBridgeSource(file);
+    const target = bridged && existsSync(bridged)
+      ? bridged
+      : file.replace(/\.univer$/i, ".xlsx");
+    if (target === file
+      // realpath 解析后校验：写目标已存在，字符串前缀检查不防 allowed root 内的
+      // symlink 指向外部文件（写穿风险），与 /api/files/save 同等防护。
+      || !isFilePathAllowed(target, allowedRoots)
+      || !isExistingFilePathAllowed(target, allowedRoots)) {
       return NextResponse.json({ error: "Original file is outside allowed roots" }, { status: 403 });
     }
     if (!existsSync(target)) {
-      return NextResponse.json({ error: `Original file not found: ${target}` }, { status: 404 });
+      return NextResponse.json(
+        { error: `Original file not found: ${target} (if this is a converted copy from docx/xlsx, the original may have been moved or renamed)` },
+        { status: 404 },
+      );
     }
     if (isFileLocked(target)) {
       return NextResponse.json(

@@ -29,12 +29,13 @@ export async function GET(request: NextRequest) {
     const file = request.nextUrl.searchParams.get("file")?.trim() ?? "";
     const worktree = request.nextUrl.searchParams.get("worktree")?.trim() ?? "";
     const format = (request.nextUrl.searchParams.get("format")?.trim() || "xlsx").toLowerCase();
+    const unitParam = request.nextUrl.searchParams.get("unit")?.trim() ?? "";
 
     if (!file.toLowerCase().endsWith(".univer")) {
       return NextResponse.json({ error: "file must be a .univer file" }, { status: 400 });
     }
-    if (format !== "xlsx" && format !== "csv") {
-      return NextResponse.json({ error: "format must be xlsx or csv" }, { status: 400 });
+    if (format !== "xlsx" && format !== "csv" && format !== "pptx" && format !== "docx") {
+      return NextResponse.json({ error: "format must be xlsx, csv, pptx or docx" }, { status: 400 });
     }
 
     const allowedRoots = await getAllowedFileRoots();
@@ -42,14 +43,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
-    const unitId = await resolveUnitId(file);
+    // The client (UniferFileViewer) passes the active unit explicitly so a
+    // mixed-unit file exports the RIGHT kind (slide→pptx, doc→docx); the
+    // first unit is only a fallback for single-unit files.
+    const unitId = unitParam || await resolveUnitId(file);
     if (!unitId) {
-      return NextResponse.json({ error: "Could not resolve a sheet unit in the .univer file" }, { status: 400 });
+      return NextResponse.json({ error: "Could not resolve a unit in the .univer file" }, { status: 400 });
     }
 
-    const ext = format === "csv" ? "csv" : "xlsx";
+    const ext = format;
     const tmpOut = join(tmpdir(), `univer-export-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`);
-    const exportArgs = ["export", file, tmpOut, "--unit", unitId, "--formula-calculation", "forced"];
+    const exportArgs = ["export", file, tmpOut, "--unit", unitId];
+    if (format === "xlsx" || format === "csv") exportArgs.push("--formula-calculation", "forced");
     if (worktree) exportArgs.push("--worktree", worktree);
     if (format === "csv") {
       const sheetName = await resolveFirstSheetName(file, unitId);
@@ -76,13 +81,20 @@ export async function GET(request: NextRequest) {
 
     const base = basename(file).replace(/\.univer$/i, "");
     const downloadName = `${base}.${ext}`;
+    // HTTP headers are ByteString-only: ASCII fallback + RFC 5987 for the
+    // real (possibly Chinese) name — browsers prefer filename*.
+    const asciiName = downloadName.replace(/[^\x20-\x7E]/g, "_") || `export.${ext}`;
     const contentType = format === "csv"
       ? "text/csv; charset=utf-8"
-      : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      : format === "pptx"
+        ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        : format === "docx"
+          ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     return new NextResponse(new Uint8Array(bytes), {
       headers: {
         "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${downloadName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+        "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
         "Cache-Control": "no-store",
       },
     });

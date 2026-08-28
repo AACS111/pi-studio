@@ -9,6 +9,7 @@ import { RunManager } from "./runtime.ts";
 import { PiAgentExecutor, type AgentExecutorLike } from "./executor.ts";
 import { EventStore, TeamStore } from "./store.ts";
 import { classifyTask } from "./task-classify.ts";
+import { createLlmJudge } from "./llm-judge.ts";
 import { parallelFlow, serialFlow } from "./templates.ts";
 import { reduce } from "./types.ts";
 import type { ExecutionMode, TeamDef, TeamEvent, TeamRun } from "./types.ts";
@@ -90,6 +91,18 @@ export function startTeamRun(
     team: effective,
     runId,
     executor: executor ?? new PiAgentExecutor(),
+    // P1-4：LLM judge 最后决策器（真实实现）。llm 条件此前从未接入生产路由（只有测试 mock）；
+    // 判定器内部安全降级：无模型/无认证/超时/解析失败 → null → 回落 keyword/always 层。
+    // PI_TEAM_LLM_JUDGE=0 可关闭（回旧行为）；PI_TEAM_LLM_JUDGE_MODEL 可指定判定模型。
+    llmJudge: createLlmJudge({
+      cwd: effective.cwd,
+      describeTarget: (to) => {
+        const a = effective.agents.find((x) => x.id === to);
+        if (!a) return "";
+        const duty = a.role?.trim() || a.systemPrompt.trim().replace(/\s+/g, " ").slice(0, 60);
+        return duty ? `${a.name}：${duty}` : a.name;
+      },
+    }),
     onRunUpdate: (r) => {
       entry.run = r;
       for (const cb of entry.runListeners) cb(r);

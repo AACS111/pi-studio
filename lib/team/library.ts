@@ -48,6 +48,7 @@ const LEADER = {
   //   grep 搜关键实现；用于判断难度、拆分任务），禁 bash/edit（不直接改业务代码、不跑命令——留给开发）。
   //   编排模式下 executor 会用 ENTRY_ANALYSIS_TOOLS 约束（同理禁 edit/bash）。
   toolNames: ["read", "write", "grep", "find", "ls"],
+  writePolicy: "docs" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
 };
 
@@ -80,6 +81,7 @@ const PRODUCT = {
   expectation: "产出包含明确需求点、验收标准、方案文档的路径；关键取舍用 team_record_decision 记录并给理由。",
   // 产品不写代码，但要写方案文档、读代码了解现状：给 read/write/grep/find/ls，禁 bash/edit。
   toolNames: ["read", "write", "grep", "find", "ls"],
+  writePolicy: "docs" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
   thinkingLevel: "low",
 };
@@ -109,6 +111,7 @@ const DEVELOPER = {
   expectation: "改动真实写入项目目录并跑必要验证（typecheck/测试/构建子集）；交接给出改动文件清单、实现要点、如何验证。",
   // 开发是主战力，需要全套工具：read/bash/edit/write/grep/find/ls。
   toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  writePolicy: "all" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
 };
 
@@ -143,6 +146,7 @@ const TESTER = {
   expectation: "逐项真实验证交接产物；结果用 team_record_decision 记录 verdict（pass/fail）+ 发现的问题清单（复现步骤+期望/实际+严重程度）。",
   // 测试只验证不写业务代码：给 read/bash/grep/find/ls（跑测试+读代码）+ write（写报告），禁 edit。
   toolNames: ["read", "bash", "grep", "find", "ls", "write"],
+  writePolicy: "docs" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
 };
 
@@ -169,6 +173,7 @@ const RESEARCHER = {
   expectation: "调研结论必须是可验证的（给出依据来源 URL/文件/命令输出）；输出报告含结论+依据+风险；关键取舍记录决策。",
   // 研究员只读探索不改代码：给 read/bash/grep/find/ls（读代码+跑命令探查），禁 edit/write。
   toolNames: ["read", "bash", "grep", "find", "ls"],
+  writePolicy: "docs" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
   thinkingLevel: "low",
 };
@@ -195,6 +200,7 @@ const WRITER = {
   expectation: "文档内容必须与实际代码/产物一致（先读再写，禁止编造接口）；给出文档路径与覆盖范围。",
   // 文档写文档不写代码：给 read/write/grep/find/ls（读代码写实文档），禁 bash/edit。
   toolNames: ["read", "write", "grep", "find", "ls"],
+  writePolicy: "docs" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
   thinkingLevel: "low",
 };
@@ -224,6 +230,7 @@ const FE_DEVELOPER = {
 - 交接必须写明改动文件清单、UI 行为变化、接口传参约定。`,
   expectation: "前端 UI 改造真实写入项目目录；改动清单 + 接口传参约定写入交接，供后端/测试接续。",
   toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  writePolicy: "all" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
 };
 
@@ -252,6 +259,7 @@ const BE_DEVELOPER = {
 - 交接必须写明改动文件清单、接口签名变化、数据版本逻辑变化。`,
   expectation: "后端接口/数据逻辑改造真实写入项目目录；改动清单 + 接口签名/版本逻辑变化写入交接，供测试接续。",
   toolNames: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+  writePolicy: "all" as const, // 工具层写权限：防止越权改业务代码（write 仅限 .md / edit 剔除）——见 AgentDef.writePolicy
   builtin: true,
 };
 
@@ -279,6 +287,8 @@ export function agentFromLibrary(item: AgentLibraryItem): {
   model: string;
   systemPrompt: string;
   toolNames: string[];
+  /** 工具层写权限（同 AgentDef.writePolicy） */
+  writePolicy?: "all" | "docs" | "none";
   skillIds?: string[];
   expectation?: string;
   thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -291,6 +301,7 @@ export function agentFromLibrary(item: AgentLibraryItem): {
     model: item.model,
     systemPrompt: item.systemPrompt,
     toolNames: [...item.toolNames],
+    writePolicy: item.writePolicy,
     skillIds: item.skillIds ? [...item.skillIds] : undefined,
     expectation: item.expectation,
     thinkingLevel: item.thinkingLevel,

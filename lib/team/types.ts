@@ -34,6 +34,11 @@ export interface AgentDef {
     scope: "structured" | "summary" | "recent";  // 覆盖团队默认
     recentCount?: number;
   };
+  /** 写权限策略（角色边界硬约束）：all=可自由写/改任意文件；docs=只允许写 .md 文档（write 被替换为
+   *  仅限 Markdown 的受控写工具、edit 直接剔除）；none=不允许任何写操作。缺省推导：toolNames 含 edit
+   *  → all（开发类角色），否则 docs（分析/产品/测试等只许出文档）。提示词约束「不许写代码」对通用
+   *  write/edit 工具无效（bcfc16cd 实锤 leader/product/tester 均借 write 越权改业务代码），必须在工具层封禁。 */
+  writePolicy?: "all" | "docs" | "none";
   maxTurns?: number;          // 单次执行最大会话内轮次（默认 60；不填则用 60）
   maxOutputChars?: number;    // 产出截断上限（默认 4000）
   timeoutMs?: number;         // 单次执行超时（默认继承 maxRunMinutes）
@@ -50,6 +55,8 @@ export interface AgentLibraryItem {
   model: string;
   systemPrompt: string;
   toolNames: string[];
+  /** 工具层写权限（同 AgentDef.writePolicy） */
+  writePolicy?: "all" | "docs" | "none";
   skillIds?: string[];
   builtin?: boolean;
   /** 期望产出/验收标准（借鉴 CrewAI expected_output） */
@@ -172,6 +179,9 @@ export interface TeamDef {
   sessionRetention?: SessionRetention;  // Phase 1 不实现，仅预留
   /** 简单任务 solo 降级（P0-1）：开启后，任务被判定为无需拆解时只跑入口角色，避免极简任务跑遍所有角色 */
   autoSolo?: boolean;
+  /** 编排引擎（2026-08 重构）："dag"=先计划后调度（新团队默认，不确定性最低）；
+   *  未设置/"transitions"=旧自由路由引擎（存量团队兼容保留）。新建团队由模板写入 "dag"。 */
+  orchestration?: "dag" | "transitions";
   createdAt: number;
   updatedAt: number;
 }
@@ -268,6 +278,23 @@ export interface ExecutionStats {
 
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+/** DAG 编排（plan-then-dispatch）：planner 产出的任务计划项。
+ *  借鉴 CrewAI hierarchical：运行前先出计划，调度器按 dependsOn 就绪集派发，不做角色自由流转。 */
+export interface PlanTask {
+  id: string;                 // 计划内编号 T1/T2…（与 TeamTask.id 分离，TeamTask 通过 planTaskId 关联）
+  title: string;
+  agentId: string;            // 必须是团队成员
+  dependsOn: string[];        // 引用其它 PlanTask.id，无环
+  expectedOutput?: string;    // 验收标准，注入执行上下文
+}
+/** planner 经 team_submit_plan 提交的原始载荷（校验前） */
+export interface PlanSubmissionTask {
+  title?: unknown;
+  agentId?: unknown;
+  dependsOn?: unknown;
+  expectedOutput?: unknown;
+}
+
 export interface TeamTask {
   id: string;                 // "TASK-001"
   runId: string;
@@ -280,6 +307,10 @@ export interface TeamTask {
   dependsOn?: string[];       // Phase 2 并行调度使用（任务依赖 DAG）
   /** 本任务的期望产出/验收标准（借鉴 CrewAI expected_output）；注入上下文供执行角色按标尺交付 */
   expectedOutput?: string;
+  /** DAG 编排：对应的计划任务 id（T1/T2…），由 runtime 创建任务时写入 */
+  planTaskId?: string;
+  /** DAG 编排：本任务已被重新派发的次数（重试上限 = team.maxReworkRounds） */
+  retries?: number;
   createdAt: number;
   startedAt?: number;
   completedAt?: number;
@@ -392,6 +423,10 @@ export interface Projections {
 }
 
 export interface TeamSnapshot {
+  /** 快照格式版本。v2 = 用 reduce(base) 正确合并的投影；
+   *  v1（无版本字段的旧快照）存在「跨快照边界丢任务状态更新」缺陷，
+   *  读取时作废（回退全量 replay 自愈），避免历史脏快照继续污染投影。 */
+  v?: number;
   eventSequence: number;      // 快照包含到的最后 sequence
   projections: Projections;
 }
@@ -421,8 +456,13 @@ export function emptyProjections(): Projections {
  * 对同一事件序列调用结果一致（无随机、无外部副作用）。
  * run_completed / run_failed / run_cancelled 不改变投影（run 状态在 TeamRun meta）。
  */
-export function reduce(events: TeamEvent[]): Projections {
-  const p = emptyProjections();
+export function reduce(events: TeamEvent[], base?: Projections): Projections {
+  // base 提供时在其克隆上原地应用增量事件：等价于「全量 replay」语义。
+  // （此前 EventStore.rebuildProjections 对 delta 纯 concat，跨快照边界的
+  //  task_completed/task_failed/execution_completed 更新全部丢失——delta 的 reduce
+  //  看不到 pre-snapshot 创建的任务对象；现在由 reduce 内部直接在克隆的 base 上
+  //  查找并更新，彻底消除拼接丢更新问题。）
+  const p: Projections = base ? structuredClone(base) : emptyProjections();
 
   for (const event of events) {
     switch (event.type) {

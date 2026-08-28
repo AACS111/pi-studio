@@ -9,15 +9,15 @@
  *
  * AgentExecutorLike 抽象：E2E 测试可注入 mock 执行器（不真实调 LLM）。
  */
-import { mkdirSync, appendFileSync, existsSync } from "fs";
+import { mkdirSync, appendFileSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { startRpcSession } from "../rpc-manager.ts";
 import { isFilePathInsideCwd, type ChangedFile } from "../changed-files.ts";
 import { getTeamDir } from "./store.ts";
 import { buildRoleContextBlock } from "./context.ts";
-import { createTeamTools, createToolSink, consumeToolRequests } from "./tools.ts";
+import { createTeamTools, createToolSink, consumeToolRequests, createDocWriteTool, validatePlanSubmission } from "./tools.ts";
 import { recommendedCompactionForWindow } from "../compaction-settings.ts";
-import type { AgentExecution, ExecutionStats, TeamDef, TeamEventInput, TeamMessage, TeamTask } from "./types.ts";
+import type { AgentDef, AgentExecution, ExecutionStats, PlanTask, TeamDef, TeamEventInput, TeamMessage, TeamTask } from "./types.ts";
 import type { ExecutionResult } from "./engine.ts";
 
 export const INITIAL_PROMPT =
@@ -27,10 +27,22 @@ export const INITIAL_PROMPT =
  *  必须把 task 放进 user message（而非只放 systemPrompt）——provider 的 prompt cache
  *  可能命中旧 systemPrompt 快照，导致追加在 systemPrompt 末尾的角色块/任务被 cache
  *  吞掉、LLM 实际收不到 task。user message 是 cache 的自然失效点，这里拼进去保证
- *  task 一定进入 LLM 输入。 */
-function buildInitialPrompt(task: string): string {
+ *  task 一定进入 LLM 输入。
+ *  planner 轮（DAG 编排）：替换触发指令为「用 team_submit_plan 提交计划」；planError 非空时附纠错信息。 */
+function buildInitialPrompt(task: string, planError?: string): string {
   const t = (task ?? "").trim();
   if (!t) return INITIAL_PROMPT;
+  if (planError !== undefined) {
+    return [
+      "",
+      "## 用户任务（本次必须完成的需求，唯一权威来源）",
+      t,
+      "",
+      planError
+        ? `⚠️ 上一次计划提交被拒绝：${planError}\n请阅读上下文与团队角色，修正后立即重新调用 team_submit_plan 提交。`
+        : "你是计划者（planner）：现在不要亲自执行任何工作，而是把这个任务拆解为可调度的任务计划，并调用 team_submit_plan 工具一次性提交。无依赖的任务会并行执行；expectedOutput 写清验收标准（改哪些文件/接口约定/验证方法）。",
+    ].join("\n");
+  }
   return [
     "",
     "## 用户任务（本次必须完成的需求，唯一权威来源）",
@@ -52,6 +64,13 @@ export interface AgentExecutionRequest {
   task: string;
   /** 执行模式：solo=简单任务入口角色单干（可读改代码），orchestrated=多角色协作（leader 只派活） */
   mode?: "solo" | "orchestrated";
+  /** 计划轮（DAG 编排）：注入 team_submit_plan 工具并透出 result.plan。
+   *  仅影响工具集与首条指令；不改变角色/写权限策略。 */
+  planner?: boolean;
+  /** 计划校验失败后的纠错提示（planner 重试轮）：拼进首条指令，让模型修正重提 */
+  planError?: string;
+  /** 本轮计划/波次实际参与的角色数（DAG 调度传入）：时间预算按它分摊而非全体团队，闲置角色不稀释 */
+  participantCount?: number;
   /** 取消信号：收到 abort 应立即中止会话并提前返回（用户点击停止对话时由 runtime 下发） */
   signal?: AbortSignal;
   /** 事件回调（Runtime 提供，写 events.jsonl 由 Runtime 负责） */
@@ -63,6 +82,64 @@ export interface AgentExecutorLike {
   run(request: AgentExecutionRequest): Promise<ExecutionResult>;
 }
 
+/** 读会话 .jsonl 最后一条 assistant 消息的 LLM 错误（stopReason=error/aborted / errorMessage）。
+ *  背景：模型侧失败时 pi 会写入空（或仅 thinking）assistant + 错误标记，
+ *  get_last_assistant_text 返回空——旧逻辑误标为 completed(空输出)，重试/调度拿到假信号
+ *  （实锤 run 84c22d07：provider 403 三轮全空却都当成功；run 907d9c13：be-dev 网络中断
+ *  stop=aborted 仅剩 thinking 块也被当成功→空交付物占坑）。返回 undefined 表示本回合正常。
+ *  调用约定：仅在文本输出为空时调用（有真实文本的回合不判失败）。 */
+export function readLastAssistantLlmError(sessionFile: string): string | undefined {
+  try {
+    const lines = readFileSync(sessionFile, "utf8").trim().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let parsed: unknown;
+      try { parsed = JSON.parse(lines[i]); } catch { continue; }
+      // 兼容两种包裹：{type:'message',message:{...}} 或直接消息对象
+      const wrapper = parsed as { message?: Record<string, unknown>; role?: string };
+      const m = (wrapper.message ?? wrapper) as {
+        role?: string;
+        content?: unknown;
+        stopReason?: string;
+        errorMessage?: string;
+      };
+      if (m.role !== "assistant") continue;
+      // 错误标记优先于内容判断：thinking 流水不算产出（run 907d9c13 实锤：aborted 只留 thinking）
+      if ((m.stopReason === "aborted" || m.stopReason === "error") && m.errorMessage) {
+        return String(m.errorMessage);
+      }
+      if (Array.isArray(m.content) && m.content.some((p: { type?: string }) => p?.type === "text")) {
+        return undefined; // 最后一条 assistant 有真文本 → 正常
+      }
+      if (m.stopReason === "error") return String(m.errorMessage ?? "模型调用失败（stopReason=error）");
+      return undefined; // 空/仅 thinking 但无错误标记：不当 LLM 故障
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 单次执行的时间预算计算（纯函数）：
+ *  1) agent.timeoutMs 显式配置最优先——不同角色耗时天然不同，团队级精细控制的主手段；
+ *  2) DAG 编排传 participantCount = 计划实际派活的角色数（闲置角色不再稀释预算）；
+ *  3) 兑底按团队规模但封顶 4（典型 planner + ≤3 并行分支；旧公式除以全队人数，
+ *     8 角色时人均 6.4min，深度思考模型还没进入写码就被拦腰切断）；
+ *  始终保留 25% 余量给后续未启动的执行。 */
+export function computeExecutionTimeoutMs(o: {
+  maxRunMinutes: number;
+  agentCount: number;
+  participantCount?: number;
+  explicitTimeoutMs?: number;
+}): number {
+  if (o.explicitTimeoutMs && o.explicitTimeoutMs > 0) return o.explicitTimeoutMs;
+  // NaN 防御：旧/手写 team.json 缺 maxRunMinutes 时 undefined 参与运算得 NaN，
+  // setTimeout(fn, NaN)≈立即触发 → 每次执行瞬间「超时」失败 → hybrid 兜底回入口 →
+  // 以 CPU 速度无限循环刷盘。这里兑底默认 30 分钟（与 runtime 保险丝兑底一致）。
+  const maxRunMinutes = Number.isFinite(o.maxRunMinutes) && o.maxRunMinutes > 0 ? o.maxRunMinutes : 30;
+  const participants = Math.max(o.participantCount ?? Math.min(o.agentCount, 4), 2);
+  return Math.floor(maxRunMinutes * 60_000 * 0.75 / (participants - 1));
+}
+
 /** 解析 agent.model："provider/modelId" 或 "modelId"（空 → 跟随默认） */
 export function parseAgentModel(model: string): { provider: string; modelId: string } | null {
   if (!model?.trim()) return null;
@@ -71,6 +148,114 @@ export function parseAgentModel(model: string): { provider: string; modelId: str
     return { provider: model.slice(0, idx), modelId: model.slice(idx + 1) };
   }
   return { provider: "", modelId: model.trim() };
+}
+
+/** 解析写权限策略：显式 writePolicy 优先；缺省推导 = toolNames 含 edit → all（开发类角色），否则 docs。
+ *  背景（run bcfc16cd 实锤）：leader/product/tester 借通用 write 工具越权写业务代码，提示词约束无效，
+ *  必须在工具层封禁。 */
+export function resolveWritePolicy(agent: Pick<AgentDef, "writePolicy" | "toolNames">): "all" | "docs" | "none" {
+  if (agent.writePolicy) return agent.writePolicy;
+  return agent.toolNames.includes("edit") ? "all" : "docs";
+}
+
+/** 按写权限策略清理内置工具白名单：docs/none 剔除 edit 与原版 write（docs 会另行注入受控 .md 写工具）。 */
+export function applyWritePolicyToToolNames(policy: "all" | "docs" | "none", names: string[]): string[] {
+  if (policy === "all") return names;
+  return names.filter((n) => n !== "edit" && n !== "write");
+}
+
+/** 假宣称检测：扫描结论文本里「动词 + 源码文件」的修改宣称，返回 basename 不在实际变更集内的宣称清单。
+ *  仅匹配带写入动词的句子（中性提及/验证语句不误报）；比对维度是文件名（basename），实际已写过的自然排除。 */
+export function detectPhantomClaims(text: string, actualBasenames: Set<string>): string[] {
+  if (!text?.trim()) return [];
+  const VERB_CJK = /(现在|接下来|准备|即将|马上)?[\u4e00-\u9fa5]{0,6}(写入|重写|覆写|修改|编辑|更新|创建|新建|改造)[ \t]*[\u4e00-\u9fa5]{0,10}[ \t]*[`'\"「『]?([\w.\-/\\]+?\.(?:java|vue|ts|tsx|js|jsx|mjs|cjs|xml|sql|json|kt|go|py))/g;
+  const VERB_EN = /\b(?:wrote|rewrote|overwrote|modifi(?:ed|es|y)|updated|edited|created|implemented)\b[^.\n]{0,40}?([\w.\-/\\]+\.(?:java|vue|ts|tsx|js|jsx|mjs|cjs|xml|sql|json|kt|go|py))/gi;
+  const claimed = new Map<string, string>();
+  const add = (p: string) => {
+    const base = p.split(/[\\/]/).pop() ?? p;
+    if (!actualBasenames.has(base) && !claimed.has(base)) claimed.set(base, p);
+  };
+  // 排除“改动文件：/实际修改”等事实性清单行（那是系统追加的真实变更，不是宣称）
+  const lines = text.split(/\n/).filter((l) => !/^\s*(改动文件|实际修改|变更文件)[:：]/.test(l));
+  for (const line of lines) {
+    for (const m of line.matchAll(VERB_CJK)) add(m[3]);
+    for (const m of line.matchAll(VERB_EN)) add(m[1]);
+  }
+  return [...claimed.values()].slice(0, 4);
+}
+
+export interface FallbackMessageInput {
+  output: string;
+  handoffSummary?: string;
+  changedFiles: Array<{ filePath: string; kind: string }>;
+  truncated: boolean;
+  turnsUsed: number;
+  maxTurns: number;
+  /** 无任何产出时的查看指引（如 runs/<id>/thinking/<agent>.md） */
+  detailHint?: string;
+}
+
+/** 群聊消息构建（修 bcfc16cd 缺陷③的根因）：角色最后一轮可能既无文本、又无交接、又无文件变更
+ *  （典型：26 次只读探索后被回合上限 steer 收尾）——旧逻辑三分支都落空 → 静默无消息，下游/用户看不到该角色干过什么。
+ *  新逻辑保证非空；同时叠加：真实变更清单恒显示（压缩叙事造假空间）、假宣称警示、截断诚实标注。 */
+export function buildFallbackGroupMessage(input: FallbackMessageInput): { content: string; phantomWarnings: string[] } {
+  const files = input.changedFiles ?? [];
+  const actualBasenames = new Set(files.map((f) => f.filePath.split(/[\\/]/).pop() ?? f.filePath));
+  const base = input.output?.trim() ?? "";
+  let content = base;
+  if (!content && input.handoffSummary?.trim()) content = `交接：${input.handoffSummary.trim().slice(0, 800)}`;
+  if (!content && files.length > 0) content = `已完成本次执行，实际改动 ${files.length} 个文件`; // 具体清单在末尾统一拼
+  if (!content) {
+    content = input.truncated
+      ? `本轮未产出文本结论（工具调用达上限 ${input.maxTurns} 次，提前收尾；期间均为只读操作或未完成动作）`
+      : "本轮未产出文本结论";
+    if (input.detailHint) content += `，过程详情见 ${input.detailHint}`;
+  }
+  const phantomWarnings = base ? detectPhantomClaims(base, actualBasenames) : [];
+  let msg = content;
+  if (files.length > 0) {
+    msg += `\n\n实际改动文件：${files.map((f) => `${f.kind === "edit" ? "M" : "A"} ${f.filePath.split(/[\\/]/).pop()}`).join("、")}（共 ${files.length} 个）`;
+  }
+  for (const w of phantomWarnings) {
+    msg += `\n⚠️ 宣称核对：文中提及修改 ${w}，但本执行未见对应写入操作（以系统实际变更清单为准，谨防假汇报）`;
+  }
+  if (input.truncated) {
+    msg += `\n⚠️ 本执行命中工具调用上限（${input.turnsUsed}/${input.maxTurns}），属提前收尾——最后声称的动作可能未真正完成，请下游注意核实。`;
+  }
+  return { content: msg.trim(), phantomWarnings };
+}
+
+/** 总结块状态行（截断诚实化）：不再硬编码「完成」。 */
+export function executionStatusLine(truncated: boolean, turnsUsed: number, maxTurns: number): string {
+  return truncated ? `回合上限截断（${turnsUsed}/${maxTurns}）` : "完成";
+}
+
+/** thinking.md 结构化富化（修「思考几 MB 落盘几十 KB」）：除思考流水外，把本执行的工具轨迹、
+ *  真实变更清单、最终结论一并写成可读 Markdown —— 下游角色 read 它即可接续，不必重探整条链路。 */
+export function buildReadableExecutionBlock(o: {
+  sequence: number;
+  iso: string;
+  output: string;
+  handoffTo?: string;
+  handoffSummary?: string;
+  changedFiles: Array<{ filePath: string; kind: string }>;
+  toolsLog: string[];
+  thinkingFull: string;
+}): string {
+  const L: string[] = [`\n---\n## 执行 #${o.sequence} · ${o.iso}`];
+  L.push(`### 结论\n${o.output?.trim() || "（无文本结论）"}`);
+  if (o.handoffTo) L.push(`### 交接\n→ ${o.handoffTo}${o.handoffSummary ? ` — ${o.handoffSummary}` : ""}`);
+  if (o.changedFiles.length > 0) {
+    L.push(`### 实际变更文件\n${o.changedFiles.map((f) => `- ${f.kind === "edit" ? "M" : "A"} ${f.filePath}`).join("\n")}`);
+  }
+  if (o.toolsLog.length > 0) {
+    L.push(`### 工具轨迹（实际执行·时间序）\n${o.toolsLog.map((t) => `- ${t}`).join("\n")}`);
+  }
+  const th = o.thinkingFull?.trim();
+  if (th) {
+    L.push(th.length > 9000 ? `### 思考流水（节选）\n${th.slice(0, 6000)}\n\n……[中间省略 ${(th.length - 8000).toLocaleString()} 字符] ……\n\n${th.slice(-2000)}` : `### 思考流水\n${th}`);
+  }
+  return L.join("\n\n");
 }
 
 /** 真实执行器：启动 pi 会话跑完整回合 */
@@ -92,20 +277,31 @@ export class PiAgentExecutor implements AgentExecutorLike {
     mkdirSync(sessionDir, { recursive: true });
     const sessionFile = join(sessionDir, `${runId}-${execution.agentId}.jsonl`);
 
-    // 受控工具
+    // 受控工具（planner 轮额外注入 team_submit_plan）
     const sink = createToolSink();
-    const tools = createTeamTools({ team, executingAgentId: agent.id, existingTasks, sink });
+    const tools = createTeamTools({ team, executingAgentId: agent.id, existingTasks, sink, plannerMode: request.planner === true });
+
+    // —— 写权限策略（工具层角色边界）：显式 writePolicy 优先，缺省推导 = 有 edit → all 否则 docs。
+    // docs：剔除内置 edit/write，注入仅限 .md 的受控写工具；none：全部剔除。修 bcfc16cd 越权写码缺陷①。 */
+    const writePolicy = resolveWritePolicy(agent);
+    const policyToolNames = applyWritePolicyToToolNames(writePolicy, agent.toolNames);
+    if (writePolicy === "docs") tools.push(createDocWriteTool(team.cwd));
 
     // 变更文件采集（edit/write）：跟普通会话一样把「改动的文件」显示出来。
     // 在 tool_execution_start 里按工具名 + 参数路径记录，仅保留站在项目 cwd 内的文件（排除临时脚本/导出）。
     const changedFiles = new Map<string, ChangedFile["kind"]>();
 
     const model = parseAgentModel(agent.model);
-    // 预算分摊：单角色超时不再独占整个 run 时长，按预期角色数均分，并给后续未启动角色留 25% 余量。
-    // 避免前几个角色吃光预算导致 tester 一行没跑。
-    const agentCount = Math.max(team.agents.length, 2);
-    const perAgentMs = Math.floor(team.maxRunMinutes * 60_000 * 0.75 / Math.max(agentCount - 1, 1));
-    const timeoutMs = agent.timeoutMs ?? perAgentMs;
+    // 预算分摊：单角色超时不再独占整个 run 时长。优先级：agent.timeoutMs 显式配置（不同角色
+    // 耗时天然不同：开发者读码+写入 ≫ 测试跑检查）> DAG 计划实际参与者数分摊 > 团队规模封顶 4 分摊。
+    // 旧公式除以全体角色数（含闲置），8 角色团队每人只分到 ~6.4min，深度思考模型读完码就被切断
+    // （run 907d9c13 实锤）。给后续未启动角色留 25% 余量。
+    const timeoutMs = computeExecutionTimeoutMs({
+      maxRunMinutes: team.maxRunMinutes,
+      agentCount: team.agents.length,
+      participantCount: request.participantCount,
+      explicitTimeoutMs: agent.timeoutMs,
+    });
 
     // —— 每角色一份「总结」.md（替代旧的每执行一份「流水」.md）——
     //   路径：runs/<runId>/summaries/<agentId>.md。每次执行追加一段「执行 #seq」小节，一个角色只
@@ -122,7 +318,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
     const writeTrace = (line: string) => { void line; /* 思考流水不再落 .md，避免总结文件被撑大 */ };
     // 总结文件头只在首次执行时写一次（同一角色多次执行复用同一文件，避免头部重复）
     if (!existsSync(summaryFile)) {
-      appendSummary(`# 角色总结：${agent.name}（${agent.id}）\n> 思考/会话全文：sessions/${runId}-${agent.id}.jsonl（下游角色按需 read）\n`);
+      appendSummary(`# 角色总结：${agent.name}（${agent.id}）\n> 结论/交接沉淀于此；完整过程（工具轨迹+思考流水+变更清单）：runs/${runId}/thinking/${agent.id}.md（下游直接 read 接续，勿读 jsonl）\n`);
     }
 
     // 编排模式下入口角色（leader）：允许读代码/写方案（用于需求分析、方案设计、判断难度、拆分任务），
@@ -133,11 +329,13 @@ export class PiAgentExecutor implements AgentExecutorLike {
     const isOrchestrationEntry = request.mode === "orchestrated" && team.entryAgentId === agent.id;
     const FULL_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
     const ENTRY_ANALYSIS_TOOLS = ["read", "write", "grep", "find", "ls"];
-    const effectiveToolNames = isOrchestrationEntry
-      ? agent.toolNames.filter((n) => ENTRY_ANALYSIS_TOOLS.includes(n))
+    let effectiveToolNames = isOrchestrationEntry
+      ? policyToolNames.filter((n) => ENTRY_ANALYSIS_TOOLS.includes(n))
       : request.mode === "solo" && team.entryAgentId === agent.id
         ? FULL_TOOLS
-        : agent.toolNames;
+        : policyToolNames;
+    // solo 全套工具也必须服从写权限封禁（solo 入口即开发者场景除外：其 writePolicy 通常为 all）
+    effectiveToolNames = applyWritePolicyToToolNames(writePolicy, effectiveToolNames);
 
     // 项目组角色默认开启思维链：项目组任务通常需推理拆解，关闭会明显变蠢。
     // agent.thinkingLevel 显式指定时优先其值；否则默认 medium（跟随 pi 的档位语义）。
@@ -166,6 +364,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
     let thinkingFull = ""; // 本次执行完整思考流水（用于落 .md 供可读查看；区别于 flush 用的 thinkingBuf）
     let thinkingTimer: ReturnType<typeof setInterval> | undefined;
     let unsubscribe: (() => void) | undefined;
+    const toolsLog: string[] = []; // 本执行工具轨迹（时间序，落 thinking.md 用）
     // 本次执行实际生效的模型（agent.model 显式 / 跟随全局默认后由会话解析出的具体模型），供 UI 展示
     let actualModel: { provider: string; modelId: string } | undefined;
     const flushThinking = () => {
@@ -218,6 +417,11 @@ export class PiAgentExecutor implements AgentExecutorLike {
         }
       }
 
+      // —— 回合统计基线 —— 同一角色的 pi 会话跨执行复用，get_session_stats 返回的是
+      // 会话【累计】值；先记本轮起点，结束时取差值（见 diffExecutionStats），
+      // 否则第 2+ 次执行会把之前的 token/成本重复计入 run.stats（统计虚高）。
+      const statsBaseline = await readSessionStats(session);
+
       // —— 追加项目组角色块到 pi 默认 systemPrompt 之后（不覆盖）——
       // pi 在 waitUntilReady/资源加载后已构建默认 systemPrompt（模型身份+工具规范+AGENTS.md/CLAUDE.md）。
       // 此处读出它，把「角色职责+团队上下文+项目指令/工作目录」叠加在后面写回，保留 pi 全部 agent 素养。
@@ -240,7 +444,12 @@ export class PiAgentExecutor implements AgentExecutorLike {
       //   探索阶段就会耗尽 20 次而被迫 steer 收尾，还没开始改就被掐断。60 给足探索+改造+验证的余量）。
       //   agent 显式配 maxTurns 时用其值，否则用默认 60。
       const maxTurns = agent.maxTurns ?? 60;
+      // 三段式软着陆（参考 @tintinweb/pi-subagents MIT）：达到上限 → steer 收尾指令 →
+      // 宽限 N 回合（LLM 消化指令+总结交接）→ 仍未收尾才强制中断。旧实现 steer 一失败就
+      // abort 整个回合，兜底机制反噬执行；宽限期让「按时收尾」与「超时截断」两种结局可区分。
+      const TURNS_GRACE = 5;
       let turnLimitSteered = false;
+      let turnLimitAborted = false;
       unsubscribe = session.onEvent((ev) => {
         try {
           const et = ev as { type: string };
@@ -282,14 +491,25 @@ export class PiAgentExecutor implements AgentExecutorLike {
             const summary = summarizeToolCall(toolName, te.args);
             request.onEvent({ type: "agent_progress", executionId: execution.id, agentId: agent.id, kind: "tool", content: summary });
             writeTrace(`[tool] ${summary}`);
+            if (toolsLog.length < 400) toolsLog.push(summary); // 轨迹全量落盘 thinking.md；此处只设展示上限防极端膨胀
             toolCallCount++;
             if (toolCallCount >= maxTurns && !turnLimitSteered) {
               turnLimitSteered = true;
               const steerMsg = `已达到回合上限（${maxTurns}次工具调用）。请立即收尾：总结当前进度与产物，用 team_handoff 交接给下一个角色（或 __end__ 若任务已全部完成）。不要再次调用读写工具。`;
               writeTrace(`\n[maxTurns] 达到上限，steer 收尾\n`);
-              void session.send({ type: "steer", text: steerMsg } as never).catch(() => {
-                abortExecution();
+              // 修复（高危）：旧实现发 { text } 字段，而 rpc-manager case "steer" 读的是
+              // command.message → steer(undefined) → pi agent-session.steer() 首行
+              // text.startsWith("/") 抛 TypeError → .catch(abortExecution) 把整个回合静默硬中断
+              // （工具调用数达到 maxTurns 的真实高频场景必触发，执行被标 failed/空输出）。
+              // ① 字段改为 message ② steer 失败不再 abort——进入宽限回合，耗尽后由下方强制中断兑底。
+              void session.send({ type: "steer", message: steerMsg } as never).catch((err: unknown) => {
+                writeTrace(`[maxTurns] steer 发送失败：${err instanceof Error ? err.message : String(err)}（宽限回合内继续，耗尽后强制中断）\n`);
               });
+            } else if (turnLimitSteered && !turnLimitAborted && toolCallCount >= maxTurns + TURNS_GRACE) {
+              // 三段式第 3 段：宽限耗尽仍未收尾 → 强制中断（不再继续烧工具调用）
+              turnLimitAborted = true;
+              writeTrace(`\n[maxTurns] 宽限 ${TURNS_GRACE} 回合内未收尾，强制中断\n`);
+              abortExecution();
             }
           }
         } catch {
@@ -318,7 +538,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
       // 但 provider 的 prompt cache 可能命中旧 systemPrompt 快照、吞掉追加的角色块（含任务），
       // 所以这里把 task 显式放进首条 user message——user message 是 cache 失效点，保证任务一定进 LLM。
       // 取消信号：外部取消（用户停止）时 raceWithAbort 立即 reject（并发送底层 abort，尽力停止 LLM）。
-      const promptPromise = session.inner.prompt(buildInitialPrompt(request.task), { source: "rpc" });
+      const promptPromise = session.inner.prompt(buildInitialPrompt(request.task, request.planner === true ? (request.planError ?? "") : undefined), { source: "rpc" });
       const watchable = raceWithAbort(promptPromise, request.signal, abortExecution);
 
       await withTimeout(
@@ -337,37 +557,9 @@ export class PiAgentExecutor implements AgentExecutorLike {
       removeAbortListener?.();
       // 实时进度订阅已在 prompt 前建立（见上方），此处不再重复。
 
-      // 采集回合统计（token/成本/消息数）
-      let stats: ExecutionStats | undefined;
-      try {
-        const raw = (await session.send({ type: "get_session_stats" })) as {
-          tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-          cost?: number;
-          userMessages?: number;
-          assistantMessages?: number;
-          toolCalls?: number;
-          toolResults?: number;
-          totalMessages?: number;
-          sessionFile?: string;
-        } | null;
-        if (raw) {
-          stats = {
-            inputTokens: raw.tokens?.input ?? 0,
-            outputTokens: raw.tokens?.output ?? 0,
-            cacheReadTokens: raw.tokens?.cacheRead ?? 0,
-            cacheWriteTokens: raw.tokens?.cacheWrite ?? 0,
-            totalTokens: raw.tokens?.total ?? 0,
-            cost: raw.cost ?? 0,
-            userMessages: raw.userMessages ?? 0,
-            assistantMessages: raw.assistantMessages ?? 0,
-            toolCalls: raw.toolCalls ?? 0,
-            toolResults: raw.toolResults ?? 0,
-            totalMessages: raw.totalMessages ?? 0,
-          };
-        }
-      } catch {
-        stats = undefined;
-      }
+      // 采集回合统计（token/成本/消息数）：对本轮开头记录的基线取增量——
+      // 同角色会话跨执行复用且 get_session_stats 是累计值，不取差值会重复计入 run.stats
+      const stats = diffExecutionStats(await readSessionStats(session), statsBaseline);
 
       // 收集最终输出
       let output = "";
@@ -386,37 +578,99 @@ export class PiAgentExecutor implements AgentExecutorLike {
       }
 
       // 消费受控工具请求 → 事件（task/artifact/decision）；handoff 留给路由
-      const { handoff, lastVerdict } = consumeToolRequests(sink, execution.id, agent.id, runId, (e) =>
+      const { handoff, lastVerdict, lastDecisionContent, decisionRequests, planRequest } = consumeToolRequests(sink, execution.id, agent.id, runId, (e) =>
         request.onEvent(e as TeamEventInput),
       );
-
-      // 产出群聊消息（兜底：角色最后一次 assistant 可能无文本（例：结尾是工具调用且模型未再产出
-      //   text），导致 output 为空 → 下游角色消息缺失、群聊只剩入口角色。此时用交接摘要/改动文件
-      //   兜底生成一条可见结论，让产品/开发/测试的产出与变更文件在群聊里可读，而非只靠 changedFiles 卡片。
-      let messageContent = output.trim();
-      const changedFileList = [...changedFiles].map(([filePath, kind]) => ({ filePath, kind }));
-      if (!messageContent) {
-        if (handoff?.summary) {
-          messageContent = `交接：${handoff.summary.trim().slice(0, 800)}`;
-        } else if (changedFileList.length) {
-          messageContent = `已完成本次执行，改动 ${changedFileList.length} 个文件：${changedFileList
-            .map((f) => f.filePath.split(/[\\/]/).pop())
-            .join("、")}`;
-        }
-      } else if (changedFileList.length) {
-        // 有正文结论时也补一行改动文件摘要，便于下游/用户一眼看到产物
-        messageContent += `\n\n改动文件：${changedFileList
-          .map((f) => f.filePath.split(/[\\/]/).pop())
-          .join("、")}（共 ${changedFileList.length} 个）`;
-      }
-      if (messageContent.trim()) {
+      // LLM 故障诚实化：最后一条 assistant 为空且带错误标记（如 provider 403）→ 判 failed，
+      // 不再把空输出当 completed 递给重试/调度逻辑（run 84c22d07 实锤修复）。
+      // 宽限强制中断（turnLimitAborted）时 prompt 被主动 abort，输出为空是预期行为——
+      // 不走 llmError 检测，避免把 stopReason=aborted 误判成「模型调用失败」误导审计与重试。
+      const llmError = !output.trim() && !turnLimitAborted ? readLastAssistantLlmError(sessionFile) : undefined;
+      if (!llmError && turnLimitAborted) {
+        appendSummary(`\n---\n## 执行 #${execution.sequence}\n- 状态：失败\n- 原因：回合上限（${maxTurns}）steer 收尾后宽限 ${TURNS_GRACE} 回合内未收尾，被强制中断\n`);
         onMessage({
-          id: `msg-${execution.id}`,
+          id: `msg-${execution.id}-turnlimit`,
           kind: "agent",
           executionId: execution.id,
           agentId: agent.id,
           role: agent.name,
-          content: messageContent.trim(),
+          content: `⚠️ 本执行达到回合上限（${maxTurns} 次工具调用），steer 收尾指令已在宽限 ${TURNS_GRACE} 回合内未生效，被系统强制中断。已产出的内容如下，未完成的动作可能未真正完成。`,
+          createdAt: Date.now(),
+        });
+        return {
+          status: "failed" as const,
+          output,
+          failureReason: `回合上限（${maxTurns}）宽限 ${TURNS_GRACE} 回合内未收尾，被强制中断`,
+          ...(actualModel ? { model: actualModel } : {}),
+          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+        };
+      }
+      if (llmError) {
+        appendSummary(`\n---\n## 执行 #${execution.sequence}\n- 状态：失败\n- 原因：模型调用失败 ${llmError.slice(0, 300)}\n`);
+        // 群聊可见的诚实失败通告（不能静默无消息：下游/用户需要知道这轮为什么没产出）；
+        // 以角色身份（kind=agent）发出——错误归属该角色，UI 分组与「角色无产出」场景一致
+        onMessage({
+          id: `msg-${execution.id}-llmerr`,
+          kind: "agent",
+          executionId: execution.id,
+          agentId: agent.id,
+          role: agent.name,
+          content: `❌ 本执行因模型调用失败而中止：${llmError.slice(0, 260)}\n（系统提示：请检查模型配额/提供商可用性后重试）`,
+          createdAt: Date.now(),
+        });
+        return {
+          status: "failed" as const,
+          output: "",
+          failureReason: `模型调用失败：${llmError.slice(0, 400)}`,
+          ...(actualModel ? { model: actualModel } : {}),
+          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+        };
+      }
+      // DAG 编排：planner 轮提交的计划 → 二次校验（工具内校验过，防御性复验）后透出给调度器
+      let plan: PlanTask[] | undefined;
+      let planError: string | undefined;
+      if (request.planner) {
+        if (planRequest) {
+          const verdict = validatePlanSubmission(team, planRequest.tasks);
+          if (verdict.ok) plan = verdict.tasks;
+          else planError = verdict.error;
+        } else {
+          planError = "未调用 team_submit_plan 提交计划";
+        }
+      }
+
+      // 产出群聊消息（恒非空兜底）：角色最后一轮可能既无文本、又无交接、又无文件变更
+      //   （典型：只读探索后被回合上限收尾）——旧逻辑三分支都落空→静默无消息。现在任何情况都可见，
+      //   并叠加：真实变更清单恒显示、假宣称警示（修 fe-developer 假汇报）、截断诚实标注。
+      const changedFileList = [...changedFiles].map(([filePath, kind]) => ({ filePath, kind }));
+      const truncated = turnLimitSteered;
+      const fallback = buildFallbackGroupMessage({
+        output,
+        handoffSummary: handoff?.summary,
+        changedFiles: changedFileList,
+        truncated,
+        turnsUsed: toolCallCount,
+        maxTurns,
+        detailHint: `runs/${runId}/thinking/${agent.id}.md`,
+      });
+      onMessage({
+        id: `msg-${execution.id}`,
+        kind: "agent",
+        executionId: execution.id,
+        agentId: agent.id,
+        role: agent.name,
+        content: fallback.content,
+        createdAt: Date.now(),
+      });
+      // 结构化 verdict 缺位警示：条件路由将退化为关键词匹配（修 bcfc16cd 缺陷④⑥的可见性部分）
+      if (decisionRequests === 0 && !lastVerdict && (handoff || truncated)) {
+        onMessage({
+          id: `msg-${execution.id}-verdict-warn`,
+          kind: "system",
+          executionId: execution.id,
+          agentId: agent.id,
+          role: "",
+          content: `⚠️ 流程提示：角色「${agent.name}」结束本执行时未调用 team_record_decision 记录 pass/fail 结论，后续条件路由只能退化为关键词匹配，易误派返工对象（如前端问题被路由到后端角色）。`,
           createdAt: Date.now(),
         });
       }
@@ -426,22 +680,35 @@ export class PiAgentExecutor implements AgentExecutorLike {
         appendSummary([
           `\n---\n## 执行 #${execution.sequence}`,
           `- 模型：${actualModel ? `${actualModel.provider}/${actualModel.modelId}` : "(未解析)"}`,
-          `- 状态：完成`,
-          `- 交接：${handoff ? `${handoff.to}${handoff.summary ? ` — ${handoff.summary.slice(0, 200)}` : ""}` : "（无）"}`,
-          `- 结论：${(output.trim() || "（无输出）").slice(0, 800)}`,
+          `- 状态：${executionStatusLine(truncated, toolCallCount, maxTurns)}`, // 不再硬编码“完成”——截断诚实化（缺陷⑤）
+          `- 工具调用：${toolCallCount}/${maxTurns}${changedFileList.length ? `｜实际变更文件 ${changedFileList.length} 个` : ""}`, 
+          `- 交接：${handoff ? `${handoff.to}${handoff.summary ? ` — ${handoff.summary.slice(0, 500)}` : ""}` : "（无）"}`,
+          `- 结论：${(output.trim() || "（无输出）").slice(0, 1600)}`,
         ].join("\n"));
       } catch { /* 总结写入失败不阻断 */ }
 
-      // 思考流水落 .md（可读）：runs/<runId>/thinking/<agentId>.md，让用户/下游直接右开查看完整思考
-      //   （替代原始 session .jsonl —— JSONL 是事件流，右侧渲染成一坨 JSON，不可读）
-      //   不混入总结 .md 是避免把结论文件撑大；thinking 单独成文件，互不干扰。
+      // 执行记录落 .md（可读、富化）：runs/<runId>/thinking/<agentId>.md
+      //   结构化包含：结论 + 交接 + 真实变更清单 + 完整工具轨迹 + 思考流水——下游角色 read 这一个
+      //   文件即可接续工作，无需重探链路（修「重复探索→40分钟超长 run」），也不必去读 JSONL。
       let thinkingPath: string | undefined;
       try {
-        if (thinkingFull?.trim()) {
+        if (thinkingFull?.trim() || toolsLog.length > 0 || output.trim() || handoff) {
           const thinkingDir = join(getTeamDir(team.sessionId), "runs", runId, "thinking");
           mkdirSync(thinkingDir, { recursive: true });
           const thinkingFile = join(thinkingDir, `${agent.id}.md`);
-          appendFileSync(thinkingFile, `\n---\n## 执行 #${execution.sequence} · ${new Date().toISOString()}\n\n${thinkingFull.trim()}\n`);
+          appendFileSync(
+            thinkingFile,
+            buildReadableExecutionBlock({
+              sequence: execution.sequence,
+              iso: new Date().toISOString(),
+              output,
+              handoffTo: handoff?.to,
+              handoffSummary: handoff?.summary?.slice(0, 1200),
+              changedFiles: changedFileList,
+              toolsLog,
+              thinkingFull,
+            }) + "\n",
+          );
           thinkingPath = thinkingFile;
         }
       } catch { /* 思考流水写入失败不阻断 */ }
@@ -452,6 +719,10 @@ export class PiAgentExecutor implements AgentExecutorLike {
         ...(handoff ? { handoffTool: { to: handoff.to, summary: handoff.summary, artifacts: handoff.artifacts, blockers: handoff.blockers } } : {}),
         // P1-1：只有 pass/fail 才作为路由信号，info 不算
         ...(lastVerdict === "pass" || lastVerdict === "fail" ? { verdict: lastVerdict } : {}),
+        ...(lastDecisionContent ? { decisionContent: lastDecisionContent } : {}),
+        // DAG 编排：planner 轮提交的计划（调度器据此派发）；失败时附错误供纠错重试
+        ...(plan ? { plan } : {}),
+        ...(request.planner && planError ? { planError } : {}),
         ...(stats ? { stats } : {}),
         ...(actualModel ? { model: actualModel } : {}),
         ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
@@ -477,8 +748,53 @@ export class PiAgentExecutor implements AgentExecutorLike {
   }
 }
 
+/** get_session_stats 的原始返回形状（注意：是会话【累计】口径，非单轮） */
+interface SessionStatsRaw {
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  cost?: number;
+  userMessages?: number;
+  assistantMessages?: number;
+  toolCalls?: number;
+  toolResults?: number;
+  totalMessages?: number;
+  sessionFile?: string;
+}
+
+/** 读当前累计统计（失败返回 null，不阻断执行） */
+async function readSessionStats(session: { send: (command: Record<string, unknown>) => Promise<unknown> }): Promise<SessionStatsRaw | null> {
+  try {
+    return (await session.send({ type: "get_session_stats" })) as SessionStatsRaw | null;
+  } catch {
+    return null;
+  }
+}
+
+const finiteNum = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+/** 累计值 → 本轮增量：同角色多次执行复用同一会话文件，直接上报累计值会让第 2+ 次执行的
+ *  token/成本被重复计入 run.stats。用本轮开头记录的基线取非负差值得到真实增量；
+ *  基线缺失时退化为原值（保持旧行为）。 */
+function diffExecutionStats(raw: SessionStatsRaw | null, baseline: SessionStatsRaw | null): ExecutionStats | undefined {
+  if (!raw) return undefined;
+  const delta = (cur: unknown, prev: unknown): number =>
+    baseline ? Math.max(finiteNum(cur) - finiteNum(prev), 0) : finiteNum(cur);
+  return {
+    inputTokens: delta(raw.tokens?.input, baseline?.tokens?.input),
+    outputTokens: delta(raw.tokens?.output, baseline?.tokens?.output),
+    cacheReadTokens: delta(raw.tokens?.cacheRead, baseline?.tokens?.cacheRead),
+    cacheWriteTokens: delta(raw.tokens?.cacheWrite, baseline?.tokens?.cacheWrite),
+    totalTokens: delta(raw.tokens?.total, baseline?.tokens?.total),
+    cost: delta(raw.cost, baseline?.cost),
+    userMessages: delta(raw.userMessages, baseline?.userMessages),
+    assistantMessages: delta(raw.assistantMessages, baseline?.assistantMessages),
+    toolCalls: delta(raw.toolCalls, baseline?.toolCalls),
+    toolResults: delta(raw.toolResults, baseline?.toolResults),
+    totalMessages: delta(raw.totalMessages, baseline?.totalMessages),
+  };
+}
+
 /** 带超时的执行（超时 abort 后判定 failed/timeout）。
- *  onExternalAbort：外部取消（用户停止）时执行——用于清理 abort 监听等。
+ *  onExternalAbort：仅异常路径（超时兜底 / 用户取消经 raceWithAbort reject）触发——发送底层 abort 并清理监听；正常完成不误发 abort。
  *  prompt promise 自身已通过 Promise.race 对 abort 提前 reject，此处 timeout 仅兜底。 */
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -496,27 +812,33 @@ async function withTimeout<T>(
         }, ms);
       }),
     ]);
+  } catch (error) {
+    onExternalAbort?.();
+    throw error;
   } finally {
     if (timer) clearTimeout(timer);
-    onExternalAbort?.();
   }
 }
 
 /** 把 promise 与取消信号竞争：信号中止时立即 reject（提前返回，不等底层 LLM/会话挂起），
- *  onAbort 用于发送底层 abort（尽力为之）。无 signal 时原样返回 promise。 */
+ *  onAbort 用于发送底层 abort（尽力为之）。无 signal 时原样返回 promise。
+ *  监听自清理：无论成功失败，settle 后从共享的 run 级 signal 上摘掉本次监听——
+ *  同一 signal 跨多角色/多波次复用，不摘会随执行次数无界增长。 */
 function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort: () => void): Promise<T> {
   if (!signal) return promise;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      const onCancel = () => {
-        try { onAbort(); } catch { /* 忽略 */ }
-        reject(new Error("用户取消执行"));
-      };
-      if (signal.aborted) onCancel();
-      else signal.addEventListener("abort", onCancel, { once: true });
-    }),
-  ]);
+  let fire: () => void = () => undefined;
+  const cancelPromise = new Promise<never>((_, reject) => {
+    fire = () => {
+      try { onAbort(); } catch { /* 忽略 */ }
+      reject(new Error("用户取消执行"));
+    };
+    if (signal.aborted) fire();
+    else signal.addEventListener("abort", fire, { once: true });
+  });
+  void promise
+    .catch(() => undefined)
+    .finally(() => signal.removeEventListener("abort", fire));
+  return Promise.race([promise, cancelPromise]);
 }
 
 /** 有界关闭：给 session.shutdown() 设最短等待上限，避免 abort 后底层会话挂起拖住整个 run

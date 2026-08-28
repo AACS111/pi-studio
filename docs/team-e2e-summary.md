@@ -1,7 +1,7 @@
 # Pi Studio 目录结构总览
 
-> 本文档基于 2026-08-26 实际目录扫描生成并核验，供团队 E2E 流程验证与新人上手参考。
-> 核验范围：顶层目录、app/、lib/、components/、electron/、scripts/、docs/agents/ 均与实际一致。
+> 本文档基于 2026-08-27 实际目录扫描生成并核验，供团队 E2E 流程验证与新人上手参考。
+> 核验范围：顶层目录、app/、app/api/、lib/、lib/team/、components/、hooks/、electron/、scripts/、docs/agents/ 均与实际一致。
 
 Pi Studio（`@aacs111/pi-studio` v0.8.6）是基于 [agegr/pi-web](https://github.com/agegr/pi-web) 二次开发的 AI 编码助手 IDE，包含 Next.js Web 端 + Electron 桌面壳 + Univer 表格深度集成 + 项目组（Team）多角色协作等能力。
 
@@ -17,7 +17,7 @@ Pi Studio（`@aacs111/pi-studio` v0.8.6）是基于 [agegr/pi-web](https://githu
 | `lib/` | 核心逻辑库（rpc-manager、provider-listing、model-scope、univer-*、team/、changed-files…），含大量 `*.test.mjs` |
 | `electron/` | Electron 桌面壳：`main.cjs`（主进程）、`preload.cjs`（预加载）、`bridge.cjs`（浏览器控制桥） |
 | `scripts/` | 构建/开发脚本：`dev-electron.mjs`、`package.mjs`、`run-dev.mjs`、`gen-icons.mjs` |
-| `tools/` | （当前为空）工具脚本预留目录 |
+| `tools/` | 工具脚本预留目录（当前为空） |
 | `packages/` | 子包：`pi-memory-zh/`（中文记忆模块） |
 | `docs/` | 文档：`agents/`（架构/文件地图/设计决策）、`dsh/`、`team/`、`team-analysis/`、`team-tasks/`、`release.md`、`i18n.md`、`worktrees.md` |
 | `public/` | 静态资源 |
@@ -28,32 +28,49 @@ Pi Studio（`@aacs111/pi-studio` v0.8.6）是基于 [agegr/pi-web](https://githu
 | `.agents/` | 本项目自带的 agent skills（browser-control、sheet-edit、univer-cli、web-preview） |
 | `pi-web-uploads/` | 数据目录：上传文件、AI 编辑产物、`.internal/` 内部状态（open-file 标记等） |
 
+顶层其他次要文件：`package.json` / `tsconfig.json` / `next.config.mjs` / `tailwind.config.ts` / `postcss.config.mjs` / `eslint.config.mjs` / `electron-builder.yml` / `proxy.ts`（Next 自定义代理）/ `instrumentation.ts`（OpenTelemetry 钩子）/ `restart-dev.ps1`（重启 dev 脚本）/ `.pi-web-config.json`（数据目录等本地配置）/ `settings.bak.json`（设置备份）/ `pnpm-workspace.yaml` + `bun.lock` + `package-lock.json`（包管理）。
+
 ---
 
 ## 关键子目录速览
 
 ### `app/`
-- `api/` — 后端 API 路由（open-file、browser 控制、models-config、provider 凭证、team 等）
+- `api/` — 后端 API 路由（共 26 个子目录，见下表）
 - `page.tsx` / `layout.tsx` — 入口页面与全局布局
 - `file/` — 文件查看路由（动态 `[...]` catch-all）
 - `globals.css` — 全局样式（含 CSS Variables 主题）
 - `manifest.ts` — PWA manifest
 
-### `lib/team/`
-项目组多角色协作核心：TeamSettings、WorkflowEditor、context.ts（角色上下文块）、executor.ts（执行循环 + maxTurns 控制）、parallel.test.mjs 等。
+#### `app/api/` 路由清单（已核对实际目录，共 26 个）
+agent、auth、browser、cwd、default-cwd、dsh、file-index、files、git、home、models、models-config、open-file、open-file-request、packages、plugins、project-trust、sessions、skills、teams、terminal、univer、update、uploads、vision、worktrees。
+
+### `lib/team/`（项目组多角色协作核心，已核对实际文件）
+- `runtime.ts` — RunManager 执行循环（cancel 强制收敛兜底、循环守卫）
+- `executor.ts` — 角色执行器（maxTurns 控制、群聊消息兜底、变更文件透传）
+- `engine.ts` — 状态机引擎（Transition / Gateway）
+- `store.ts` — 事件存储 + projection（含快照/边界修复）
+- `registry.ts` — 角色注册表
+- `library.ts` — 角色库（leader/dev/tester 等工具编排）
+- `templates.ts` — 角色/工作流模板
+- `context.ts` — 角色上下文块
+- `validate.ts` — 工作流校验（custom vs 内置预设分档）
+- `tools.ts` — team_handoff / team_create_task / team_complete_task / team_record_decision 工具
+- `types.ts` / `ui-constants.ts` — 类型与 UI 常量
+- `lifecycle.ts` / `task-classify.ts` / `node-loader.mjs` — 生命周期、任务分类、TS loader
+- 测试：`*.test.mjs`（engine/gateway/exec-mode/parallel/run-lifecycle/solver/store/visibility/tools/snapshot-boundary 等 14+ 个）
 
 ### `lib/` 关键模块（已核对实际文件）
 - `rpc-manager.ts` — 与 pi core 的 RPC 会话管理（denyToolNames、cwdOverride、扩展工具过滤）
-- `allowed-roots.ts` — 工具根路径解析（测试受模块解析环境影响）
+- `allowed-roots.ts` — 工具根路径解析
 - `provider-listing.ts` / `provider-listing-runtime.ts` — 提供商列表（能力驱动，不 id 驱动）
 - `model-scope.ts` / `model-catalog.ts` / `model-discovery.ts` / `models-cache.ts` — 模型作用域、目录、发现、缓存
 - `changed-files.ts` — 提取工具块里的 edit/write 变更文件卡片
 - `univer-cli.ts` / `univer-compact.ts` / `univer-db.ts` / `univer-dims.ts` / `univer-paths.ts` / `univer-unit-id.ts` / `univer-user-edits.ts` / `univer-view-cache.ts` — Univer 表格集成全套
 - `git-changes.ts` / `git-exec.ts` / `git-status.ts` / `git-types.ts` / `worktree.ts` — Git 集成与 worktree 管理
-- `project-trust.ts` / `path-security.ts` / `request-security.ts` — 安全加固
+- `project-trust.ts` / `path-security.ts` / `request-security.ts` / `file-access.ts` — 安全加固
 - `ket-bridge.ts` — KET 桥（Univer 加密表）
-- `terminal-manager.ts` / `terminal-session.ts` / `terminal-input.ts` — 终端集成
-- 其余：`*.test.mjs` 系列覆盖各模块单测；`i18n/`（国际化资源）、`plugins/`（插件）
+- `terminal-manager.ts` / `terminal-session.ts` / `terminal-input.ts` / `bash-output.ts` — 终端集成
+- 其余：`*.test.mjs` 系列覆盖各模块单测；`i18n/`（国际化资源）、`plugins/`（插件）、`agent-client.ts`、`api-types.ts`、`atomic-file.ts`、`clipboard.ts`、`compaction-*.ts`、`dsh-catalog.ts`、`directory-browser.ts`、`file-dirent.ts`、`file-fuzzy.ts`、`file-types.ts`、`file-upload.ts`、`image-attachments.ts`、`markdown.ts`、`message-display.ts`、`npx.ts`、`normalize.ts`、`pi-types.ts`、`session-*.ts`、`skill-*.ts`、`skills-service.ts`、`startup-preferences.ts`、`storage-config.ts`、`tool-presets.ts`、`update-manager.ts`、`uploads.ts`、`vision-model.ts`、`web-auth.ts`
 
 ### `components/` 关键组件（已核对实际文件）
 - `AppShell.tsx` / `ActivityBar.tsx` / `TabBar.tsx` / `WindowControls.tsx` — 主框架
@@ -63,9 +80,13 @@ Pi Studio（`@aacs111/pi-studio` v0.8.6）是基于 [agegr/pi-web](https://githu
 - `FileExplorer.tsx` / `FileViewer.tsx` / `WebViewer.tsx` / `DirectoryPicker.tsx` — 侧边/右侧面板
 - `DraggableResizableModal.tsx` — 统一弹窗基座（顶栏拖动 + 8 方位缩放）
 - `SettingsPanel.tsx` / `ModelsConfig.tsx` / `ModelSelect.tsx` / `SkillsConfig.tsx` / `SkillsPanel.tsx` / `PluginsConfig.tsx` — 配置面板
-- `UploadsManager.tsx` / `GeneratedFilesCard.tsx` / `ChangedFilesCard.tsx` — 产物与变更展示
+- `UploadsManager.tsx` / `ChangedFilesCard.tsx`（已合并生成文件卡）— 产物与变更展示
 - `CommandPalette.tsx` / `GlowBackground.tsx` / `ExpandCanvasOverlay.tsx` / `PwaRegistration.tsx` — 辅助
-- `DshMarketPanel.tsx` / `DshClientLoader.tsx` / `PluginHost.tsx` / `AgentLibraryPanel.tsx` — 扩展市场与插件宿主
+- `DshMarketPanel.tsx` / `DshClientLoader.tsx` / `PluginHost.tsx` / `AgentLibraryPanel.tsx` / `AgentFieldPickers.tsx` — 扩展市场与插件宿主
+- `BranchNavigator.tsx` / `ProjectTrustDialog.tsx` / `FileIcons.tsx` / `ExtensionStatusBar.tsx` — 导航与状态
+
+### `hooks/`（已核对实际文件）
+`useAgentSession.ts`、`useTeamRun.ts`、`useI18n.tsx`、`useTheme.ts`、`useResizablePanel.ts`、`useAccentColor.ts`、`useAudio.ts`、`useDragDrop.ts`、`useGlowBackground.ts`、`useIsMobile.ts`、`useKeyboardShortcuts.ts`、`useViewportHeight.ts`（含 `*.test.mjs`）
 
 ### `electron/`（已核对实际文件）
 - `main.cjs` — 主进程，以 `ELECTRON_RUN_AS_NODE=1` 启动内置 Next 服务，随机端口仅监听 127.0.0.1

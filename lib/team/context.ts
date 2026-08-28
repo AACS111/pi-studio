@@ -21,14 +21,13 @@ export interface ContextBuildOptions {
   agent: AgentDef;
 }
 
-/** 每角色「总结」.md 相对路径；落盘于 <teamDir>/runs/<runId>/summaries/<agentId>.md */
-function summaryPath(agentId: string): string {
-  return `summaries/${agentId}.md`;
+/** 每角色「总结」.md 相对路径；落盘于 <teamDir>/runs/<runId>/summaries/<agentId>.md（含 runId，角色可直接 read） */
+function summaryPath(runId: string, agentId: string): string {
+  return `runs/${runId}/summaries/${agentId}.md`;
 }
-
-/** 每角色「思考/会话」.jsonl 相对路径；落盘于 <teamDir>/sessions/<runId>-<agentId>.jsonl */
-function thinkingPath(runId: string, agentId: string): string {
-  return `sessions/${runId}-${agentId}.jsonl`;
+/** 每角色「执行记录」（富化 thinking）.md 相对路径；下游角色接续工作读它而非 jsonl（jsonl 仅引擎审计用） */
+function thinkingMdPath(runId: string, agentId: string): string {
+  return `runs/${runId}/thinking/${agentId}.md`;
 }
 
 /** 读某角色总结 .md 的最后一次执行结论（控制注入体量）：返回 { summary, path } | null */
@@ -42,7 +41,7 @@ function readRoleSummary(fileDir: string, runId: string, agentId: string): { sum
     const last = sections[sections.length - 1] ?? "";
     // 去掉「## 执行 #N」标题，保留结论/交接等实质内容
     const body = last.replace(/^##\s+执行[^\n]*\n?/m, "").trim();
-    return { summary: body.length > 500 ? `${body.slice(0, 500)}…` : body, path: summaryPath(agentId) };
+    return { summary: body.length > 1600 ? `${body.slice(0, 1600)}…` : body, path: summaryPath(runId, agentId) };
   } catch {
     return null;
   }
@@ -97,9 +96,10 @@ function predecessorSummaries(
       // 优先读该角色的总结 .md；读不到就回退到该角色最后一条群聊消息摘要
       const roleSummary = readRoleSummary(fileDir, runId, agentId);
       const inline = roleSummary ? roleSummary.summary : summarize(m.content, 160);
-      // 思考/会话全文指针（下游角色需要完整过程时自行 read）
-      const think = `｜思考/会话: ${thinkingPath(runId, agentId)}`;
-      const sum = roleSummary ? `｜总结: ${roleSummary.path}` : "";
+      // 指针换向（修「下游读 jsonl 等于没读」）：执行详情指向富化后的 thinking .md（工具轨迹+变更清单+思考流水），
+      //   角色间互读一律走可读 Markdown；session jsonl 仅引擎审计用。
+      const think = `｜执行详情: ${thinkingMdPath(runId, agentId)}（工具轨迹/变更清单/思考流水）`;
+      const sum = roleSummary ? `｜总结: ${summaryPath(runId, agentId)}` : "";
       return `- ${role}（${agentId}）：${inline}${sum}${think}`;
     })
     .join("\n");
@@ -125,8 +125,11 @@ export function buildContext(options: ContextBuildOptions): string {
   // P0-4：本角色期望产出/验收标准
   const expectationBlock = agent.expectation ? `\n## 本角色期望产出\n${agent.expectation}\n` : "";
 
-  // 前序角色摘要（合并块，含每角色总结 .md + 思考/会话 .jsonl 指针）
+  // 前序角色摘要（合并块，含每角色总结 .md + 富化 thinking .md 指针）
   const predecessors = predecessorSummaries(team, run.id, projections.messages, agent.id);
+
+  // 收尾要求（强制，修 bcfc16cd 缺陷⑥）：每轮注入而非依赖静态 systemPrompt——显著性高于埋在长提示词尾部
+  const closingBlock = closingRequirementsBlock();
 
   // 最近消息/交接（限量）
   const recentBlock = recentHandoffsAndMessages(projections.messages);
@@ -134,12 +137,19 @@ export function buildContext(options: ContextBuildOptions): string {
   // 共享任务 DAG
   const dagBlock = taskDagLines(projections.tasks);
 
-  // 关键决策（去重：同 agentId 连续记录只留最新）
+  // 关键决策（去重：同一角色只保留【最新】一条——索引越大越新；
+  // 旧实现用 lastIndexOf(find(...)) 实际误留了每角色的第一条，语义反了）
   const decisionsBlock = state.decisions.length > 0
-    ? state.decisions
-        .filter((d, i, arr) => i === arr.lastIndexOf(arr.find((x) => x.madeBy === d.madeBy) ?? d))
-        .map((d) => `- [${d.madeBy}] ${summarize(d.content, 200)}${d.verdict ? `【${d.verdict === "pass" ? "通过" : d.verdict === "fail" ? "失败" : "参考"}】` : ""}`)
-        .join("\n")
+    ? (() => {
+        const latestIdxByAgent = new Map<string, number>();
+        state.decisions.forEach((d, i) => {
+          if (d.madeBy) latestIdxByAgent.set(d.madeBy, i);
+        });
+        return state.decisions
+          .filter((d, i) => latestIdxByAgent.get(d.madeBy) === i)
+          .map((d) => `- [${d.madeBy}] ${summarize(d.content, 200)}${d.verdict ? `【${d.verdict === "pass" ? "通过" : d.verdict === "fail" ? "失败" : "参考"}】` : ""}`)
+          .join("\n");
+      })()
     : "（暂无）";
 
   const artifactsBlock = state.artifacts.length > 0
@@ -153,12 +163,13 @@ export function buildContext(options: ContextBuildOptions): string {
     `\n## 任务`,
     run.task,
     expectationBlock,
+    closingBlock,
     `\n## 当前进度`,
     `阶段：${state.phase ?? "planning"}｜模式：${run.complexity === "simple" ? "solo（你一人完成）" : "多角色协作"}`,
     state.lastHandoff
       ? `最近交接：${state.lastHandoff.from} → ${state.lastHandoff.to}`
       : "最近交接：（无）",
-    `\n## 前序角色摘要（读自各角色 .md；完整思考请 read 对应会话 .jsonl）`,
+    `\n## 前序角色摘要（读自各角色 .md；完整执行过程请 read 对应 执行详情 .md，勿读 jsonl）`,
     predecessors,
     `\n## 共享任务列表（DAG 概览）`,
     dagBlock,
@@ -178,6 +189,60 @@ function taskTitle(projections: Projections, taskId: string): string {
   const task = projections.tasks.find((t) => t.id === taskId);
   return task ? `${taskId} ${task.title}` : taskId;
 }
+
+/** 收尾要求块（强制注入）：两套上下文构建器共用（DAG 任务 / 旧全量上下文）。 */
+function closingRequirementsBlock(): string {
+  return [
+    "",
+    "## 收尾要求（每次执行结束前必须遵守）",
+    "1. 结束前必须调用 team_record_decision 记录本执行的结构化结论：verdict 填 pass（全部达成）/ fail（有问题阻塞）/ info（阶段性进展），content 写清依据。这是流程条件路由的信号源，缺失会导致路由退化为关键词猜测、误派返工对象。",
+    "2. team_handoff 摘要与结论中只允许陈述真实发生的事：改了哪些文件以实际写入为准（系统会核对宣称与真实变更），严禁声称已修改但未落盘的文件；若中途被回合/时间截断，必须明说未完成部分。",
+    "3. 需要下游接续的上下文写进交接摘要或文档（.md）：改动文件清单、接口/传参约定、验证方法，让对方 read 即可继续，不必重探。",
+  ].join("\n");
+}
+
+/** 任务级精简上下文（DAG 编排）：下游只注入「本任务 + 上游交付物 + 少量最近消息」，
+ *  不再全量灌前序摘要/文件指针堆叠——借鉴 MetaGPT：结构化交付物即通信。
+ *  这是修「重复探链路/token 爆炸」的上下文侧根。 */
+export function buildTaskContext(o: {
+  team: TeamDef;
+  run: TeamRun;
+  agent: AgentDef;
+  taskId: string;
+  taskTitle: string;
+  taskDescription?: string;
+  expectedOutput?: string;
+  /** 上游任务的交付物（deliverable：output 节选 + 变更文件）；按依赖直接上游顺序。
+   *  agentId 用于拼接该角色 thinking.md 深挖指针（定点 read，避免全库重探）。 */
+  upstream: Array<{ taskId: string; title: string; output: string; changedFiles?: string[]; agentId?: string }>;
+  /** 重试时附上的失败说明（调度器拼装：上次失败原因/输出节选） */
+  retryNote?: string;
+}): string {
+  const expectationBlock = o.expectedOutput ? `\n（验收标准）${o.expectedOutput}\n` : "";
+  const upstreamBlock =
+    o.upstream.length > 0
+      ? [`\n## 上游任务交付物（你的输入，以此为准，勿重做/重探）`, ...o.upstream.map((u) => {
+          const files = u.changedFiles?.length ? `\n改动文件：${u.changedFiles.join("、")}` : "";
+          const detail = u.agentId ? `\n（需完整过程/更多细节时定点 read：runs/${o.run.id}/thinking/${u.agentId}.md，含其实际工具轨迹与思考；避免盲目全库搜索）` : "";
+          return `- 【${u.title}】${summarize(u.output, 800)}${files}${detail}`;
+        })].join("\n")
+      : "";
+  const retryBlock = o.retryNote ? `\n⚠️ 本任务是返工：\n${o.retryNote}\n必须修复上一次的问题，不要重复同样的动作。` : "";
+
+  return [
+    `# 项目组任务执行（你的角色：${o.agent.name}）`,
+    `\n## 你的任务（${o.taskId}）`,
+    `「${o.taskTitle}」`,
+    o.taskDescription ? `\n${o.taskDescription}` : "",
+    expectationBlock,
+    upstreamBlock,
+    retryBlock,
+    closingRequirementsBlock(),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 
 /** 项目指令文件候选名（与 pi 包 resource-loader 一致：AGENTS.md 优先于 CLAUDE.md） */
 const PROJECT_INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];

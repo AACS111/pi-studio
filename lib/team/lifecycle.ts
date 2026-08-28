@@ -126,6 +126,9 @@ export function createTeam(options: CreateTeamOptions): CreateTeamResult {
   writeFileSync(sessionFile, JSON.stringify(header) + "\n" + JSON.stringify(infoEntry) + "\n", "utf8");
 
   const team = createTeamDef(sessionId, cwd, teamName, templateId, getUserTemplates(), options.agentIds);
+  // 用户真实新建的团队：启用 DAG 编排引擎（先计划后调度，2026-08 重构）。
+  // 模板默认不写入——存量团队/测试用例保持旧 transitions 引擎行为。
+  team.orchestration = "dag";
   TeamStore.write(team);
   TeamStore.upsertIndex(sessionId, { teamId: sessionId, name: teamName, uiMode: "team" });
   invalidateSessionListCache();

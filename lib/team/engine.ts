@@ -6,7 +6,7 @@
  *   2. Transition.keyword / always（便宜，priority DESC 取第一个命中）
  *   3. Transition.llm（最后决策器：对候选集一次性判定）
  */
-import type { Condition, ExecutionStatus, ExecutionStats, GatewayDef, RoutingMode, TeamDef, Transition } from "./types.ts";
+import type { Condition, ExecutionStatus, ExecutionStats, GatewayDef, PlanTask, RoutingMode, TeamDef, Transition } from "./types.ts";
 import { stripNoise } from "./validate.ts";
 
 export interface ExecutionResult {
@@ -20,6 +20,13 @@ export interface ExecutionResult {
   };
   /** 结构化裁决（P1-1）：角色经 team_record_decision 记录的 verdict，路由优先据此而非赌 keyword */
   verdict?: "pass" | "fail";
+  /** 角色最后一条 team_record_decision 的 content：verdict 同向多边消歧时，优先用它（角色自述的问题归属）
+   *  而非混杂全文做关键词判定——修 bcfc16cd「tester 报前端问题因文中含‘后端’被误派 be-developer」④。 */
+  decisionContent?: string;
+  /** DAG 编排：planner 轮经 team_submit_plan 提交并通过校验的计划（调度器据此派发） */
+  plan?: PlanTask[];
+  /** planner 轮计划提交失败的纠错信息（供 runtime 发起重试轮） */
+  planError?: string;
   failureReason?: string;
   stats?: ExecutionStats;                      // 回合统计（token/成本/消息数）
   /** 本次执行实际生效的模型（agent.model 显式指定，或空=跟随全局默认后由会话解析出的具体模型）。
@@ -84,12 +91,31 @@ export class WorkflowEngine {
 
     // 2.5) 结构化裁决优先（P1-1）：角色已 record_decision 记录 pass/fail → 匹配对应 verdictGuard 边，
     //      不依赖输出文本里是否出现“通过/问题/bug”等词，规避模型随机性导致的 keyword 漏判。
+    //      同向多边消歧（修 bcfc16cd 误派④）：fail 边同时连 fe/be-developer 时，
+    //      用 record_decision content（角色自述问题归属）> 交接摘要（仅 strict 模式可达此层）> 全文
+    //      做关键词判定；都无命中则取 priority 最高的第一条。
+    //      另外整个 2.5 层在任意 verdictGuard 命中时短路，不再落入裸关键词层——
+    //      这是本案例误派的直接路径：无 guard 的 p21「后端」边抢在 guard fail p20/p21 前面命中。
     if (result.verdict) {
       const guarded = candidates
         .filter((t) => t.verdictGuard === result.verdict)
         .sort((a, b) => b.priority - a.priority);
       if (guarded.length > 0) {
-        const t = guarded[0];
+        let t = guarded[0];
+        if (guarded.length > 1) {
+          // 消歧输入优先级：record_decision content（角色自述问题归属）> 交接摘要 > 全文
+          const hay = result.decisionContent?.trim() || result.handoffTool?.summary?.trim() || result.output || "";
+          // 最早命中位置优先：否定从句（如「与后端无关」）往往晚于真正的归属词，
+          //   按「谁的关键词在文中出现得更早」选边（guarded 已按 priority DESC，平局保序取高优）
+          let bestPos = -1;
+          for (const g of guarded) {
+            const pos = keywordMatchPosition(g.trigger.condition, hay);
+            if (pos >= 0 && (bestPos < 0 || pos < bestPos)) {
+              t = g;
+              bestPos = pos;
+            }
+          }
+        }
         return { kind: "transition", from: execution.agentId, to: t.to, transitionId: t.id, reason: `verdict:${result.verdict}` };
       }
     }
@@ -168,6 +194,22 @@ export function judgeCheap(cond: Condition | undefined, output: string): boolean
     return false;
   }
   return false; // llm 走 resolveRoute 的最后决策器
+}
+
+/** 关键词在文本中的最早命中位置（字符索引）；无命中或被 rejectKeywords 否决返回 -1。
+ *  供 verdict 同向多边消歧用：角色自述问题归属时，根因词通常出现在句首（「根因在前端…与后端无关」），
+ *  最早位置比 any-match 更能代表归属，避免否定从句里的反向关键词抢路由。 */
+function keywordMatchPosition(cond: Condition | undefined, output: string): number {
+  if (!cond || cond.mode !== "keyword" || !cond.keywords?.length) return -1;
+  const clean = stripNoise(output).toLowerCase();
+  if (cond.rejectKeywords?.some((k) => k.toLowerCase() && clean.includes(k.toLowerCase()))) return -1;
+  let best = -1;
+  for (const k of cond.keywords) {
+    if (!k) continue;
+    const idx = clean.indexOf(k.toLowerCase());
+    if (idx >= 0 && (best < 0 || idx < best)) best = idx;
+  }
+  return best;
 }
 
 /** 静态辅助：给定节点（Agent 或网关）与事件，返回匹配的候选（priority DESC）。

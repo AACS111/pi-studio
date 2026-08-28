@@ -10,7 +10,15 @@
  */
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { AgentDef, ArtifactRef, TeamDef, TeamTask } from "./types.ts";
+import { mkdirSync, writeFileSync } from "fs";
+import { isAbsolute, join, relative, resolve, sep } from "path";
+import type { AgentDef, ArtifactRef, PlanSubmissionTask, PlanTask, TeamDef, TeamTask } from "./types.ts";
+
+/** 协议终态：to=__end__ 表示「整个任务交付完成，结束本次运行」。它不是团队角色，
+ *  但必须允许出现在 team_handoff(to) 里——Runtime 的路由引擎据其终结 run。
+ *  此前工具校验把它当不存在的角色拒绝，导致角色按提示词调用永远失败、
+ *  只能靠 keyword 边/hybrid 兜底「碰巧」收敛（无限 ping-pong 的根因之一）。 */
+export const TEAM_END_NODE = "__end__";
 
 /** 受控工具请求（合法调用才会进入 sink） */
 export type TeamToolRequest =
@@ -18,7 +26,8 @@ export type TeamToolRequest =
   | { kind: "create_task"; title: string; description?: string; assignedAgentId?: string; parentTaskId?: string }
   | { kind: "complete_task"; taskId: string }
   | { kind: "add_artifact"; path: string; type?: ArtifactRef["type"]; description?: string }
-  | { kind: "record_decision"; content: string; relatedTaskId?: string; verdict?: "pass" | "fail" | "info" };
+  | { kind: "record_decision"; content: string; relatedTaskId?: string; verdict?: "pass" | "fail" | "info" }
+  | { kind: "plan"; tasks: PlanSubmissionTask[] };
 
 export interface TeamToolSink {
   requests: TeamToolRequest[];
@@ -33,10 +42,118 @@ export interface CreateTeamToolsOptions {
   executingAgentId: string;
   existingTasks: TeamTask[];
   sink: TeamToolSink;
+  /** DAG 编排：planner 模式（入口角色的计划轮）→ 额外注入 team_submit_plan 工具。
+   *  仅 planner 可见；普通执行不提供，避免中途改计划破坏调度确定性。 */
+  plannerMode?: boolean;
 }
 
 function text(content: string) {
   return [{ type: "text" as const, text: content }];
+}
+
+/** 文档写工具的路径校验结果 */
+export function checkDocWritePath(cwd: string, rawPath: string): { ok: true; abs: string } | { ok: false; error: string } {
+  const p = String(rawPath ?? "").trim();
+  if (!p) return { ok: false, error: "错误：缺少文件路径。" };
+  if (!/\.(?:md|markdown|mdx)$/i.test(p)) {
+    return { ok: false, error: `错误：本角色只有「文档写权限」（writePolicy=docs），只允许写 .md/.markdown 文档；拒绝写 "${p}"。业务代码请通过 team_handoff 交接给开发角色。` };
+  }
+  const abs = isAbsolute(p) ? resolve(p) : resolve(join(cwd, p));
+  const rel = relative(resolve(cwd), abs);
+  if (rel.startsWith("..") || isAbsolute(rel) || rel.split(sep).includes("node_modules")) {
+    return { ok: false, error: `错误：路径超出项目工作目录（${cwd}），拒绝写入：${p}` };
+  }
+  return { ok: true, abs };
+}
+
+/** DAG 计划上限：超过说明计划太碎，应合并（每次执行都是真实 token 开销） */
+export const PLAN_MAX_TASKS = 12;
+
+/** 计划提交纯校验（不落盘）：角色存在、依赖引用存在且无环、数量上限。
+ *  返回规范化后的 PlanTask[]（补齐空 dependsOn）或错误文本。 */
+export function validatePlanSubmission(
+  team: Pick<TeamDef, "agents">,
+  rawTasks: PlanSubmissionTask[],
+): { ok: true; tasks: PlanTask[] } | { ok: false; error: string } {
+  if (!Array.isArray(rawTasks) || rawTasks.length === 0) return { ok: false, error: "错误：计划为空，至少需要 1 个任务。" };
+  if (rawTasks.length > PLAN_MAX_TASKS) {
+    return { ok: false, error: `错误：任务数 ${rawTasks.length} 超过上限 ${PLAN_MAX_TASKS}——请合并粒度过细的任务（每次执行都是真实 token 开销）。` };
+  }
+  const tasks: PlanTask[] = [];
+  const seenIds = new Set<string>();
+  for (let i = 0; i < rawTasks.length; i++) {
+    const t = rawTasks[i] ?? {};
+    const title = typeof t.title === "string" ? t.title.trim() : "";
+    if (!title) return { ok: false, error: `错误：第 ${i + 1} 个任务缺少 title。` };
+    const agentId = typeof t.agentId === "string" ? t.agentId.trim() : "";
+    if (!team.agents.some((a) => a.id === agentId)) {
+      return { ok: false, error: `错误：任务「${title}」的 agentId "${agentId}" 不存在。可用角色：${team.agents.map((a) => a.id).join(", ")}` };
+    }
+    let id = `T${i + 1}`;
+    while (seenIds.has(id)) id += `x`; // 极端重名防御（正常自增不会撞）
+    seenIds.add(id);
+    const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
+    tasks.push({
+      id,
+      title,
+      agentId,
+      dependsOn: deps.map(String),
+      expectedOutput: typeof t.expectedOutput === "string" ? t.expectedOutput.trim() || undefined : undefined,
+    });
+  }
+  // 依赖引用存在性 + 无环（拓扑检测：Kahn）+ 无自依赖
+  for (const t of tasks) {
+    if (t.dependsOn.includes(t.id)) return { ok: false, error: `错误：任务「${t.title}」依赖自身。` };
+    for (const d of t.dependsOn) {
+      if (!seenIds.has(d)) return { ok: false, error: `错误：任务「${t.title}」的依赖 "${d}" 不在计划中。可用任务编号：${[...seenIds].join(", ")}` };
+    }
+  }
+  const indeg = new Map(tasks.map((t) => [t.id, t.dependsOn.length]));
+  const queue = tasks.filter((t) => indeg.get(t.id) === 0).map((t) => t.id);
+  let visited = 0;
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    visited++;
+    for (const t of tasks) {
+      if (t.dependsOn.includes(cur)) {
+        indeg.set(t.id, indeg.get(t.id)! - 1);
+        if (indeg.get(t.id) === 0) queue.push(t.id);
+      }
+    }
+  }
+  if (visited !== tasks.length) {
+    const stuck = tasks.filter((t) => (indeg.get(t.id) ?? 0) > 0).map((t) => t.title).slice(0, 4);
+    return { ok: false, error: `错误：计划存在循环依赖，涉及：${stuck.join("、")}${stuck.length >= 4 ? "等" : ""}。请消除环后再提交。` };
+  }
+  return { ok: true, tasks };
+}
+
+/** 受控写工具（writePolicy=docs 角色专用）：替代内置 write，仅允许写 .md 文档且必须在项目 cwd 内。
+ *  工具名保持 write —— pi 会话的 tool_execution_start 变更采集按名字识别，改动文件卡片照常显示。 */
+export function createDocWriteTool(cwd: string): ToolDefinition {
+  return defineTool({
+    name: "write",
+    label: "写入 Markdown 文档",
+    description:
+      "将内容写入 Markdown（.md）文档（方案/报告/说明）。本角色是文档写权限：只能写 .md 文件且必须位于项目工作目录内；业务代码（.java/.vue/.ts 等）禁止由本角色修改，请用 team_handoff 交接给开发角色。",
+    promptSnippet: "write 只能写 .md 文档；改代码请交接给开发角色",
+    parameters: Type.Object({
+      path: Type.String({ description: "目标 .md 文件路径（绝对路径或相对项目 cwd）" }),
+      content: Type.String({ description: "完整写入内容（整文件覆盖）" }),
+    }),
+    execute: async (_toolCallId, params) => {
+      const check = checkDocWritePath(cwd, params.path);
+      if (!check.ok) return { content: text(check.error), details: { ok: false } };
+      try {
+        mkdirSync(resolve(check.abs, ".."), { recursive: true });
+        writeFileSync(check.abs, params.content ?? "", "utf8");
+        return { content: text(`已写入 ${check.abs}（${(params.content ?? "").length} 字符）`), details: { ok: true } };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return { content: text(`写入失败：${msg}`), details: { ok: false } };
+      }
+    },
+  });
 }
 
 /** 校验并记录一次工具请求；非法时返回错误文本，合法返回 null */
@@ -47,17 +164,21 @@ function validateAndCollect(
   const { team, executingAgentId, sink } = options;
 
   if (request.kind === "handoff") {
-    const target = team.agents.find((a) => a.id === request.to);
-    if (!target) {
-      return `错误：目标角色 "${request.to}" 不存在。可用角色：${team.agents.map((a) => a.id).join(", ")}`;
-    }
-    const agent = team.agents.find((a) => a.id === executingAgentId);
-    const policy = agent?.handoffPolicy;
-    if (!policy?.allowSelfHandoff && request.to === executingAgentId) {
-      return `错误：不能交接给自己（${executingAgentId}）。请选择其他角色或结束流程。`;
-    }
-    if (policy?.allowedTargets && policy.allowedTargets.length > 0 && !policy.allowedTargets.includes(request.to)) {
-      return `错误：角色 ${executingAgentId} 只允许交接给：${policy.allowedTargets.join(", ")}`;
+    // to=__end__ 是协议终态而非角色：跳过角色存在性/handoff 策略校验，直接放行进 sink
+    // （resolveRoute 的 kind=tool → END_NODE 分支负责把 run 收敛为完成）。
+    if (request.to !== TEAM_END_NODE) {
+      const target = team.agents.find((a) => a.id === request.to);
+      if (!target) {
+        return `错误：目标角色 "${request.to}" 不存在。可用角色：${team.agents.map((a) => a.id).join(", ")}（若任务已全部完成可填 "__end__" 结束运行）`;
+      }
+      const agent = team.agents.find((a) => a.id === executingAgentId);
+      const policy = agent?.handoffPolicy;
+      if (!policy?.allowSelfHandoff && request.to === executingAgentId) {
+        return `错误：不能交接给自己（${executingAgentId}）。请选择其他角色或结束流程。`;
+      }
+      if (policy?.allowedTargets && policy.allowedTargets.length > 0 && !policy.allowedTargets.includes(request.to)) {
+        return `错误：角色 ${executingAgentId} 只允许交接给：${policy.allowedTargets.join(", ")}`;
+      }
     }
     if (!request.summary?.trim()) {
       return "错误：handoff 需要 summary（工作摘要）。";
@@ -86,6 +207,8 @@ function validateAndCollect(
  * 工具名与角色 systemPrompt 中的交接协议一致。
  */
 export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition[] {
+  // 抬高任务编号下限到现有任务的最大编号（含 Runtime 创建的根任务 TASK-001），防止新建任务撞号
+  raiseTaskSeqFloor(options.existingTasks);
   const collect = (request: TeamToolRequest) => validateAndCollect(options, request);
 
   const handoff = defineTool({
@@ -114,11 +237,12 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
         artifacts: params.artifacts,
         blockers: params.blockers,
       });
+      const successText =
+        params.to === TEAM_END_NODE
+          ? `已记录「结束运行」请求。请紧接着用纯文本输出面向用户的最终交付总结（这段文本将作为你的群聊消息展示给用户）。`
+          : `已交接给 ${params.to}。摘要：${params.summary.slice(0, 120)}${params.artifacts?.length ? `（产物：${params.artifacts.join(", ")}）` : ""}`;
       return {
-        content: text(
-          error ??
-            `已交接给 ${params.to}。摘要：${params.summary.slice(0, 120)}${params.artifacts?.length ? `（产物：${params.artifacts.join(", ")}）` : ""}`,
-        ),
+        content: text(error ?? successText),
         details: { ok: !error, kind: "handoff" },
       };
     },
@@ -236,7 +360,49 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
     },
   });
 
-  return [handoff, createTask, completeTask, addArtifact, recordDecision];
+  const tools: ToolDefinition[] = [handoff, createTask, completeTask, addArtifact, recordDecision];
+
+  // DAG 编排：planner 轮次专用的计划提交工具（校验：角色存在/依赖引用/无环/数量上限）
+  if (options.plannerMode) {
+    tools.push(
+      defineTool({
+        name: "team_submit_plan",
+        label: "提交执行计划",
+        description:
+          "把用户任务拆解为任务计划并一次性提交（整个团队后续按此计划自动调度执行）。每个任务指明负责角色、依赖与验收标准；无依赖关系的任务会被并行执行。提交后调度器立即开始派发，不能再修改计划。",
+        promptSnippet: "team_submit_plan 一次性提交全部任务计划（含依赖关系），由调度器自动派发",
+        promptGuidelines: [
+          "任务人数由问题本身决定，宁少勿溢：小改动用一个全能型角色闭环；只有真正独立、可并行的子问题才拆给不同角色。禁止为了凑满团队而派活。",
+          "每个任务的 expectedOutput 必须写成『变更档案』格式：改哪些文件（含路径）、动到哪些函数/行号区间、接口/传参怎么变、如何验证——让接手的角色能定点跳转而不是重新探索代码库。",
+          "dependsOn 引用其它任务的编号；没有依赖的任务会并行执行，不要乱加依赖。",
+        ],
+        parameters: Type.Object({
+          tasks: Type.Array(
+            Type.Object({
+              title: Type.String({ description: "任务标题" }),
+              agentId: Type.String({ description: "负责角色的 id" }),
+              dependsOn: Type.Optional(Type.Array(Type.String(), { description: "前置任务编号列表，如 [\"T1\"]" })),
+              expectedOutput: Type.Optional(Type.String({ description: "验收标准+变更档案：改哪些文件/函数/行号、接口约定、验证方法" })),
+            }),
+            { description: `全部任务（最多 ${PLAN_MAX_TASKS} 个）` },
+          ),
+        }),
+        execute: async (_toolCallId, params) => {
+          const verdict = validatePlanSubmission(options.team, params.tasks);
+          if (!verdict.ok) {
+            return { content: text(verdict.error + " 请修正后重新调用本工具提交。"), details: { ok: false } };
+          }
+          const err = collect({ kind: "plan", tasks: params.tasks });
+          const list = verdict.tasks.map((t) => `${t.id}[${t.agentId}]${t.dependsOn.length ? `←${t.dependsOn.join(",")}` : ""} ${t.title}`).join("；");
+          return {
+            content: text(err ?? `计划已接受（${verdict.tasks.length} 个任务）：${list}。请用纯文本输出一句面向用户的计划说明（即将开始自动执行）。`),
+            details: { ok: !err },
+          };
+        },
+      }),
+    );
+  }
+  return tools;
 }
 
 /** 消费 sink：把请求转成对应的事件（由 Runtime 调用，保证单写者） */
@@ -246,12 +412,14 @@ export function consumeToolRequests(
   agentId: string,
   runId: string,
   emit: (event: unknown) => void,
-): { handoff?: TeamToolRequest & { kind: "handoff" }; taskRequests: number; artifactRequests: number; decisionRequests: number; lastVerdict?: "pass" | "fail" | "info" } {
+): { handoff?: TeamToolRequest & { kind: "handoff" }; taskRequests: number; artifactRequests: number; decisionRequests: number; lastVerdict?: "pass" | "fail" | "info"; lastDecisionContent?: string; planRequest?: { tasks: PlanSubmissionTask[] } } {
   let handoff: (TeamToolRequest & { kind: "handoff" }) | undefined;
   let taskRequests = 0;
   let artifactRequests = 0;
   let decisionRequests = 0;
   let lastVerdict: "pass" | "fail" | "info" | undefined;
+  let lastDecisionContent: string | undefined;
+  let planRequest: { tasks: PlanSubmissionTask[] } | undefined;
 
   for (const req of sink.requests) {
     switch (req.kind) {
@@ -283,6 +451,7 @@ export function consumeToolRequests(
       case "record_decision":
         decisionRequests++;
         if (req.verdict) lastVerdict = req.verdict;
+        lastDecisionContent = req.content;
         emit({
           type: "decision_recorded",
           decision: {
@@ -295,12 +464,25 @@ export function consumeToolRequests(
           },
         });
         break;
+      case "plan":
+        planRequest = { tasks: req.tasks };
+        break;
     }
   }
-  return { handoff, taskRequests, artifactRequests, decisionRequests, lastVerdict };
+  return { handoff, taskRequests, artifactRequests, decisionRequests, lastVerdict, lastDecisionContent, planRequest };
 }
 
+/** 任务编号序列（模块级单调递增，跨执行器实例防并发撞号）。
+ *  createTeamTools 每次创建时会把 existingTasks 中的最大编号提升为下限：
+ *  根任务 TASK-001 由 Runtime 创建，若不抬底，角色自建的第一个任务也会拿到
+ *  TASK-001 与根任务撞车；同理同进程多个 run 之间编号也可回退。 */
 let taskSeq = 0;
+function raiseTaskSeqFloor(existingTasks: TeamTask[]): void {
+  for (const t of existingTasks) {
+    const m = /^TASK-(\d+)$/.exec(t.id);
+    if (m) taskSeq = Math.max(taskSeq, Number(m[1]));
+  }
+}
 function buildTask(req: Extract<TeamToolRequest, { kind: "create_task" }>, runId: string, agentId: string): TeamTask {
   taskSeq += 1;
   return {

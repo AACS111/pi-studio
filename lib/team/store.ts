@@ -58,6 +58,8 @@ export function getSnapshotFile(sessionId: string, runId: string): string {
 /** ==================== EventStore ==================== */
 
 const SNAPSHOT_EVERY_N_EVENTS = 50;
+/** 快照格式版本：v2 = reduce(base) 正确合并。v1 旧快照存在跨边界丢更新缺陷，读取时作废重放自愈 */
+const SNAPSHOT_VERSION = 2;
 
 export class EventStore {
   private readonly sessionId: string;
@@ -117,49 +119,39 @@ export class EventStore {
     }
   }
 
-  /** 读 snapshot（不存在返回 null） */
+  /** 读 snapshot（不存在 / 格式过旧返回 null → 回退全量 replay 自愈） */
   loadSnapshot(): TeamSnapshot | null {
     if (!existsSync(this.snapshotFile)) return null;
     try {
-      return JSON.parse(readFileSync(this.snapshotFile, "utf8")) as TeamSnapshot;
+      const parsed = JSON.parse(readFileSync(this.snapshotFile, "utf8")) as TeamSnapshot;
+      // v1 快照的 projections 由「拼接式合并」生成，任务/执行状态不可信：作废，回退全量重放
+      if (!parsed || parsed.v !== SNAPSHOT_VERSION) return null;
+      return parsed;
     } catch {
       return null;
     }
   }
 
-  /** 从 snapshot + 增量 events 重建投影（崩溃恢复/打开 run 时调用） */
+  /** 从 snapshot + 增量 events 重建投影（崩溃恢复/打开 run 时调用）。
+   *  v2 起：delta 在快照投影的克隆上原地 apply（reduce(after, base)），
+   *  与全量 replay 结果完全一致；替代旧版对 state/tasks/executions 的纯 concat
+   *  （旧版在跨快照边界时丢失 task_completed/task_failed/execution_completed 更新）。 */
   rebuildProjections(): { projections: Projections; eventSequence: number } {
     const snapshot = this.loadSnapshot();
     if (snapshot) {
       const after = this.replay().filter((e) => e.sequence > snapshot.eventSequence);
-      const merged = reduce(after);
-      const projections: Projections = {
-        state: {
-          ...snapshot.projections.state,
-          decisions: [...snapshot.projections.state.decisions, ...merged.state.decisions],
-          artifacts: [...snapshot.projections.state.artifacts, ...merged.state.artifacts],
-          completedTasks: [...snapshot.projections.state.completedTasks, ...merged.state.completedTasks],
-          activeTasks: [...snapshot.projections.state.activeTasks, ...merged.state.activeTasks],
-          blockers: [...snapshot.projections.state.blockers, ...merged.state.blockers],
-          lastHandoff: merged.state.lastHandoff ?? snapshot.projections.state.lastHandoff,
-          goal: snapshot.projections.state.goal || merged.state.goal,
-          phase: merged.state.phase ?? snapshot.projections.state.phase,
-        },
-        messages: [...snapshot.projections.messages, ...merged.messages],
-        tasks: [...snapshot.projections.tasks, ...merged.tasks],
-        executions: [...snapshot.projections.executions, ...merged.executions],
-        artifacts: [...snapshot.projections.artifacts, ...merged.artifacts],
-      };
+      const projections = reduce(after, snapshot.projections);
       return { projections, eventSequence: this.nextSequence() - 1 };
     }
     const projections = reduce(this.replay());
     return { projections, eventSequence: this.nextSequence() - 1 };
   }
 
-  /** 周期性快照（性能优化；写原子文件避免半写状态） */
+  /** 周期性快照（性能优化；写原子文件避免半写状态）。同时写入格式版本号（v2），
+   *  过旧版本的快照读取时会被作废（loadSnapshot 校验）而非静默污染投影 */
   saveSnapshot(projections: Projections): void {
     const sequence = this.nextSequence() - 1;
-    const snapshot: TeamSnapshot = { eventSequence: sequence, projections };
+    const snapshot: TeamSnapshot = { v: SNAPSHOT_VERSION, eventSequence: sequence, projections };
     writePrivateFileAtomicSync(this.snapshotFile, JSON.stringify(snapshot));
   }
 

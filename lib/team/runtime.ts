@@ -19,6 +19,7 @@
 import { EventStore, getTeamDir } from "./store.ts";
 import { WorkflowEngine, type ExecutionResult, type LlmJudge, type Route } from "./engine.ts";
 import { buildContext, buildTaskContext } from "./context.ts";
+import { recordTouchedFiles } from "./blackboard.ts";
 import type { AgentExecutorLike } from "./executor.ts";
 import { join } from "path";
 import type {
@@ -672,8 +673,22 @@ export class RunManager {
       ...(result.stats ? { stats: result.stats } : {}),
       ...(result.model ? { model: result.model } : {}),
       ...(result.changedFiles?.length ? { changedFiles: result.changedFiles } : {}),
+      ...(result.readFiles?.length ? { readFiles: result.readFiles } : {}),
       ...(result.thinkingPath ? { thinkingPath: result.thinkingPath } : {}),
     });
+    // L1 自动共享层：落文件接触账本（下棒角色的「上棒接触清单」数据源），
+    // 写失败不影响主流程（recordTouchedFiles 内部吞错）。
+    if (result.changedFiles?.length || result.readFiles?.length) {
+      recordTouchedFiles(
+        this.team.sessionId,
+        this.runId,
+        execution.agentId,
+        {
+          changedFiles: (result.changedFiles ?? []).map((f) => f.filePath),
+          readFiles: result.readFiles ?? [],
+        },
+      );
+    }
     this.publish();
     return { execution, result };
   }

@@ -34,6 +34,10 @@ export interface ExecutionResult {
   model?: { provider: string; modelId: string };
   /** 本次执行改动/生成的文件（edit/write；站在项目 cwd 内），供 UI 像普通会话那样展示「变更文件」 */
   changedFiles?: { filePath: string; kind: "edit" | "write" }[];
+  /** 本次执行细读/检索过的文件（read/grep/find，按最后接触顺序、去重、限量）。
+   *  供团队上下文装配「上棒接触清单」——下棒角色直接从这些文件读起，避免重复盲目探索
+   *  （双层上下文共享 L1 自动层）。 */
+  readFiles?: string[];
   /** 本次执行思考流水落盘的 .md 路径（可读，供「查看思考文件」右开；无思考则为 undefined） */
   thinkingPath?: string;
 }

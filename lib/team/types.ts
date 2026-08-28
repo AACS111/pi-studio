@@ -403,7 +403,7 @@ export type TeamEventInput =
   | { type: "artifact_produced"; artifact: ArtifactRef }
   | { type: "decision_recorded"; decision: Decision }
   | { type: "handoff_requested"; executionId?: string; from: string; to: string; kind: "transition" | "tool"; transitionId?: string; reason?: string }
-  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[]; thinkingPath?: string }
+  | { type: "execution_completed"; executionId: string; status: ExecutionStatus; handoffTo?: string; failureReason?: string; stats?: ExecutionStats; model?: { provider: string; modelId: string }; changedFiles?: TeamChangedFile[]; readFiles?: string[]; thinkingPath?: string }
   | { type: "agent_progress"; executionId: string; agentId: string; kind: "thinking" | "tool" | "model"; content: string }
   | { type: "steer"; agentId?: string; content: string }
   | { type: "approval_requested"; runId: string; transitionId: string; from: string; to: string; agentOutput: string; executionId: string }

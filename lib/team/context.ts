@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, statSync } from "fs";
 import { join, isAbsolute } from "path";
 import { getTeamDir } from "./store.ts";
+import { listNotes, recentOtherTouched } from "./blackboard.ts";
 import type { AgentDef, Projections, TeamDef, TeamMessage, TeamRun } from "./types.ts";
 
 export interface ContextBuildOptions {
@@ -118,6 +119,35 @@ function recentHandoffsAndMessages(messages: TeamMessage[], max = 4): string {
     .join("\n");
 }
 
+/** L1 自动共享层：上棒角色接触过的文件清单（改动 + 细读），下棒直接从这些读起。 */
+function touchedFilesBlock(team: TeamDef, runId: string, currentAgentId: string): string {
+  const records = recentOtherTouched(team.sessionId, runId, currentAgentId, 2);
+  if (records.length === 0) return "";
+  const nameOf = (id: string) => team.agents.find((a) => a.id === id)?.name ?? id;
+  const lines: string[] = [];
+  for (const rec of records) {
+    const name = nameOf(rec.agentId);
+    if (rec.changedFiles.length > 0) {
+      lines.push(`「${name}」改动了（git diff / read 看现状）：${rec.changedFiles.slice(0, 8).join(", ")}${rec.changedFiles.length > 8 ? ` 等 ${rec.changedFiles.length} 个` : ""}`);
+    }
+    if (rec.readFiles.length > 0) {
+      lines.push(`「${name}」细读过：${rec.readFiles.slice(0, 10).join(", ")}${rec.readFiles.length > 10 ? ` 等 ${rec.readFiles.length} 个` : ""}`);
+    }
+  }
+  if (lines.length === 0) return "";
+  return `\n## 上棒接触的文件（优先从这里读起，避免重复盲目探索）\n${lines.join("\n")}\n`;
+}
+
+/** L2 主动共享层：团队黑板笔记索引（全文按需 team_note_read，不全文注入控体量）。 */
+function blackboardIndexBlock(team: TeamDef, runId: string): string {
+  const notes = listNotes(team.sessionId, runId);
+  if (notes.length === 0) {
+    return `\n## 团队黑板（共享笔记）\n（暂无。交接前用 team_note_write 写入关键发现/约定。）\n`;
+  }
+  const lines = notes.map((n) => `- ${n.key}（${n.author}）：${n.summary}`);
+  return `\n## 团队黑板（共享笔记，按需 team_note_read 全文；交接前 team_note_write 沉淀）\n${lines.join("\n")}\n`;
+}
+
 export function buildContext(options: ContextBuildOptions): string {
   const { team, run, projections, agent } = options;
   const state = projections.state;
@@ -133,6 +163,12 @@ export function buildContext(options: ContextBuildOptions): string {
 
   // 最近消息/交接（限量）
   const recentBlock = recentHandoffsAndMessages(projections.messages);
+
+  // L1 自动共享层：上棒角色的文件接触清单（改动 + 细读），下棒直接从这些读起
+  const touchedBlock = touchedFilesBlock(team, run.id, agent.id);
+
+  // L2 主动共享层：团队黑板笔记索引（全文按需 team_note_read）
+  const notesBlock = blackboardIndexBlock(team, run.id);
 
   // 共享任务 DAG
   const dagBlock = taskDagLines(projections.tasks);
@@ -171,6 +207,8 @@ export function buildContext(options: ContextBuildOptions): string {
       : "最近交接：（无）",
     `\n## 前序角色摘要（读自各角色 .md；完整执行过程请 read 对应 执行详情 .md，勿读 jsonl）`,
     predecessors,
+    touchedBlock,
+    notesBlock,
     `\n## 共享任务列表（DAG 概览）`,
     dagBlock,
     `已完成：${listLines(state.completedTasks.map((id) => taskTitle(projections, id)))}`,
@@ -198,6 +236,7 @@ function closingRequirementsBlock(): string {
     "1. 结束前必须调用 team_record_decision 记录本执行的结构化结论：verdict 填 pass（全部达成）/ fail（有问题阻塞）/ info（阶段性进展），content 写清依据。这是流程条件路由的信号源，缺失会导致路由退化为关键词猜测、误派返工对象。",
     "2. team_handoff 摘要与结论中只允许陈述真实发生的事：改了哪些文件以实际写入为准（系统会核对宣称与真实变更），严禁声称已修改但未落盘的文件；若中途被回合/时间截断，必须明说未完成部分。",
     "3. 需要下游接续的上下文写进交接摘要或文档（.md）：改动文件清单、接口/传参约定、验证方法，让对方 read 即可继续，不必重探。",
+    "4. 开始干活前先看「团队黑板」索引与「上棒接触的文件」：按需 team_note_read 取用、优先从上棒接触清单里的文件读起，避免重复探索；交接前把关键发现/接口约定/踩坑用 team_note_write 写入黑板（key 用主题名，如 api-conventions）。",
   ].join("\n");
 }
 

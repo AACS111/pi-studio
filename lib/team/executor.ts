@@ -279,7 +279,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
 
     // 受控工具（planner 轮额外注入 team_submit_plan）
     const sink = createToolSink();
-    const tools = createTeamTools({ team, executingAgentId: agent.id, existingTasks, sink, plannerMode: request.planner === true });
+    const tools = createTeamTools({ team, executingAgentId: agent.id, existingTasks, sink, plannerMode: request.planner === true, notes: { teamSessionId: team.sessionId, runId: request.runId } });
 
     // —— 写权限策略（工具层角色边界）：显式 writePolicy 优先，缺省推导 = 有 edit → all 否则 docs。
     // docs：剔除内置 edit/write，注入仅限 .md 的受控写工具；none：全部剔除。修 bcfc16cd 越权写码缺陷①。 */
@@ -297,6 +297,10 @@ export class PiAgentExecutor implements AgentExecutorLike {
     // 变更文件采集（edit/write）：跟普通会话一样把「改动的文件」显示出来。
     // 在 tool_execution_start 里按工具名 + 参数路径记录，仅保留站在项目 cwd 内的文件（排除临时脚本/导出）。
     const changedFiles = new Map<string, ChangedFile["kind"]>();
+    // 读类接触采集（L1 自动共享层）：read/grep/find/ls/open 触过的路径，注入下棒角色
+    // 的「上棒接触清单」——消灭重复盲目探索（token 翻倍主因）。保持最后接触顺序、去重、限量。
+    const READ_TOOLS = new Set(["read", "grep", "find", "ls", "open"]);
+    const touchedFiles = new Map<string, true>();
 
     const model = parseAgentModel(agent.model);
     // 预算分摊：单角色超时不再独占整个 run 时长。优先级：agent.timeoutMs 显式配置（不同角色
@@ -495,6 +499,22 @@ export class PiAgentExecutor implements AgentExecutorLike {
                 if (p && !changedFiles.has(p) && isFilePathInsideCwd(p, team.cwd)) changedFiles.set(p, kind);
               } catch { /* 路径解析失败忽略 */ }
             }
+            // 读类接触采集：path/filePath（read/open）或 pattern 的 path 参数（grep/find 的搜索范围）。
+            // grep/find 的 pattern 本身不采集（关键词不是文件）；采集其 path/paths 参数 + read 的目标。
+            if (READ_TOOLS.has(toolName)) {
+              try {
+                const args = (typeof te.args === "string" ? JSON.parse(te.args) : (te.args ?? {})) as Record<string, unknown>;
+                const raw = args.path ?? args.filePath ?? args.paths;
+                const candidates = Array.isArray(raw) ? raw : [raw];
+                for (const c of candidates) {
+                  const p = typeof c === "string" ? c.trim().replace(/\\/g, "/") : "";
+                  if (p && isFilePathInsideCwd(p, team.cwd)) {
+                    touchedFiles.delete(p); // 重新 set 到末尾（保持最后接触顺序）
+                    touchedFiles.set(p, true);
+                  }
+                }
+              } catch { /* 路径解析失败忽略 */ }
+            }
             const summary = summarizeToolCall(toolName, te.args);
             request.onEvent({ type: "agent_progress", executionId: execution.id, agentId: agent.id, kind: "tool", content: summary });
             writeTrace(`[tool] ${summary}`);
@@ -609,7 +629,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
           output,
           failureReason: `回合上限（${maxTurns}）宽限 ${TURNS_GRACE} 回合内未收尾，被强制中断`,
           ...(actualModel ? { model: actualModel } : {}),
-          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}), ...(touchedFiles.size ? { readFiles: [...touchedFiles.keys()].slice(-24) } : {}),
         };
       }
       if (llmError) {
@@ -630,7 +650,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
           output: "",
           failureReason: `模型调用失败：${llmError.slice(0, 400)}`,
           ...(actualModel ? { model: actualModel } : {}),
-          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+          ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}), ...(touchedFiles.size ? { readFiles: [...touchedFiles.keys()].slice(-24) } : {}),
         };
       }
       // DAG 编排：planner 轮提交的计划 → 二次校验（工具内校验过，防御性复验）后透出给调度器
@@ -732,7 +752,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
         ...(request.planner && planError ? { planError } : {}),
         ...(stats ? { stats } : {}),
         ...(actualModel ? { model: actualModel } : {}),
-        ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}),
+        ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}), ...(touchedFiles.size ? { readFiles: [...touchedFiles.keys()].slice(-24) } : {}),
         ...(thinkingPath ? { thinkingPath } : {}),
       };
     } catch (error) {
@@ -740,7 +760,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
       try {
         appendSummary(`\n---\n## 执行 #${execution.sequence}\n- 状态：失败\n- 原因：${message.slice(0, 300)}\n`);
       } catch { /* 总结写入失败不阻断 */ }
-      return { status: "failed", output: "", failureReason: message, ...(actualModel ? { model: actualModel } : {}), ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}) };
+      return { status: "failed", output: "", failureReason: message, ...(actualModel ? { model: actualModel } : {}), ...(changedFiles.size ? { changedFiles: [...changedFiles].map(([filePath, kind]) => ({ filePath, kind })) } : {}), ...(touchedFiles.size ? { readFiles: [...touchedFiles.keys()].slice(-24) } : {}) };
     } finally {
       if (thinkingTimer) { clearInterval(thinkingTimer); thinkingTimer = undefined; }
       try { flushThinking(); } catch { /* 尽力 */ }

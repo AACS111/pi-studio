@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, writeFileSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
+import { listNotes, readNote, writeNote } from "./blackboard.ts";
 import type { AgentDef, ArtifactRef, PlanSubmissionTask, PlanTask, TeamDef, TeamTask } from "./types.ts";
 
 /** 协议终态：to=__end__ 表示「整个任务交付完成，结束本次运行」。它不是团队角色，
@@ -45,6 +46,9 @@ export interface CreateTeamToolsOptions {
   /** DAG 编排：planner 模式（入口角色的计划轮）→ 额外注入 team_submit_plan 工具。
    *  仅 planner 可见；普通执行不提供，避免中途改计划破坏调度确定性。 */
   plannerMode?: boolean;
+  /** 团队黑板（L2 上下文共享）：提供时注入 team_note_write/read/list 三件套。
+   *  缺省不注入（兼容旧测试/无 run 场景）。 */
+  notes?: { teamSessionId: string; runId: string };
 }
 
 function text(content: string) {
@@ -361,6 +365,65 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
   });
 
   const tools: ToolDefinition[] = [handoff, createTask, completeTask, addArtifact, recordDecision];
+
+  // 团队黑板（L2 主动共享层）：结构化笔记直接读写 run 目录文件（同步返回，不走 sink——
+  // 读笔记必须即时可见）。跨角色的关键发现/接口约定无损传递，替代窄带摘要的 160 字符截断。
+  if (options.notes) {
+    const { teamSessionId, runId } = options.notes;
+    const author = options.team.agents.find((a) => a.id === options.executingAgentId)?.name ?? options.executingAgentId;
+    tools.push(
+      defineTool({
+        name: "team_note_write",
+        label: "写共享笔记",
+        description: "把本执行的关键发现/接口约定/踩坑写入团队黑板（本 run 内全部角色可读）。同 key 覆盖。交接前应把下游需要知道的内容写进来。",
+        promptSnippet: "team_note_write 把关键发现写入团队黑板",
+        parameters: Type.Object({
+          key: Type.String({ description: "笔记主题名，如 api-conventions、auth-flow、pitfalls（小写短横线）" }),
+          content: Type.String({ description: "笔记正文（Markdown，建议 ≤2000 字符：结论优先、文件路径/行号具体）" }),
+        }),
+        execute: async (_toolCallId, params) => {
+          try {
+            const { key } = writeNote(teamSessionId, runId, params.key, params.content, author);
+            return { content: text(`已写入黑板「${key}」`), details: { ok: true, kind: "note_write", key } };
+          } catch (error) {
+            return { content: text(error instanceof Error ? error.message : String(error)), details: { ok: false, kind: "note_write", key: params.key } };
+          }
+        },
+      }),
+      defineTool({
+        name: "team_note_read",
+        label: "读共享笔记",
+        description: "按 key 读取一条团队黑板笔记全文（其他角色写的发现/约定）。",
+        promptSnippet: "team_note_read 按需读取黑板笔记全文",
+        parameters: Type.Object({
+          key: Type.String({ description: "笔记主题名（见上下文里的黑板索引）" }),
+        }),
+        execute: async (_toolCallId, params) => {
+          const note = readNote(teamSessionId, runId, params.key);
+          if (!note) {
+            return { content: text(`黑板里没有「${params.key}」。用 team_note_list 查看现有笔记。`), details: { ok: false, kind: "note_read" } };
+          }
+          return {
+            content: text(`【${note.key}】作者：${note.author}｜更新：${note.updatedAt}\n\n${note.content}`),
+            details: { ok: true, kind: "note_read" },
+          };
+        },
+      }),
+      defineTool({
+        name: "team_note_list",
+        label: "列黑板笔记",
+        description: "列出团队黑板的全部笔记（key/作者/首行摘要），按需 team_note_read 全文。",
+        promptSnippet: "team_note_list 查看黑板现有笔记",
+        parameters: Type.Object({}),
+        execute: async () => {
+          const notes = listNotes(teamSessionId, runId);
+          if (notes.length === 0) return { content: text("黑板为空（尚无笔记）。"), details: { ok: true, kind: "note_list" } };
+          const lines = notes.map((n) => `- ${n.key}（${n.author}，${n.updatedAt.slice(0, 16).replace("T", " ")}）：${n.summary}`);
+          return { content: text(`黑板共 ${notes.length} 条：\n${lines.join("\n")}`), details: { ok: true, kind: "note_list" } };
+        },
+      }),
+    );
+  }
 
   // DAG 编排：planner 轮次专用的计划提交工具（校验：角色存在/依赖引用/无环/数量上限）
   if (options.plannerMode) {

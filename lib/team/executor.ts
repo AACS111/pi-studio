@@ -283,7 +283,14 @@ export class PiAgentExecutor implements AgentExecutorLike {
 
     // —— 写权限策略（工具层角色边界）：显式 writePolicy 优先，缺省推导 = 有 edit → all 否则 docs。
     // docs：剔除内置 edit/write，注入仅限 .md 的受控写工具；none：全部剔除。修 bcfc16cd 越权写码缺陷①。 */
-    const writePolicy = resolveWritePolicy(agent);
+    // solo 例外：入口角色是本次任务的唯一执行者，不存在「协作越权」边界（写权限的初衷是
+    // 编排时防 leader/product/tester 借通用 write 越权写业务码，run bcfc16cd）。docs 会把
+    // FULL_TOOLS 里的 edit/write 剔掉，导致 solo 单点任务改不了代码（实测：solo 干不了活）。
+    // 故 solo 入口角色的 docs 提升为 all；none 仍尊重（显式禁写）。
+    const rawWritePolicy = resolveWritePolicy(agent);
+    const isSoloEntry = request.mode === "solo" && team.entryAgentId === agent.id;
+    const writePolicy: "all" | "docs" | "none" =
+      isSoloEntry && rawWritePolicy === "docs" ? "all" : rawWritePolicy;
     const policyToolNames = applyWritePolicyToToolNames(writePolicy, agent.toolNames);
     if (writePolicy === "docs") tools.push(createDocWriteTool(team.cwd));
 
@@ -796,7 +803,7 @@ function diffExecutionStats(raw: SessionStatsRaw | null, baseline: SessionStatsR
 /** 带超时的执行（超时 abort 后判定 failed/timeout）。
  *  onExternalAbort：仅异常路径（超时兜底 / 用户取消经 raceWithAbort reject）触发——发送底层 abort 并清理监听；正常完成不误发 abort。
  *  prompt promise 自身已通过 Promise.race 对 abort 提前 reject，此处 timeout 仅兜底。 */
-async function withTimeout<T>(
+export async function withTimeout<T>(
   promise: Promise<T>,
   ms: number,
   onTimeout: () => Promise<void>,
@@ -808,7 +815,11 @@ async function withTimeout<T>(
       promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
-          void onTimeout().then(() => reject(new Error(`执行超时（${Math.round(ms / 1000)}s）`)));
+          // 修复（中危）：旧实现 reject 依赖 onTimeout()（send abort）完成后才触发——
+          // 底层会话 hang 死时 abort 命令自身 pending，超时兑底永不生效，执行卡到
+          // 用户手动停止。改为立即 reject，abort 尽力而为（后台继续）。
+          reject(new Error(`执行超时（${Math.round(ms / 1000)}s）`));
+          void onTimeout().catch(() => undefined);
         }, ms);
       }),
     ]);

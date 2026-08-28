@@ -76,3 +76,6 @@ electron/test-*.cjs
 electron/test-*.js
 electron/test-api.js
 .local/agent-work/
+
+# 历史调试脚本/临时产物（不纳入版本管理）
+/.tmp-*

@@ -5,7 +5,13 @@ export const dynamic = "force-dynamic";
 
 const OMITTED_EVENT_TYPES = new Set(["turn_start", "turn_end", "tool_execution_update"]);
 
-function toClientEvent(event: AgentEvent): AgentEvent | null {
+/**
+ * v1（默认）：裁剪流，投喂旧 ChatWindow/useAgentSession（消息快照模型）。
+ * v2（?v2=1）：全量透传，投喂 percho Transcript reducer（平滑流式/折叠组/错误卡/todo 面板）。
+ * 通过 query 切换，两条路径并存，互不干扰；旧 UI 行为完全不变。
+ */
+function toClientEvent(event: AgentEvent, v2 = false): AgentEvent | null {
+  if (v2) return event; // 全量透传：保留 turn_start/turn_end/tool_execution_update/assistantMessageEvent 等增量事件
   if (OMITTED_EVENT_TYPES.has(event.type)) return null;
   if (event.type === "message_update") {
     const clientEvent = { ...event };
@@ -22,6 +28,8 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const url = new URL(req.url);
+  const v2 = url.searchParams.get("v2") === "1";
 
   // Fast path: already-running session
   let session = getRpcSession(id);
@@ -49,7 +57,7 @@ export async function GET(
       encode({ type: "connected", sessionId: id });
 
       const unsubscribe = session.onEvent((event) => {
-        const clientEvent = toClientEvent(event);
+        const clientEvent = toClientEvent(event, v2);
         if (clientEvent) encode(clientEvent);
       });
 

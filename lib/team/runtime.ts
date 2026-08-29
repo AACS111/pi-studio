@@ -20,6 +20,8 @@ import { EventStore, getTeamDir } from "./store.ts";
 import { WorkflowEngine, type ExecutionResult, type LlmJudge, type Route } from "./engine.ts";
 import { buildContext, buildTaskContext } from "./context.ts";
 import { recordTouchedFiles } from "./blackboard.ts";
+import { promoteRunNotes, writeRunRecap } from "./memory.ts";
+import { createAgentWorktree, discardAgentWorktree, mergeAgentWorktree, type AgentWorktreeHandle } from "./worktree.ts";
 import type { AgentExecutorLike } from "./executor.ts";
 import { join } from "path";
 import type {
@@ -109,6 +111,7 @@ export class RunManager {
   private pendingMerges = 0;                                         // 仍在等待分支的 merge 数（用于终态判断）
   private completedAgentIds = new Set<string>();                      // 已成功完成 ≥1 次的下游角色（no-progress 循环守卫用）
   private entryHandoffCounts = new Map<string, number>();             // 入口角色(leader)交接给每个角色的次数（守卫用）
+  private worktreeWarned = new Set<string>();                          // 隔离回退提示每角色只发一次
   private static readonly NO_PROGRESS_HANDOFF_THRESHOLD = 2;          // 同一角色被 leader 重复交接 ≥2 次且已成功完成 → 判定无进展循环
 
   constructor(options: RunManagerOptions) {
@@ -616,6 +619,28 @@ export class RunManager {
   ): Promise<{ execution: AgentExecution; result: ExecutionResult }> {
     const seq = (this.agentExecutionCounts.get(agentId) ?? 0) + 1;
     this.agentExecutionCounts.set(agentId, seq);
+
+    // P2-1 worktree 隔离：workspace.mode=isolated 的角色在独立 git worktree 执行（planner 计划轮只读不写，不隔离）。
+    // 创建失败/非 git 仓库 → null 回退共享 cwd（发一次可见提示，不阻断）。
+    const isoAgent = this.team.agents.find((a) => a.id === agentId);
+    let worktree: AgentWorktreeHandle | null = null;
+    if (isoAgent?.workspace?.mode === "isolated" && !opts?.planner) {
+      worktree = await createAgentWorktree({ cwd: this.team.cwd, runId: this.runId, agentId, sequence: seq });
+      if (!worktree && !this.worktreeWarned.has(agentId)) {
+        this.worktreeWarned.add(agentId);
+        this.append({
+          type: "message_created",
+          message: {
+            id: `msg-${this.runId}-wt-fallback-${agentId}`,
+            kind: "system",
+            role: "",
+            agentId,
+            content: `⚠️ 角色「${isoAgent.name}」配置了工作区隔离（workspace.mode=isolated），但当前工作目录不是可用的 git 仓库（或处于 detached HEAD），已回退共享工作区执行。`,
+            createdAt: Date.now(),
+          },
+        });
+      }
+    }
     const execution: AgentExecution = {
       // execution.id 保持每次执行唯一（事件路由/审计用），而 sessionId/sessionPath 收敛为
       // 「每角色一份」：同一个角色多次执行（返工/重进）复用同一份 pi 会话 .jsonl 与总结 .md，
@@ -629,6 +654,7 @@ export class RunManager {
       startedAt: Date.now(),
       sessionId: `${this.runId}-${agentId}`,
       sessionPath: join(getTeamDir(this.team.sessionId), "sessions", `${this.runId}-${agentId}.jsonl`),
+      ...(worktree ? { worktreePath: worktree.path } : {}),
     };
     this.append({ type: "execution_started", execution });
 
@@ -651,6 +677,7 @@ export class RunManager {
         ...(opts?.participantCount ? { participantCount: opts.participantCount } : {}),
         // 把取消信号传给 executor：用户停止对话时立即 abort 本次会话
         signal: this.controller.signal,
+        ...(worktree ? { worktreeCwd: worktree.path } : {}),
         onEvent: (e) => this.append(e as TeamEventInput),
         onMessage: (m) => this.append({ type: "message_created", message: m as TeamMessage }),
       });
@@ -665,6 +692,34 @@ export class RunManager {
     if (result.stats) {
       this.run.stats.tokensUsed += result.stats.totalTokens;
     }
+
+    // P2-1 worktree 隔离收尾：成功（且 verdict≠fail）→ 合并回主干；失败/取消/超时 → 丢弃回滚；
+    // 合并冲突 → abort 主干侧合并并保留 worktree+分支现场（不静默丢弃角色成果）。
+    let worktreeResult: { path: string; outcome: "merged" | "discarded" | "kept"; changedFiles?: number; error?: string } | undefined;
+    if (worktree && this.team.cwd) {
+      const agentName = isoAgent?.name ?? agentId;
+      const succeeded = result.status === "completed" && result.verdict !== "fail";
+      if (succeeded) {
+        const m = await mergeAgentWorktree({ cwd: this.team.cwd, handle: worktree, agentId, label: this.run.task });
+        if (m.outcome === "merged") {
+          worktreeResult = { path: worktree.path, outcome: "merged", changedFiles: m.changedFiles };
+          this.append({ type: "message_created", message: { id: `msg-${execution.id}-wt-merged`, kind: "system", role: "", agentId, content: `🌿 「${agentName}」的隔离工作区已合并回主干（改动 ${m.changedFiles ?? 0} 个文件）。`, createdAt: Date.now() } });
+        } else if (m.outcome === "clean") {
+          worktreeResult = { path: worktree.path, outcome: "merged", changedFiles: 0 };
+          this.append({ type: "message_created", message: { id: `msg-${execution.id}-wt-clean`, kind: "system", role: "", agentId, content: `🌿 「${agentName}」的隔离工作区无文件改动，已回收。`, createdAt: Date.now() } });
+        } else {
+          worktreeResult = { path: worktree.path, outcome: "kept", error: m.error };
+          this.append({ type: "message_created", message: { id: `msg-${execution.id}-wt-kept`, kind: "system", role: "", agentId, content: `⚠️ 「${agentName}」的隔离工作区合并未完成（${m.outcome === "conflict" ? "冲突" : "失败"}）${m.error ? `：${m.error}` : ""}。现场已保留（${worktree.path}，分支 ${worktree.branch}），请人工检查后手动合并或清理。`, createdAt: Date.now() } });
+        }
+      } else {
+        const ok = await discardAgentWorktree({ cwd: this.team.cwd, handle: worktree });
+        worktreeResult = ok
+          ? { path: worktree.path, outcome: "discarded" }
+          : { path: worktree.path, outcome: "kept", error: "清理失败，需手动 git worktree remove" };
+        this.append({ type: "message_created", message: { id: `msg-${execution.id}-wt-discard`, kind: "system", role: "", agentId, content: ok ? `🗑️ 「${agentName}」本次执行未通过，隔离工作区已丢弃（改动已回滚）。` : `⚠️ 「${agentName}」执行失败且隔离工作区清理失败，请手动处理：${worktree.path}`, createdAt: Date.now() } });
+      }
+    }
+
     this.append({
       type: "execution_completed",
       executionId: execution.id,
@@ -675,6 +730,7 @@ export class RunManager {
       ...(result.changedFiles?.length ? { changedFiles: result.changedFiles } : {}),
       ...(result.readFiles?.length ? { readFiles: result.readFiles } : {}),
       ...(result.thinkingPath ? { thinkingPath: result.thinkingPath } : {}),
+      ...(worktreeResult ? { worktree: worktreeResult } : {}),
     });
     // L1 自动共享层：落文件接触账本（下棒角色的「上棒接触清单」数据源），
     // 写失败不影响主流程（recordTouchedFiles 内部吞错）。
@@ -1209,6 +1265,24 @@ export class RunManager {
     const evType = code === "completed" ? "run_completed" : code === "user_cancelled" ? "run_cancelled" : "run_failed";
     this.append({ type: evType, statusReason: { code, message } } as TeamEventInput);
     this.publish();
+    this.persistCrossRunMemory();
+  }
+
+  /** P2 跨run记忆：run 收尾落「运行回顾」+ 晋升本 run 黑板笔记到团队级长期记忆。
+   *  全部吞错：记忆是增强层，任何 IO 失败不得影响 run 收尾。finish 幂等保证只写一次。 */
+  private persistCrossRunMemory(): void {
+    try {
+      const { projections } = this.store.rebuildProjections();
+      writeRunRecap(this.team.sessionId, {
+        runId: this.runId,
+        run: this.run,
+        stopReason: this.run.statusReason,
+        tasks: projections.tasks,
+        decisions: projections.state.decisions,
+        artifacts: projections.artifacts,
+      });
+      promoteRunNotes(this.team.sessionId, this.runId);
+    } catch { /* 记忆层失败静默 */ }
   }
 
   private append(event: TeamEventInput): void {

@@ -9,7 +9,9 @@ test("agent SSE projects SDK events onto the fields consumed by the web client",
   assert.match(agentEventsSource, /OMITTED_EVENT_TYPES = new Set\(\["turn_start", "turn_end", "tool_execution_update"\]\)/);
   assert.match(agentEventsSource, /delete clientEvent\.assistantMessageEvent/);
   assert.match(agentEventsSource, /event\.type === "agent_end"\) return \{ type: "agent_end" \}/);
-  assert.match(agentEventsSource, /const clientEvent = toClientEvent\(event\)/);
+  assert.match(agentEventsSource, /const clientEvent = toClientEvent\(event, v2\)/);
+  // v2 (=?v2=1) 全量透传分支：保留增量事件，不裁剪 assistantMessageEvent
+  assert.match(agentEventsSource, /if \(v2\) return event/);
 });
 
 test("SSE routes reuse one TextEncoder per stream", () => {

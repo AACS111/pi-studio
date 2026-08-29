@@ -13,6 +13,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { mkdirSync, writeFileSync } from "fs";
 import { isAbsolute, join, relative, resolve, sep } from "path";
 import { listNotes, readNote, writeNote } from "./blackboard.ts";
+import { listMemoryNotes, readMemoryNote } from "./memory.ts";
 import type { AgentDef, ArtifactRef, PlanSubmissionTask, PlanTask, TeamDef, TeamTask } from "./types.ts";
 
 /** 协议终态：to=__end__ 表示「整个任务交付完成，结束本次运行」。它不是团队角色，
@@ -399,12 +400,15 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
           key: Type.String({ description: "笔记主题名（见上下文里的黑板索引）" }),
         }),
         execute: async (_toolCallId, params) => {
-          const note = readNote(teamSessionId, runId, params.key);
+          const runNote = readNote(teamSessionId, runId, params.key);
+          // 跨 run 记忆回退：本 run 没有时读团队级长期笔记（历史 run 晋升沉淀）
+          const memNote = runNote ? null : readMemoryNote(teamSessionId, params.key);
+          const note = runNote ?? memNote;
           if (!note) {
             return { content: text(`黑板里没有「${params.key}」。用 team_note_list 查看现有笔记。`), details: { ok: false, kind: "note_read" } };
           }
           return {
-            content: text(`【${note.key}】作者：${note.author}｜更新：${note.updatedAt}\n\n${note.content}`),
+            content: text(`${memNote ? "〔跨run记忆〕" : ""}【${note.key}】作者：${note.author}｜更新：${note.updatedAt}\n\n${note.content}`),
             details: { ok: true, kind: "note_read" },
           };
         },
@@ -417,9 +421,17 @@ export function createTeamTools(options: CreateTeamToolsOptions): ToolDefinition
         parameters: Type.Object({}),
         execute: async () => {
           const notes = listNotes(teamSessionId, runId);
-          if (notes.length === 0) return { content: text("黑板为空（尚无笔记）。"), details: { ok: true, kind: "note_list" } };
+          // 跨 run 长期笔记（排除本 run 已存在的同 key：run 内版本更新，以 run 为准）
+          const runKeys = new Set(notes.map((n) => n.key));
+          const memNotes = listMemoryNotes(teamSessionId)
+            .filter((n) => !runKeys.has(n.key))
+            .map((n) => ({ ...n, memory: true as const }));
+          if (notes.length === 0 && memNotes.length === 0) return { content: text("黑板为空（尚无笔记）。"), details: { ok: true, kind: "note_list" } };
           const lines = notes.map((n) => `- ${n.key}（${n.author}，${n.updatedAt.slice(0, 16).replace("T", " ")}）：${n.summary}`);
-          return { content: text(`黑板共 ${notes.length} 条：\n${lines.join("\n")}`), details: { ok: true, kind: "note_list" } };
+          const memLines = memNotes.map((n) => `- ${n.key}〔跨run〕（${n.author}，${n.updatedAt.slice(0, 16).replace("T", " ")}）：${n.summary}`);
+          const total = notes.length + memNotes.length;
+          const body = [...lines, ...memLines].join("\n");
+          return { content: text(`黑板共 ${total} 条${memNotes.length ? `（含 ${memNotes.length} 条跨run长期笔记）` : ""}：\n${body}`), details: { ok: true, kind: "note_list" } };
         },
       }),
     );

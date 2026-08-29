@@ -71,6 +71,8 @@ export interface AgentExecutionRequest {
   planError?: string;
   /** 本轮计划/波次实际参与的角色数（DAG 调度传入）：时间预算按它分摊而非全体团队，闲置角色不稀释 */
   participantCount?: number;
+  /** P2-1 worktree 隔离：本次执行的实际工作目录（隔离 worktree 路径）；缺省用 team.cwd */
+  worktreeCwd?: string;
   /** 取消信号：收到 abort 应立即中止会话并提前返回（用户点击停止对话时由 runtime 下发） */
   signal?: AbortSignal;
   /** 事件回调（Runtime 提供，写 events.jsonl 由 Runtime 负责） */
@@ -267,6 +269,8 @@ export class PiAgentExecutor implements AgentExecutorLike {
   }
   async run(request: AgentExecutionRequest): Promise<ExecutionResult> {
     const { team, runId, execution, context, existingTasks, onMessage } = request;
+    // P2-1 worktree 隔离：隔离角色的会话/文件边界/角色提示词都指向 worktree；共享角色回退 team.cwd
+    const execCwd = request.worktreeCwd ?? team.cwd;
     const agent = team.agents.find((a) => a.id === execution.agentId);
     if (!agent) throw new Error(`Agent ${execution.agentId} not found in team`);
 
@@ -292,7 +296,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
     const writePolicy: "all" | "docs" | "none" =
       isSoloEntry && rawWritePolicy === "docs" ? "all" : rawWritePolicy;
     const policyToolNames = applyWritePolicyToToolNames(writePolicy, agent.toolNames);
-    if (writePolicy === "docs") tools.push(createDocWriteTool(team.cwd));
+    if (writePolicy === "docs") tools.push(createDocWriteTool(execCwd));
 
     // 变更文件采集（edit/write）：跟普通会话一样把「改动的文件」显示出来。
     // 在 tool_execution_start 里按工具名 + 参数路径记录，仅保留站在项目 cwd 内的文件（排除临时脚本/导出）。
@@ -358,7 +362,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
     // 无视 task 字段里的真实需求）。团队内部协作走 team_* 受控工具，不靠个人记忆。
     const TEAM_DENY_TOOLS = ["memory_list", "memory_search", "memory_save", "memory_forget", "memory_restore", "scratchpad"];
 
-    const { session } = await this.sessionFactory(execution.id, sessionFile, team.cwd, {
+    const { session } = await this.sessionFactory(execution.id, sessionFile, execCwd, {
       toolNames: effectiveToolNames,
       ...(model && model.provider ? { initialModel: { provider: model.provider, modelId: model.modelId } } : {}),
       ...(effectiveThinkingLevel ? { thinkingLevel: effectiveThinkingLevel } : {}),
@@ -436,7 +440,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
       // —— 追加项目组角色块到 pi 默认 systemPrompt 之后（不覆盖）——
       // pi 在 waitUntilReady/资源加载后已构建默认 systemPrompt（模型身份+工具规范+AGENTS.md/CLAUDE.md）。
       // 此处读出它，把「角色职责+团队上下文+项目指令/工作目录」叠加在后面写回，保留 pi 全部 agent 素养。
-      const roleBlock = buildRoleContextBlock(agent, context, request.mode, team.cwd);
+      const roleBlock = buildRoleContextBlock(agent, context, request.mode, execCwd);
       const agentState = (session.inner as unknown as {
         agent?: { state?: { systemPrompt?: string } | null };
       }).agent?.state;
@@ -496,7 +500,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
               try {
                 const args = (typeof te.args === "string" ? JSON.parse(te.args) : (te.args ?? {})) as Record<string, unknown>;
                 const p = String(args.path ?? args.filePath ?? "").trim().replace(/\\/g, "/");
-                if (p && !changedFiles.has(p) && isFilePathInsideCwd(p, team.cwd)) changedFiles.set(p, kind);
+                if (p && !changedFiles.has(p) && isFilePathInsideCwd(p, execCwd)) changedFiles.set(p, kind);
               } catch { /* 路径解析失败忽略 */ }
             }
             // 读类接触采集：path/filePath（read/open）或 pattern 的 path 参数（grep/find 的搜索范围）。
@@ -508,7 +512,7 @@ export class PiAgentExecutor implements AgentExecutorLike {
                 const candidates = Array.isArray(raw) ? raw : [raw];
                 for (const c of candidates) {
                   const p = typeof c === "string" ? c.trim().replace(/\\/g, "/") : "";
-                  if (p && isFilePathInsideCwd(p, team.cwd)) {
+                  if (p && isFilePathInsideCwd(p, execCwd)) {
                     touchedFiles.delete(p); // 重新 set 到末尾（保持最后接触顺序）
                     touchedFiles.set(p, true);
                   }

@@ -11,6 +11,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { resolveFilePath } from "@/lib/file-paths";
 import { ChangedFilesCard } from "./ChangedFilesCard";
 import { TeamSettings } from "./TeamSettings";
+import { RunReplayModal } from "./RunReplayModal";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import type { ExecutionMode, TeamMessage } from "@/lib/team/types";
 
@@ -82,6 +83,8 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsAgentId, setSettingsAgentId] = useState<string | undefined>(undefined);
+  // P2 执行回放：当前查看回放的 run id（null=关闭）
+  const [replayRunId, setReplayRunId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -146,16 +149,17 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
     return [...merged, ...runStarts].sort((a, b) => a.createdAt - b.createdAt);
   }, [data.chatMessages, data.projections.messages, data.runs, data.run, data.activeRunId]);
 
-  // run 状态查询表：task-user 消息 id → (status, task)，气泡里显示状态小标
+  // run 状态查询表：task-user 消息 id → (status, task)，气泡里显示状态小标 + 点击打开回放
   const runStatusMap = useMemo(() => {
-    const map: Record<string, { status: string; task: string; createdAt: number }> = {};
-    for (const r of data.runs ?? []) map[`task-user-${r.id}`] = { status: r.status, task: r.task, createdAt: r.createdAt };
+    const map: Record<string, { status: string; task: string; createdAt: number; runId: string }> = {};
+    for (const r of data.runs ?? []) map[`task-user-${r.id}`] = { status: r.status, task: r.task, createdAt: r.createdAt, runId: r.id };
     if (
       data.run &&
+      data.activeRunId &&
       typeof data.run.task === "string" &&
       !data.runs.some((rr) => rr.id === data.activeRunId)
     ) {
-      map[`task-user-active-${data.activeRunId}`] = { status: data.run.status, task: data.run.task, createdAt: data.run.createdAt };
+      map[`task-user-active-${data.activeRunId}`] = { status: data.run.status, task: data.run.task, createdAt: data.run.createdAt, runId: data.activeRunId };
     }
     return map;
   }, [data.runs, data.run, data.activeRunId]);
@@ -444,6 +448,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
             toolCount={toolCountOf(m.executionId)}
             execStatus={execStatusById[m.executionId ?? ""]}
             onAvatarClick={(agentId) => { setSettingsAgentId(agentId); setSettingsOpen(true); }}
+            onOpenReplay={setReplayRunId}
           />
         ))}
         {running && (
@@ -648,6 +653,15 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
                 <span style={{ marginLeft: "auto" }}>
                   ⚡ {runStatus.stats.tokensUsed.toLocaleString("zh-CN")} tok · hops {runStatus.stats.hopCount} / rework {runStatus.stats.reworkCount} / execs {runStatus.stats.agentExecutions}
                 </span>
+                {data.activeRunId && (
+                  <button
+                    onClick={() => setReplayRunId(data.activeRunId!)}
+                    title={t("team.replay.openHint")}
+                    style={{ ...styles.replayChip, marginLeft: 8 }}
+                  >
+                    🎬 {t("team.replay.open")}
+                  </button>
+                )}
               </>
             )}
             {data.connected && <span style={{ fontSize: 11, color: "var(--accent)" }}>● {t("team.live")}</span>}
@@ -668,6 +682,16 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
           </div>
         )}
       </div>
+
+      {/* P2 执行回放弹窗（历史 run 与进行中 run 均可回看） */}
+      {replayRunId && (
+        <RunReplayModal
+          sessionId={sessionId}
+          runId={replayRunId}
+          onClose={() => setReplayRunId(null)}
+          onOpenFile={onOpenFile}
+        />
+      )}
 
       {/* 项目组设置 */}
       {settingsOpen && (
@@ -824,16 +848,18 @@ function MessageBubble({
   toolCount,
   execStatus,
   onAvatarClick,
+  onOpenReplay,
 }: {
   message: TeamMessage;
   cwd?: string;
   onOpenFile?: (p: string) => void;
-  runStatusMap?: Record<string, { status: string; task: string; createdAt: number }>;
+  runStatusMap?: Record<string, { status: string; task: string; createdAt: number; runId: string }>;
   roleInfo?: { emoji: string; name: string; dot: string };
   thinking?: string;
   toolCount?: number;
   execStatus?: { status: string; toolCalls?: number; totalTokens?: number; cost?: number; model?: { provider: string; modelId: string }; changedFiles?: { filePath: string; kind: "edit" | "write" }[]; sessionPath?: string; thinkingPath?: string };
   onAvatarClick?: (agentId: string) => void;
+  onOpenReplay?: (runId: string) => void;
 }) {
   const { t } = useI18n();
   if (message.kind === "system") {
@@ -954,6 +980,15 @@ function MessageBubble({
               {new Date(runStatus.createdAt).toLocaleTimeString()}
             </span>
             <span style={runStatusChip(runStatus.status as string)}>{runStatus.status}</span>
+            {onOpenReplay && runStatus.runId && (
+              <button
+                onClick={() => onOpenReplay(runStatus.runId)}
+                title={t("team.replay.openHint")}
+                style={{ ...styles.replayChip, marginLeft: "auto" }}
+              >
+                🎬 {t("team.replay.open")}
+              </button>
+            )}
           </div>
         )}
         <div style={{ fontSize: 13, lineHeight: 1.5 }}>
@@ -1481,6 +1516,20 @@ const styles: Record<string, CSSProperties> = {
     color: "var(--text-muted)",
     padding: "4px 10px",
     borderTop: "1px dashed var(--border)",
+  },
+  replayChip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    background: "color-mix(in srgb, var(--accent) 10%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--accent) 35%, transparent)",
+    color: "var(--accent)",
+    borderRadius: 9,
+    fontSize: 10.5,
+    padding: "1px 8px",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
   },
   btnPrimary: {
     background: "var(--accent)",

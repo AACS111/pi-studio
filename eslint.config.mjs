@@ -19,8 +19,10 @@ const eslintConfig = [
       // via minimatch, where "/.next-pkg/**" fails to match on Windows.
       ".next/**",
       ".next-pkg/**",
+      ".repro-dist/**",
       "out/**",
       "build/**",
+      "release/**",
       "next-env.d.ts",
     ],
   },

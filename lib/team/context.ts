@@ -13,6 +13,7 @@ import { existsSync, readFileSync, statSync } from "fs";
 import { join, isAbsolute } from "path";
 import { getTeamDir } from "./store.ts";
 import { listNotes, recentOtherTouched } from "./blackboard.ts";
+import { listMemoryNotes, listRunRecaps } from "./memory.ts";
 import type { AgentDef, Projections, TeamDef, TeamMessage, TeamRun } from "./types.ts";
 
 export interface ContextBuildOptions {
@@ -148,6 +149,31 @@ function blackboardIndexBlock(team: TeamDef, runId: string): string {
   return `\n## 团队黑板（共享笔记，按需 team_note_read 全文；交接前 team_note_write 沉淀）\n${lines.join("\n")}\n`;
 }
 
+/** P2 跨run记忆块：历史运行回顾 + 长期黑板笔记索引。
+ *  让新 run 的 planner/角色知道「上次做了什么、哪些方案失败了、沉淀了哪些约定」，
+ *  避免重复踩坑/重复探索；长期笔记可用 team_note_read 跨 run 回退读取。 */
+function crossRunMemoryBlock(team: TeamDef, currentRunId: string): string {
+  const recaps = listRunRecaps(team.sessionId, 6).filter((r) => r.runId !== currentRunId);
+  const memNotes = listMemoryNotes(team.sessionId, 12);
+  if (recaps.length === 0 && memNotes.length === 0) return "";
+  const lines: string[] = [];
+  if (recaps.length > 0) {
+    lines.push("", "## 跨 run 记忆 · 历史运行回顾（最近在前；借鉴上次经验，勿重复已失败的方案）");
+    for (const r of recaps) {
+      const mark = r.status === "completed" ? "✅" : r.status === "cancelled" ? "⏹️" : "❌";
+      const date = new Date(r.endedAt).toISOString().slice(5, 16).replace("T", " ");
+      lines.push(`- ${mark} ${date}「${r.task.replace(/\s+/g, " ").slice(0, 80)}」→ ${r.status}｜${r.summary.slice(0, 100)}`);
+    }
+  }
+  if (memNotes.length > 0) {
+    lines.push("", "## 跨 run 记忆 · 长期黑板笔记（历史 run 沉淀，team_note_read 按 key 读取全文）");
+    for (const n of memNotes) {
+      lines.push(`- ${n.key}（${n.author}，${n.updatedAt.slice(0, 16).replace("T", " ")}）：${n.summary}`);
+    }
+  }
+  return lines.join("\n") + "\n";
+}
+
 export function buildContext(options: ContextBuildOptions): string {
   const { team, run, projections, agent } = options;
   const state = projections.state;
@@ -169,6 +195,9 @@ export function buildContext(options: ContextBuildOptions): string {
 
   // L2 主动共享层：团队黑板笔记索引（全文按需 team_note_read）
   const notesBlock = blackboardIndexBlock(team, run.id);
+
+  // P2 跨run记忆：历史运行回顾 + 长期笔记索引（无记忆时为空串不占位）
+  const memoryBlock = crossRunMemoryBlock(team, run.id);
 
   // 共享任务 DAG
   const dagBlock = taskDagLines(projections.tasks);
@@ -209,6 +238,7 @@ export function buildContext(options: ContextBuildOptions): string {
     predecessors,
     touchedBlock,
     notesBlock,
+    memoryBlock,
     `\n## 共享任务列表（DAG 概览）`,
     dagBlock,
     `已完成：${listLines(state.completedTasks.map((id) => taskTitle(projections, id)))}`,

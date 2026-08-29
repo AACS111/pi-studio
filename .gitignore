@@ -79,3 +79,6 @@ electron/test-api.js
 
 # 历史调试脚本/临时产物（不纳入版本管理）
 /.tmp-*
+
+# 项目组执行一次性任务的角色汇总/分析文档（不进仓库，clone/打包均不需要）
+/docs/team-analysis/

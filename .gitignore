@@ -82,3 +82,6 @@ electron/test-api.js
 
 # 项目组执行一次性任务的角色汇总/分析文档（不进仓库，clone/打包均不需要）
 /docs/team-analysis/
+# 项目组运行 / 任务产物（优化项目的角色文件，不进仓库）
+/docs/team/
+/docs/team-tasks/

@@ -12,6 +12,9 @@ import type {
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
+import { bridgePerchoEvent } from "@/lib/percho-bridge";
+import { agentMessagesToPerchoUiMessages } from "@/lib/percho/adapter";
+import { useTranscriptStore } from "@/lib/percho-store";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 
 export interface SessionData {
@@ -493,6 +496,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setActiveLeafId(d.leafId);
       setMessages(d.context.messages);
       setEntryIds(d.context.entryIds ?? []);
+      // percho 呈现层历史回放：把 pi-web 历史消息转成 percho UIMessage[] 喂给 transcript store，
+      // 使打开历史会话时 MessageList/TodoPanel 能显示完整历史（live 时后续由 bridgePerchoEvent 增量）。
+      try {
+        useTranscriptStore.getState().loadHistory(sid, agentMessagesToPerchoUiMessages(d.context.messages, d.context.entryIds ?? []));
+      } catch (e) {
+        console.error("percho history load failed:", e);
+      }
       setCurrentModelOverride(null);
       setError(null);
       if (d.context.thinkingLevel && d.context.thinkingLevel !== "off") {
@@ -669,7 +679,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const connectEvents = useCallback((sid: string): Promise<EventStreamConnectionResult> => {
     closeEvents();
-    const es = new EventSource(`/api/agent/${encodeURIComponent(sid)}/events`);
+    // v2 全量流：保留 turn_start/turn_end/tool_execution_update/assistantMessageEvent 增量事件，
+    // 供 percho bridge（percho transcript store）做平滑流式/折叠组/错误卡；旧 UI 的 handleAgentEvent
+    // 对无匹配 type 的增量事件默认忽略（switch 无对应 case），行为不受影响。
+    const es = new EventSource(`/api/agent/${encodeURIComponent(sid)}/events?v2=1`);
     eventSourceRef.current = es;
     eventSourceSessionIdRef.current = sid;
 
@@ -690,6 +703,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         try {
           const event = JSON.parse(e.data) as AgentEvent;
           if (event.type === "connected") settle("connected");
+          // percho 呈现层桥接：把同一份 SSE 事件喂给 percho transcript store（reduceEvent）
+          bridgePerchoEvent(sid, event);
           handleAgentEventRef.current?.(event);
         } catch {
           // ignore

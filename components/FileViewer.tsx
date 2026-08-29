@@ -28,6 +28,7 @@ import { CodeBlock, MermaidBlock } from "./MermaidBlock";
 import { parseUnifiedPatch } from "@/lib/patch";
 import type { GitFileDiffResponse } from "@/lib/git-types";
 import { useI18n } from "@/hooks/useI18n";
+import { copyText } from "@/lib/clipboard";
 
 interface Props {
   filePath: string;
@@ -887,6 +888,8 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const gitDiffRequestRef = useRef(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [selectedLineRange, setSelectedLineRange] = useState<SelectedLineRange | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [revealBusy, setRevealBusy] = useState(false);
 
   const contentRequestRef = useRef(0);
   const fetchContent = useCallback((filePath: string) => {
@@ -1117,6 +1120,39 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     ? t("files.deleted")
     : `${language} · ${lines.length} lines · ${formatSize(data!.size)}`;
 
+  // 复制文件内容到剪贴板（源/预览/差异视图均可复制原文本）
+  const handleCopyContent = async () => {
+    const text = effectiveDisplayMode === "diff" && gitDiff?.patch ? gitDiff.patch : content;
+    try {
+      await copyText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      /* 复制失败静默 */
+    }
+  };
+
+  // 在操作系统的文件管理器中打开所在文件夹并选中文件
+  const handleReveal = async () => {
+    if (revealBusy) return;
+    setRevealBusy(true);
+    try {
+      const res = await fetch("/api/files/reveal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filePath }),
+      });
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { error?: string } | null;
+        console.error("reveal failed", d?.error ?? res.status);
+      }
+    } catch (e) {
+      console.error("reveal failed", e);
+    } finally {
+      setRevealBusy(false);
+    }
+  };
+
   return (
     <div className="file-viewer-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <div
@@ -1211,6 +1247,39 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
               </>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={handleCopyContent}
+            title={copied ? t("i18n.copied") : t("i18n.copyContent")}
+            aria-label={copied ? t("i18n.copied") : t("i18n.copyContent")}
+            className="file-viewer-icon-button"
+            style={{ color: copied ? "var(--accent)" : undefined }}
+          >
+            {copied ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+              </svg>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleReveal}
+            title={t("files.revealInFolder")}
+            aria-label={t("files.revealInFolder")}
+            disabled={revealBusy}
+            className="file-viewer-icon-button"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
 
           {!isDeletedDiff && <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />}
         </div>

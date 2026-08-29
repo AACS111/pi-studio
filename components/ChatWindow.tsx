@@ -7,6 +7,10 @@ import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { MessageView } from "./MessageView";
 import { ChangedFilesCard } from "./ChangedFilesCard";
+import { TodoPanel } from "./percho/TodoPanel";
+import { MessageList as PerchoMessageList } from "./percho/MessageList";
+import { NotionToc } from "./percho/NotionToc";
+import { useTheme } from "@/hooks/useTheme";
 import { extractChangedFiles } from "@/lib/changed-files";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -64,6 +68,9 @@ function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, 
 const CHAT_MINIMAP_WIDTH = 36;
 const CHAT_COLUMN_PADDING = 16;
 const CHAT_INPUT_RIGHT_PADDING = CHAT_COLUMN_PADDING + CHAT_MINIMAP_WIDTH;
+
+/** percho 消息流开关：true = percho MessageList（平滑流式/折叠组），false = 旧 MessageView */
+const USE_PERCHO_MESSAGE_LIST = true;
 
 function hasFinalAssistantAnswer(message: AgentMessage): boolean {
   if (message.role !== "assistant") return false;
@@ -215,6 +222,10 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
+  const { isDark } = useTheme();
+
+  /** percho 消息流模式：ChatMinimap/NotionToc/滚动容器样式的统一开关 */
+  const perchoActive = USE_PERCHO_MESSAGE_LIST && Boolean(session?.id);
 
   // Wrap onAgentEnd to play the completion sound. This is more reliable than
   // wrapping handleAgentEventRef because useAgentSession overwrites that ref
@@ -277,6 +288,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   // Only render the last N messages initially. When the user scrolls to the
   // top, load another page while keeping the scroll position stable.
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
+  const [msgFollowing, setMsgFollowing] = useState(true);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
 
@@ -655,7 +667,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             position: "absolute",
             top: 12,
             left: 0,
-            right: isMobile ? 0 : CHAT_MINIMAP_WIDTH,
+            right: isMobile || perchoActive ? 0 : CHAT_MINIMAP_WIDTH,
             zIndex: 40,
             padding: `0 ${CHAT_COLUMN_PADDING}px`,
             pointerEvents: "none",
@@ -665,10 +677,30 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             <NoticeShelf notices={notices} floating align="right" />
           </div>
         </div>
-        <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]">
-          <div style={{ minWidth: 0, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div style={{ width: "100%", minWidth: 0, maxWidth: 820, margin: "0 auto" }}>
+        <div
+          ref={scrollContainerRef}
+          className={perchoActive
+            ? "chat-scrollbar relative z-10 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
+            : "min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]"}
+        >
+          <div style={{ minWidth: 0, height: perchoActive ? "100%" : undefined, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
+            <div style={{ width: "100%", minWidth: 0, height: perchoActive ? "100%" : undefined, maxWidth: 820, margin: "0 auto" }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
+
+            {perchoActive && session ? (
+              <PerchoMessageList
+                sessionId={session.id}
+                isDark={isDark}
+                onOpenSubagent={(file) => onOpenFile?.(file)}
+                scrollContainerRef={scrollContainerRef}
+                cwd={messageCwd}
+                onOpenFile={onOpenFile}
+                onOpenWebUrl={onOpenWebUrl}
+                following={msgFollowing}
+                onFollowingChange={setMsgFollowing}
+              />
+            ) : (
+              <>
 
             {(() => {
               // 派生数据（toolResultsMap/lastUserIdx/lastAnchorIdx/visibleRefIndexByMessage）
@@ -911,10 +943,51 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             )}
 
             <div ref={messagesEndRef} />
+            </>
+            )}
             </div>
           </div>
         </div>
-        {isMobile ? null : (
+        {/* 常驻回到底部按钮：挂在消息区（相对非滚动容器）absolute 定位，滚动时不会随内容消失 */}
+        {perchoActive && session && (
+          <button
+            type="button"
+            onClick={() => {
+              const el = scrollContainerRef.current;
+              setMsgFollowing(true);
+              if (el)
+                el.scrollTo({
+                  top: el.scrollHeight,
+                  behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+                });
+            }}
+            className={`percho-fab pointer-events-auto absolute bottom-4 left-1/2 z-20 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full text-ink-2 ${
+              msgFollowing ? "opacity-70 hover:opacity-100" : "opacity-100"
+            }`}
+            aria-label={t("message.scrollToBottom")}
+            title={t("message.scrollToBottom")}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 5v14" />
+              <path d="m19 12-7 7-7-7" />
+            </svg>
+          </button>
+        )}
+        {/* percho 模式下旧 ChatMinimap 由 NotionToc（Notion 风格目录，贴消息区最右缘）取代 */}
+        {!isMobile && perchoActive && session && (
+          <NotionToc sessionId={session.id} scrollRef={scrollContainerRef} />
+        )}
+        {isMobile || perchoActive ? null : (
           <ChatMinimap
             messages={messages}
             streamingMessage={streamState.streamingMessage}
@@ -923,6 +996,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             onRevealHistory={revealHistoryForMinimap}
           />
         )}
+        {!isMobile && <TodoPanel sessionId={session?.id ?? null} />}
       </div>
 
       <div className="relative">

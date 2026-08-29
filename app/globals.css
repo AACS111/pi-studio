@@ -17,6 +17,17 @@
   --color-tool-bg: var(--tool-bg);
   --color-bg-subtle: var(--bg-subtle);
   --font-mono-font: var(--font-mono);
+  /* percho chat 移植 token（语义别名，映射到 pi-web 现有变量） */
+  --color-canvas: var(--bg);
+  --color-surface: var(--bg-panel);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-muted);
+  --color-ink-dim: var(--text-muted);
+  --color-ink-faint: var(--text-dim);
+  --color-ink-working: var(--text-muted);
+  --color-hover: var(--bg-hover);
+  --shadow-pop: var(--shadow-pop);
+  --shadow-soft: var(--shadow-pop);
 }
 
 :root {
@@ -36,6 +47,7 @@
   --assistant-bg: #F6F6F3;
   --tool-bg: #EDEEE7;
   --bg-subtle: rgba(46, 52, 49, 0.04);
+  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 html.dark {
@@ -55,6 +67,65 @@ html.dark {
   --assistant-bg: #1B1D20;
   --tool-bg: #222529;
   --bg-subtle: rgba(255, 255, 255, 0.05);
+  --shadow-pop: 0 4px 16px rgba(255, 255, 255, 0.14);
+}
+
+/* percho chat 移植：todo 面板呼吸灯 / 对勾描边 / 极细滚动条 */
+.todo-breath-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--text-muted);
+  animation: todo-breath 2.2s ease-in-out infinite;
+  transition: opacity 0.3s;
+}
+.todo-breath-dot-paused {
+  animation-play-state: paused;
+  opacity: 0.3;
+}
+@keyframes todo-breath {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.72);
+  }
+}
+.todo-check-path {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+  animation: todo-check-draw 0.45s cubic-bezier(0.65, 0, 0.35, 1) 0.05s forwards;
+}
+@keyframes todo-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.todo-thin-scroll::-webkit-scrollbar {
+  width: 3px;
+}
+.todo-thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--text-dim);
+  border-radius: 2px;
+}
+.todo-thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+.todo-thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+@media (prefers-reduced-motion: reduce) {
+  .todo-breath-dot {
+    animation: none;
+  }
+  .todo-check-path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
 }
 
 /* Theme toggle: circular wipe via View Transitions API.
@@ -1154,4 +1225,405 @@ span.linenumber {
   select {
     font-size: 16px !important;
   }
+}
+
+/* ============================================================
+   percho chat 移植（markstream/折叠组/turn-diff/错误重试）
+   来源：percho packages/desktop/src/renderer/src/styles/globals.css
+   ============================================================ */
+:root {
+  --shimmer-highlight: rgba(220, 245, 230, 0.9);
+  --markdown-quote-border: #B8C4B0;
+  --markdown-quote-text: #8E9991;
+  --markdown-link-decoration: #5BAF68;
+  --markdown-link-hover: #4a9a57;
+  --markdown-table-border: #DDE7D0;
+}
+html.dark {
+  --shimmer-highlight: rgba(150, 217, 156, 0.7);
+  --markdown-quote-border: #3A3E44;
+  --markdown-quote-text: #8A8F97;
+  --markdown-link-decoration: #76C97E;
+  --markdown-link-hover: #96D99C;
+  --markdown-table-border: #3A3E44;
+}
+
+/* 对话消息流专用滚动条：Notion 风格 —— 极细、半透明、hover 变亮 */
+.chat-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+.chat-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 62%, transparent);
+}
+.chat-scrollbar::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--text-dim) 72%, transparent);
+}
+/* Firefox */
+.chat-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 40%, transparent) transparent;
+}
+
+/* ===== Notion 风格目录（TOC）：毛玻璃大纲卡片，贴主题不突兀 ===== */
+.toc-card {
+  background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  backdrop-filter: blur(20px) saturate(1.35);
+  -webkit-backdrop-filter: blur(20px) saturate(1.35);
+  border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+  box-shadow:
+    0 12px 40px -8px rgba(0, 0, 0, 0.28),
+    0 2px 10px rgba(0, 0, 0, 0.1);
+  animation: toc-card-in 160ms ease-out;
+}
+@keyframes toc-card-in {
+  from {
+    opacity: 0;
+  }
+}
+.toc-item {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+.toc-item:hover {
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+  color: var(--text);
+}
+.toc-item.is-active {
+  color: var(--accent);
+}
+
+/* Working 文字高亮扫过（codex 风格）：光带只扫文字本身 */
+.shimmer-sweep {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    color-mix(in srgb, currentColor 75%, var(--shimmer-highlight)) 28%,
+    color-mix(in srgb, currentColor 30%, var(--shimmer-highlight)) 46%,
+    color-mix(in srgb, var(--shimmer-highlight) 90%, currentColor) 50%,
+    color-mix(in srgb, currentColor 30%, var(--shimmer-highlight)) 54%,
+    color-mix(in srgb, currentColor 75%, var(--shimmer-highlight)) 72%,
+    currentColor 100%
+  );
+  background-size: 200% 100%;
+  background-position: 200% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-sweep 3.6s linear infinite;
+}
+@keyframes shimmer-sweep {
+  from { background-position: 200% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-sweep { animation: none; }
+}
+
+/* markstream-react 视觉覆写 */
+.markdown-body {
+  --link-color: var(--accent);
+  --ms-radius: 10px;
+}
+.markdown-body .paragraph-node { margin: 0.375rem 0; }
+.markdown-body ul,
+.markdown-body ol { margin: 0.375rem 0; padding-left: 1.25rem; }
+.markdown-body li { margin: 0.125rem 0; }
+.markdown-body .blockquote-node {
+  margin: 0.375rem 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--markdown-quote-border);
+  color: var(--markdown-quote-text);
+}
+.markdown-body .heading-node { font-weight: 600; }
+.markdown-body .heading-1 { margin: 0.75rem 0 0.25rem; font-size: 1.125rem; line-height: 1.4; }
+.markdown-body .heading-2 { margin: 0.75rem 0 0.25rem; font-size: 1rem; line-height: 1.4; }
+.markdown-body .heading-3 { margin: 0.5rem 0 0.25rem; font-size: 0.875rem; line-height: 1.4; }
+.markdown-body .link-node {
+  text-decoration: underline;
+  text-decoration-color: var(--markdown-link-decoration);
+}
+.markdown-body .link-node:hover {
+  color: var(--markdown-link-hover);
+  text-decoration-color: var(--markdown-link-decoration);
+  text-underline-offset: auto;
+}
+/* ==================================================================
+   markstream 代码块：玻璃水滴质感（随主题色顶部高光）。
+   注意：markstream 实际渲染的 DOM 是 .code-block-container（带内联
+   background-color:var(--vscode-editor-background,…) 的背景，落到 #111827 纯色），
+   并不存在 .code-block/.code-block-node。—— 因此必须咬住 .code-block-container，
+   并用 !important 盖过内联 style + Tailwind 的 bg-gray-900。
+   ================================================================== */
+.markdown-body .code-block-container {
+  --markstream-code-fallback-bg: transparent;
+  --vscode-editor-background: transparent;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+      transparent 58%
+    ),
+    color-mix(in srgb, var(--bg-panel) 60%, transparent) !important;
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 30%, transparent) !important;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--bg-panel) 8%, transparent),
+    0 8px 26px -18px rgba(0, 0, 0, 0.22) !important;
+}
+.markdown-body .code-block-container .code-block-header {
+  background: color-mix(in srgb, var(--bg-panel) 38%, transparent) !important;
+  border-bottom-color: color-mix(in srgb, var(--border) 28%, transparent) !important;
+  color: var(--text-muted) !important;
+}
+/* 对比(diff)代码块：同样玻璃化。markstream 用 --markstream-diff-* 变量撑出内层实心底，
+   置透明以露出外层毛玻璃；增删行的红/绿半透明高亮保留。 */
+.markdown-body .code-block-container.is-diff {
+  --markstream-diff-shell-bg: transparent;
+  --markstream-diff-stage-bg: transparent;
+  --markstream-diff-editor-bg: transparent;
+  --markstream-diff-panel-bg: transparent;
+  --markstream-diff-panel-bg-soft: transparent;
+  --markstream-diff-shell-shadow: none;
+  --markstream-diff-pane-divider: color-mix(in srgb, var(--border) 28%, transparent);
+}
+/* 代码正文/编辑器各层背景全部透明，露出外层毛玻璃与主题色高光 */
+.markdown-body .code-block-content,
+.markdown-body .code-block-content .code-block-render,
+.markdown-body .code-block-content .shiki,
+.markdown-body .code-block-content .shiki-fallback,
+.markdown-body .code-block-content pre,
+.markdown-body .code-block-content pre code,
+.markdown-body .code-fallback-plain {
+  background: transparent !important;
+}
+.markdown-body .code-block-content .shiki,
+.markdown-body .code-fallback-plain {
+  color: var(--text) !important;
+}
+/* Monaco 编辑器的各层背景也透明（若走 Monaco 渲染路径） */
+.markdown-body .code-block-container .monaco-editor,
+.markdown-body .code-block-container .monaco-editor .monaco-editor-background,
+.markdown-body .code-block-container .monaco-editor .margin,
+.markdown-body .code-block-container .monaco-editor .inputarea,
+.markdown-body .code-block-container .monaco-editor .lines-content,
+.markdown-body .code-block-container .monaco-editor .view-lines,
+.markdown-body .code-block-container .monaco-editor .view-line {
+  background: transparent !important;
+}
+.markdown-body .shiki span,
+.markdown-body .code-fallback-plain span,
+.markdown-body .code-block-content pre code span {
+  /* 保留语法高亮 token 颜色，仅清掉背景 */
+  background: transparent !important;
+}
+
+/* 内联代码变量（crud.tsx 这类 chip）：轻玻璃，圆角/透明度小于代码块 */
+.markdown-body .inline-code {
+  background: color-mix(in srgb, var(--bg-panel) 55%, transparent);
+  backdrop-filter: blur(8px) saturate(1.2);
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  border: 1px solid color-mix(in srgb, var(--border) 22%, transparent);
+  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 0.92em;
+}
+
+/* 用户消息气泡：苹果 iMessage 玻璃水滴 —— 半透明磨砂玻璃 + 强模糊 + 顶部高光（随主题色，非白光） */
+.percho-user-bubble {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--accent) 14%, transparent) 0%,
+      color-mix(in srgb, var(--accent) 5%, transparent) 36%,
+      transparent 66%
+    ),
+    color-mix(in srgb, var(--bg-panel) 66%, transparent);
+  backdrop-filter: blur(22px) saturate(1.6);
+  -webkit-backdrop-filter: blur(22px) saturate(1.6);
+  border: 1px solid color-mix(in srgb, var(--border) 26%, color-mix(in srgb, var(--accent) 32%, transparent));
+}
+/* 顶部玻璃反光高光涂层（glass sheen）：光泽随主题色（accent），铺在内容之下 */
+.percho-user-bubble::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 16%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 6%, transparent) 20%,
+    transparent 46%
+  );
+}
+
+/* 回到底部悬浮按钮：与消息气泡同款的玻璃水滴质感（吸顶式，滚动不消失） */
+.percho-fab {
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 12%, transparent) 0%,
+      transparent 55%
+    ),
+    color-mix(in srgb, var(--bg-panel) 66%, transparent);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 28%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 38%, transparent),
+    0 6px 18px -12px rgba(0, 0, 0, 0.24);
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.percho-fab:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+/* <details> 内容区抽屉式展开/折叠动画 */
+.drawer-details::details-content {
+  height: 0;
+  overflow: clip;
+  transition: height 0.28s cubic-bezier(0.16, 1, 0.3, 1), content-visibility 0.28s allow-discrete;
+}
+.drawer-details[open]::details-content {
+  height: calc-size(auto, size);
+}
+@media (prefers-reduced-motion: reduce) {
+  .drawer-details::details-content { transition: none; }
+}
+
+/* 工作中折叠组圆点行：运行中工具 = 空心呼吸点 */
+.meta-dot-running {
+  border: 1px solid var(--text-muted);
+  animation: meta-dot-breathe 1.6s ease-in-out infinite;
+}
+@keyframes meta-dot-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .meta-dot-running { animation: none; }
+}
+
+/* 错误卡 / 自动重试状态行（简化错误卡用） */
+.retry-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+  padding: 8px 0;
+  font-size: 12.5px;
+  color: #b45309;
+}
+html.dark .retry-note { color: #fbbf24; }
+
+/* 轮末文件变更 chip */
+.turn-diff { font-size: 12.5px; }
+.turn-diff-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+.turn-diff-head:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-panel) 52%, transparent);
+  backdrop-filter: blur(10px) saturate(1.3);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+  border-radius: 8px;
+}
+.turn-diff-head::-webkit-details-marker { display: none; }
+.turn-diff-stat { font-variant-numeric: tabular-nums; font-weight: 600; }
+.turn-diff-added { color: #16a34a; }
+.turn-diff-removed { color: #dc2626; }
+.turn-diff-chev { display: flex; transition: transform 0.25s; }
+.turn-diff[open] .turn-diff-chev { transform: rotate(90deg); }
+.turn-diff-enter {
+  animation: turn-diff-in 0.42s cubic-bezier(0.34, 1.35, 0.64, 1) both;
+}
+@keyframes turn-diff-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); filter: blur(1px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+/* chip 内联文件列表 */
+.turn-diff-files {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 0 2px 8px;
+}
+.turn-diff-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.12s, border-color 0.12s;
+  text-align: left;
+  width: fit-content;
+  max-width: 100%;
+}
+.turn-diff-file:hover {
+  background: color-mix(in srgb, var(--bg-panel) 64%, transparent);
+  backdrop-filter: blur(12px) saturate(1.3);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.turn-diff-path {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  max-width: 420px;
+}
+.turn-diff-path-clickable {
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.turn-diff-path-clickable:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }

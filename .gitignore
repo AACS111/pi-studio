@@ -85,3 +85,7 @@ electron/test-api.js
 # 项目组运行 / 任务产物（优化项目的角色文件，不进仓库）
 /docs/team/
 /docs/team-tasks/
+# 项目组任务产物（调研/截图/percho迁移分析，不进仓库）
+/docs/research/deepseek-harness-dynamic-background.md
+/docs/screenshot2.png
+/docs/percho-chat-migration.md

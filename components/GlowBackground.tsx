@@ -406,7 +406,7 @@ export function GlowBackground() {
       document.body.removeChild(tmp);
       const m = rgb.match(/\d+/g)?.slice(0, 3).map(Number);
       if (m && m.length === 3) return [m[0], m[1], m[2]];
-      return [91, 175, 104];
+      return [59, 130, 246];
     };
 
     const accent = parseColor("var(--accent)");

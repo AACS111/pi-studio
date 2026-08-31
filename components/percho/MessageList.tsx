@@ -32,12 +32,15 @@ export function MessageList({
 	onOpenWebUrl,
 	following,
 	onFollowingChange,
+	fullWidth = false,
 }: {
 	sessionId: string;
 	isDark?: boolean;
 	onOpenSubagent?: (sessionFile: string) => void;
 	/** 外置滚动容器（消息区全宽，滚动条呈现在最右缘） */
 	scrollContainerRef: RefObject<HTMLDivElement | null>;
+	/** Notion 式全宽：去掉 760px 内容列宽限制（左右留 64px 安全边距，避开右缘目录条） */
+	fullWidth?: boolean;
 	cwd?: string;
 	onOpenFile?: (filePath: string) => void;
 	onOpenWebUrl?: (url: string) => void;
@@ -181,7 +184,12 @@ export function MessageList({
 
 	return (
 		<div className="relative h-full" onClickCapture={handleSummaryToggle}>
-			<div ref={contentRef} className="mx-auto flex max-w-[760px] flex-col gap-6 px-6 pt-8 pb-16">
+			<div
+				ref={contentRef}
+				className={`mx-auto flex flex-col gap-6 pt-8 pb-16 ${
+					fullWidth ? "w-full" : "max-w-[760px] px-6"
+				}`}
+			>
 				{items}
 				{transcript.retrying && <RetryNote info={transcript.retrying} />}
 			</div>

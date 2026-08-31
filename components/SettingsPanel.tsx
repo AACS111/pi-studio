@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
-import { useAccentColor, normalizeHex } from "@/hooks/useAccentColor";
+import { useAccentColor, normalizeHex, DEFAULT_ACCENT } from "@/hooks/useAccentColor";
 import { useGlowBackground, GLOW_STYLE_IDS, GLOW_INTENSITY_MIN, GLOW_INTENSITY_MAX } from "@/hooks/useGlowBackground";
 import { BranchNavigator } from "./BranchNavigator";
 import { AgentLibraryPanel } from "./AgentLibraryPanel";
@@ -470,7 +470,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
           >
             <input
               type="color"
-              value={normalizeHex(customColor) ?? "#5BAF68"}
+              value={normalizeHex(customColor) ?? DEFAULT_ACCENT}
               onChange={(e) => handleAccentPick(e.target.value)}
               style={{
                 position: "absolute",

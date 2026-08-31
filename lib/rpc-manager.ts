@@ -10,13 +10,11 @@ import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { resolveVisibleModels, selectInitialModelScope } from "./model-scope";
 import { cacheSessionPath, invalidateSessionListCache } from "./session-reader";
-import { ensureDshPluginsLoaded } from "./plugins/adapters/dsh/dsh-adapter";
-import { collectDshTools } from "./plugins/core/plugin-registry";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { persistExplicitStartupPreferences } from "./startup-preferences";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
-import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
+import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem, SessionInfo } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
 import { readCompactionSettings, writeCompactionSettings, hasExplicitCompaction, recommendedCompactionForWindow, type CompactionSettings } from "./compaction-settings";
 
@@ -90,7 +88,7 @@ export interface RpcSessionStartOptions {
   toolNames?: string[];
   initialModel?: { provider: string; modelId: string };
   thinkingLevel?: ThinkingLevel;
-  /** 额外自定义工具（团队受控工具等），与 DSH 插件工具合并注入 */
+  /** 额外自定义工具（团队受控工具等），注入到新会话 */
   customTools?: ToolDefinition[];
   /** 覆盖默认系统提示词（团队角色 systemPrompt） */
   systemPrompt?: string;
@@ -429,6 +427,10 @@ export class AgentSessionWrapper {
         }).then(() => {
           this.promptRunning = false;
           this.resetIdleTimer();
+          // 本轮 run 中会话文件已（或即将）落盘（pi 在首条 assistant 消息时才
+          // 创建 .jsonl）。失效列表缓存，否则 /api/sessions 在 TTL 内继续返回
+          // 不含新会话的旧列表，侧栏要等 ~30s 才能看到新会话。
+          invalidateSessionListCache();
           if (!streamingBehavior) this.emit({ type: "prompt_done" });
           notifyRunningChange();
           this.maybeAutoContinueOnLength();
@@ -1207,6 +1209,58 @@ export function getRunningRpcSessionIds(): string[] {
   return [...ids];
 }
 
+/**
+ * Live RPC sessions whose .jsonl file has not been flushed to disk yet.
+ * pi's SessionManager delays creating the session file until the first
+ * assistant message is persisted, so a brand-new session is invisible to
+ * SessionManager.listAll() during that window. /api/sessions merges these
+ * synthesized entries (deduped by id) so the sidebar shows the new session
+ * immediately after the first message instead of ~30s later.
+ */
+export function getPendingSessionInfos(): SessionInfo[] {
+  const out: SessionInfo[] = [];
+  const now = new Date().toISOString();
+  for (const session of getRegistry().values()) {
+    try {
+      const inner = session.inner;
+      const manager = inner.sessionManager;
+      const sessionFile = inner.sessionFile || manager.getSessionFile() || "";
+      // Already flushed — the directory scan will pick it up.
+      if (sessionFile && existsSync(sessionFile)) continue;
+      const entries = manager.getEntries() as unknown as Array<{
+        type?: string;
+        message?: { role?: string; content?: unknown };
+      }>;
+      const messages = entries.filter((e) => e?.type === "message" && e.message);
+      const firstUser = messages.find((e) => e.message?.role === "user");
+      let firstMessage = "";
+      const content = firstUser?.message?.content;
+      if (typeof content === "string") {
+        firstMessage = content;
+      } else if (Array.isArray(content)) {
+        const text = content.find(
+          (b) => b && typeof b === "object" && (b as { type?: string }).type === "text",
+        ) as { text?: string } | undefined;
+        firstMessage = text?.text ?? "";
+      }
+      out.push({
+        path: sessionFile,
+        id: inner.sessionId,
+        cwd: manager.getCwd(),
+        created: now,
+        modified: now,
+        messageCount: messages.length,
+        firstMessage: firstMessage || "(no messages)",
+        // projectRoot is refined by the caller (resolveProject); cwd is a safe fallback.
+        projectRoot: manager.getCwd(),
+      });
+    } catch {
+      // A broken session must never break the whole listing.
+    }
+  }
+  return out;
+}
+
 // ----------------------------------------------------------------------------
 // Running-status broadcaster
 //
@@ -1324,14 +1378,6 @@ export async function startRpcSession(
     );
     const defaultProvider = services.settingsManager.getDefaultProvider();
     const defaultModelId = services.settingsManager.getDefaultModel();
-    // 桥接已安装的 DSH 插件工具（幂等，产物缓存在 plugin-registry）。
-    let dshTools: Awaited<ReturnType<typeof collectDshTools>> = [];
-    try {
-      await ensureDshPluginsLoaded();
-      dshTools = collectDshTools();
-    } catch (error) {
-      console.error("[pi-studio] failed to load DSH plugins:", error instanceof Error ? error.message : error);
-    }
     const hasExistingMessages = sessionManager.getBranch().some((entry) => entry.type === "message");
     const initial = hasExistingMessages
       ? { scopedModels: [...scope.scopedModels] }
@@ -1342,8 +1388,8 @@ export async function startRpcSession(
           : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
       });
-    // 合并 DSH 插件工具 + 调用方自定义工具（团队受控工具等）
-    const mergedCustomTools = [...dshTools, ...(customTools ?? [])];
+    // 调用方自定义工具（团队受控工具等）
+    const mergedCustomTools = customTools ?? [];
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,

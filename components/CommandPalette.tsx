@@ -5,6 +5,7 @@ import { useI18n } from "@/hooks/useI18n";
 import type { SessionInfo } from "@/lib/types";
 import { buildEntriesFromFiles, filterFileEntries } from "@/lib/file-fuzzy";
 import { getFileName, joinFilePath } from "@/lib/file-paths";
+import { excerpt } from "@/lib/message-search";
 import type { Activity } from "./ActivityBar";
 
 export type PaletteMode = "files" | "all";
@@ -25,6 +26,7 @@ interface Props {
   onClose: () => void;
   onOpenFile: (filePath: string, fileName: string) => void;
   onSelectSession: (session: SessionInfo) => void;
+  onSelectContentMatch: (session: SessionInfo, entryId: string) => void;
   onNewSession: () => void;
   onSelectActivity: (activity: Activity) => void;
   onToggleTheme: () => void;
@@ -36,16 +38,30 @@ interface Props {
 
 const FILE_RESULT_LIMIT = 12;
 const SESSION_RESULT_LIMIT = 8;
+const CONTENT_RESULT_LIMIT = 12;
+
+interface ContentMatchRow {
+  sessionId: string;
+  sessionName: string;
+  cwd: string | null;
+  entryId: string;
+  role: string;
+  snippet: string;
+  session: SessionInfo | null;
+}
 
 export function CommandPalette(props: Props) {
-  const { open, mode, cwd, onClose, onOpenFile, onSelectSession } = props;
+  const { open, mode, cwd, onClose, onOpenFile, onSelectSession, onSelectContentMatch } = props;
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [contentMatches, setContentMatches] = useState<ContentMatchRow[]>([]);
+  const [contentLoading, setContentLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const contentAbortRef = useRef<AbortController | null>(null);
   const lastOpenRef = useRef(false);
 
   // Reset state each time the palette opens.
@@ -170,6 +186,36 @@ export function CommandPalette(props: Props) {
 
   const lowerQuery = query.trim().toLowerCase();
 
+  // Content search: debounced server-side match across all session message bodies.
+  useEffect(() => {
+    if (mode !== "all" || !lowerQuery) {
+      setContentMatches([]);
+      setContentLoading(false);
+      return;
+    }
+    setContentLoading(true);
+    const timer = setTimeout(() => {
+      contentAbortRef.current?.abort();
+      const controller = new AbortController();
+      contentAbortRef.current = controller;
+      void fetch(`/api/sessions/search?q=${encodeURIComponent(lowerQuery)}`, { signal: controller.signal })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (controller.signal.aborted) return;
+          const matches = ((d?.matches ?? []) as Array<Omit<ContentMatchRow, "session">>)
+            .slice(0, CONTENT_RESULT_LIMIT)
+            .map((m) => ({
+              ...m,
+              session: sessions.find((s) => s.id === m.sessionId) ?? null,
+            }));
+          setContentMatches(matches);
+        })
+        .catch(() => { if (!controller.signal.aborted) setContentMatches([]); })
+        .finally(() => { if (!controller.signal.aborted) setContentLoading(false); });
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [mode, lowerQuery, sessions]);
+
   const visibleCommands = useMemo(() => {
     if (!lowerQuery) return commands.slice(0, 5);
     return commands
@@ -202,6 +248,7 @@ export function CommandPalette(props: Props) {
     | { kind: "header"; label: string }
     | { kind: "command"; cmd: CommandDef }
     | { kind: "session"; session: SessionInfo }
+    | { kind: "content"; match: ContentMatchRow }
     | { kind: "file"; path: string; isDir: boolean };
 
   const rows = useMemo<Row[]>(() => {
@@ -210,6 +257,10 @@ export function CommandPalette(props: Props) {
       if (visibleCommands.length) {
         out.push({ kind: "header", label: t("activity.commandsSection") });
         visibleCommands.forEach((c) => out.push({ kind: "command", cmd: c }));
+      }
+      if (contentMatches.length) {
+        out.push({ kind: "header", label: t("activity.contentSection") });
+        contentMatches.forEach((m) => out.push({ kind: "content", match: m }));
       }
       if (visibleSessions.length) {
         out.push({ kind: "header", label: t("activity.sessionsSection") });
@@ -221,7 +272,7 @@ export function CommandPalette(props: Props) {
       visibleFiles.forEach((f) => out.push({ kind: "file", path: f.path, isDir: f.isDir }));
     }
     return out;
-  }, [mode, visibleCommands, visibleSessions, visibleFiles, t]);
+  }, [mode, visibleCommands, visibleSessions, visibleFiles, contentMatches, t]);
 
   const selectableCount = rows.filter((r) => r.kind !== "header").length;
 
@@ -237,13 +288,17 @@ export function CommandPalette(props: Props) {
       } else if (row.kind === "session") {
         onClose();
         onSelectSession(row.session);
+      } else if (row.kind === "content") {
+        if (!row.match.session) return;
+        onClose();
+        onSelectContentMatch(row.match.session, row.match.entryId);
       } else if (row.kind === "file" && cwd) {
         const abs = joinFilePath(cwd, row.path);
         onClose();
         onOpenFile(abs, getFileName(abs));
       }
     },
-    [cwd, onClose, onOpenFile, onSelectSession],
+    [cwd, onClose, onOpenFile, onSelectSession, onSelectContentMatch],
   );
 
   const handleKeyDown = useCallback(
@@ -330,7 +385,7 @@ export function CommandPalette(props: Props) {
         </div>
 
         <div ref={listRef} style={{ maxHeight: "min(58vh, 460px)", overflowY: "auto", padding: 6 }}>
-          {rows.length === 0 && (
+          {rows.length === 0 && !contentLoading && (
             <div style={{ padding: "20px 14px", color: "var(--text-muted)", fontSize: 12, textAlign: "center" }}>
               {t("i18n.noResults")}
             </div>
@@ -346,9 +401,17 @@ export function CommandPalette(props: Props) {
             selectableIdx += 1;
             const idx = selectableIdx;
             const isActive = idx === activeIndex;
-            const icon = row.kind === "command" ? row.cmd.icon : row.kind === "session" ? <ChatIcon /> : <FileIcon isDir={row.isDir} />;
-            const label = row.kind === "command" ? row.cmd.label : row.kind === "session" ? (row.session.name || row.session.firstMessage.slice(0, 50) || row.session.id.slice(0, 12)) : row.path;
-            const hint = row.kind === "command" ? row.cmd.hint : row.kind === "session" ? row.session.cwd : (row.isDir ? "dir" : "file");
+            const icon = row.kind === "command" ? row.cmd.icon : row.kind === "session" ? <ChatIcon /> : row.kind === "content" ? <TextIcon /> : <FileIcon isDir={row.isDir} />;
+            const label = row.kind === "command" ? row.cmd.label : row.kind === "session" ? (row.session.name || row.session.firstMessage.slice(0, 50) || row.session.id.slice(0, 12)) : row.kind === "content" ? row.match.snippet : row.path;
+            const hint = row.kind === "command" ? row.cmd.hint : row.kind === "session" ? row.session.cwd : row.kind === "content" ? row.match.role : (row.isDir ? "dir" : "file");
+            const body = row.kind === "content" ? (
+              <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
+                <span style={{ fontSize: 10.5, color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{row.match.sessionName}</span>
+                <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{excerpt(row.match.snippet, query)}</span>
+              </span>
+            ) : (
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+            );
             return (
               <button
                 key={`${row.kind}-${i}`}
@@ -373,7 +436,7 @@ export function CommandPalette(props: Props) {
                 }}
               >
                 <span style={{ color: isActive ? "var(--accent)" : "var(--text-muted)", flexShrink: 0, display: "inline-flex" }}>{icon}</span>
-                <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+                {body}
                 {hint && (
                   <span style={{ flexShrink: 0, fontSize: 10.5, color: "var(--text-dim)", fontFamily: "var(--font-mono)", maxWidth: "46%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {hint}
@@ -458,6 +521,16 @@ function UploadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="m17 8-5-5-5 5" />
       <path d="M12 3v12" />
+    </svg>
+  );
+}
+function TextIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
     </svg>
   );
 }

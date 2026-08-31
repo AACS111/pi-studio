@@ -14,12 +14,14 @@ import type { TocEntry } from "@/lib/percho/toc-entries";
 import { extractTocEntries } from "@/lib/percho/toc-entries";
 
 const PREVIEW_HIDE_DELAY = 260;
-/** 少于 2 个标题不值得占用右缘空间 */
-const MIN_ENTRIES = 2;
+/** 少于 1 条不值得占用右缘空间（用户消息也算一条分割节点） */
+const MIN_ENTRIES = 1;
 
-/** 横线宽度按层级递减（h1 最宽） */
+/** 横线宽度按层级递减（h1 最宽；level 0 = 用户消息分割线，最长） */
 function dashWidth(level: TocEntry["level"]): number {
 	switch (level) {
+		case 0:
+			return 22;
 		case 1:
 			return 18;
 		case 2:
@@ -175,10 +177,17 @@ export function NotionToc({
 							type="button"
 							onClick={() => scrollToEntry(entry)}
 							title={entry.text}
-							className={`toc-item ${index === activeIndex ? "is-active" : ""}`}
-							style={{ paddingLeft: 10 + (entry.level - 1) * 16 }}
+							className={`toc-item ${entry.kind === "user" ? "toc-user" : ""} ${index === activeIndex ? "is-active" : ""}`}
+							style={{ paddingLeft: entry.kind === "user" ? 10 : 10 + (entry.level - 1) * 16 }}
 						>
-							{entry.text}
+							{entry.kind === "user" ? (
+								<>
+									<span className="toc-user-marker" aria-hidden="true" />
+									<span className="toc-user-text">{entry.text}</span>
+								</>
+							) : (
+								entry.text
+							)}
 						</button>
 					))}
 				</div>

@@ -14,7 +14,7 @@ export function UserMessage({ message }: { message: Extract<UIMessage, { kind: "
 	const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
 	return (
-		<div className="group flex justify-end">
+		<div className="group flex justify-end" data-toc-message-id={message.id} data-entry-id={message.entryId}>
 			<div className="max-w-[85%]">
 				{message.images.length > 0 && (
 					<div className="mb-1.5 flex flex-wrap justify-end gap-1.5">

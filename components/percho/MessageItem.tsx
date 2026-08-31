@@ -83,7 +83,7 @@ export const MessageItem = memo(function MessageItem({
 		return <SystemMessage message={message} />;
 	}
 	return (
-		<div className="group" data-toc-message-id={message.id}>
+		<div className="group" data-toc-message-id={message.id} data-entry-id={message.entryId}>
 			<AssistantMessage
 				text={message.text}
 				thinking={message.thinking}

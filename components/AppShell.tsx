@@ -2,11 +2,11 @@
 
 import { useState, useCallback, useRef, useEffect, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { messageSearchText, excerpt } from "@/lib/message-search";
 import { useGlobalKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { SessionSidebar } from "./SessionSidebar";
-import { ChatWindow } from "./ChatWindow";
-import { TeamChat } from "./TeamChat";
-import { TeamCreateDialog } from "./TeamCreateDialog";
+import { FileBrowserPanel } from "./FileBrowserPanel";
+import { ChatWorkspace } from "./ChatWorkspace";
 import { FileViewer } from "./FileViewer";
 import { WebViewer } from "./WebViewer";
 import { TabBar, type Tab } from "./TabBar";
@@ -15,11 +15,9 @@ import { SkillsConfig } from "./SkillsConfig";
 import { PluginsConfig } from "./PluginsConfig";
 import { UploadsManager } from "./UploadsManager";
 import { ProjectTrustDialog } from "./ProjectTrustDialog";
-import { ActivityBar, type ActivityOrPlugin } from "./ActivityBar";
+import { ActivityBar, type Activity } from "./ActivityBar";
 import { CommandPalette, type PaletteMode } from "./CommandPalette";
 import { SkillsPanel } from "./SkillsPanel";
-import { DshMarketPanel } from "./DshMarketPanel";
-import { PluginExtensionPanel, usePluginExtensions } from "./PluginHost";
 import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { WindowControls } from "./WindowControls";
@@ -75,8 +73,6 @@ function getNativePickApi(): PiElectronPickApi["pickOpenFile"] | undefined {
 type HomeCardPickKind = "files" | "sheets";
 
 const TOP_BAR_ICON_BUTTON_SIZE = 36;
-/** 右侧面板点击「打开网站」按钮时默认打开的网址。 */
-const DEFAULT_WEB_URL = "https://bing.com";
 
 function getHostname(url: string): string {
   try {
@@ -86,48 +82,10 @@ function getHostname(url: string): string {
   }
 }
 
-/** Extract searchable plain text from a session message. */
-function messageSearchText(msg: AgentMessage): string {
-  if (msg.role === "user") {
-    return typeof msg.content === "string"
-      ? msg.content
-      : msg.content.map((b) => ("text" in b ? b.text : "")).join(" ");
-  }
-  if (msg.role === "assistant") {
-    return msg.content
-      .map((b) => (b.type === "text" ? b.text : b.type === "toolCall" ? `${b.toolName} ${JSON.stringify(b.input ?? {})}` : ""))
-      .join(" ");
-  }
-  if (msg.role === "toolResult") {
-    return msg.content.map((b) => ("text" in b ? b.text : "")).join(" ");
-  }
-  if (msg.role === "custom") {
-    return typeof msg.content === "string" ? msg.content : "";
-  }
-  return "";
-}
 
-function excerpt(text: string, query: string, max = 80): string {
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) return text.slice(0, max);
-  const start = Math.max(0, idx - 30);
-  const end = Math.min(text.length, idx + query.length + max);
-  const prefix = start > 0 ? "…" : "";
-  const suffix = end < text.length ? "…" : "";
-  return prefix + text.slice(start, end) + suffix;
-}
 
-/** Which right-panel mode owns a file tab: explicit homeMode wins; legacy tabs
- *  (created before the field existed) fall back to the extension rule so old
- *  sessions keep their tabs in the same bars as before. One tab → one bar:
- *  the same file must not appear in both the 文件 and 表格 tab strips. */
-function tabHomeMode(tab: Pick<Tab, "homeMode" | "filePath">): "files" | "sheets" {
-  if (tab.homeMode) return tab.homeMode;
-  const lower = (tab.filePath ?? "").toLowerCase();
-  return lower.endsWith(".xlsx") || lower.endsWith(".univer") || lower.endsWith(".csv") || lower.endsWith(".xls")
-    ? "sheets"
-    : "files";
-}
+/** Used for the terminal tab inside the unified file bar. */
+const TERMINAL_TAB_ID = "terminal:main";
 
 export function AppShell() {
   const router = useRouter();
@@ -142,7 +100,6 @@ export function AppShell() {
   const isMobile = useIsMobile();
   useViewportHeight();
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
-  const [teamDialog, setTeamDialog] = useState<{ mode: "convert"; sessionId?: string } | null>(null);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
   const [initialCwdStatus, setInitialCwdStatus] = useState<"idle" | "validating" | "ready" | "error">(
@@ -163,32 +120,26 @@ export function AppShell() {
   const [projectTrustError, setProjectTrustError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
-  // Codex-style right-panel function modes. "home" is the Codex-style card
-  // launcher shown when the panel opens with nothing to display yet — it is
-  // also the startup default so a fresh session never lands on a bare mode.
-  const [rightPanelMode, setRightPanelMode] = useState<"home" | "browser" | "files" | "sheets" | "terminal">("home");
+  // Codex-style right-panel: a single unified "files" mode hosts every open
+  // content tab (files, spreadsheets, browser pages, terminal) in one tab bar.
+  // "home" is the Codex-style card launcher shown when the panel opens with
+  // nothing to display yet — also the startup default.
+  const [rightPanelMode, setRightPanelMode] = useState<"home" | "files">("home");
+  // The terminal panel is a normal tab inside the unified bar, toggled here.
+  const [terminalOpen, setTerminalOpen] = useState(false);
   // Declared early: handleSelectActivity reads it to decide whether opening
   // the panel should land on the card home (no content to show).
   const [fileTabs, setFileTabs] = useState<Tab[]>([]);
   // Last non-home mode — clicking the grid icon while on the card home toggles
   // back to the tab view the user came from instead of trapping them there.
-  const lastNonHomeModeRef = useRef<"browser" | "files" | "sheets" | "terminal">("browser");
+  const lastNonHomeModeRef = useRef<"files">("files");
   useEffect(() => {
     if (rightPanelMode !== "home") lastNonHomeModeRef.current = rightPanelMode;
   }, [rightPanelMode]);
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   // First-level activity (一级导航) — the second column swaps its content.
-  const [activeActivity, setActiveActivity] = useState<ActivityOrPlugin>("sessions");
-  // Plugin-registered UI extensions (ActivityBar rail entries).
-  const { extensions: pluginExtensions } = usePluginExtensions();
-  // Cross-panel jump: the dsh market asks to search the pi market for an
-  // equivalent plugin → switch to skills activity with a pre-filled query.
-  const [piSearchRequest, setPiSearchRequest] = useState<{
-    target: "plugins" | "skills";
-    query: string;
-    nonce: number;
-  } | null>(null);
+  const [activeActivity, setActiveActivity] = useState<Activity>("sessions");
   // Reported by the always-mounted SessionSidebar for the activity-bar dot.
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(new Set());
   const [unreadSessionCount, setUnreadSessionCount] = useState(0);
@@ -354,6 +305,8 @@ export function AppShell() {
   const [contentSearchLoading, setContentSearchLoading] = useState(false);
   const [contentSearchActiveIdx, setContentSearchActiveIdx] = useState(-1);
   const [jumpTarget, setJumpTarget] = useState<{ entryId: string; nonce: number } | null>(null);
+  // Notion 式全宽会话区（顶栏 ⇔ 按钮切换，localStorage 持久化）
+  const [chatFullWidth, setChatFullWidth] = useState(false);
   const contentSearchAbortRef = useRef<AbortController | null>(null);
   const contentSearchBtnRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -362,6 +315,18 @@ export function AppShell() {
   const showChatRef = useRef(false);
   contentSearchOpenRef.current = contentSearchOpen;
   const [contentSearchPos, setContentSearchPos] = useState<{ top: number; right: number } | null>(null);
+
+  // 全宽会话区：挂载后恢复上次选择（useEffect 读取，避免 SSR 注水不匹配）
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("pi-web:chat-full-width") === "1") setChatFullWidth(true);
+    } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pi-web:chat-full-width", chatFullWidth ? "1" : "0");
+    } catch { /* ignore */ }
+  }, [chatFullWidth]);
 
   const openSessionStatsPanel = useCallback(() => {
     if (isMobile) setSidebarOpen(false);
@@ -380,12 +345,12 @@ export function AppShell() {
   const toggleRightPanel = useCallback(() => {
     const willOpen = !rightPanelOpen;
     setRightPanelOpen(willOpen);
-    if (willOpen && fileTabs.length === 0 && rightPanelMode !== "terminal") {
+    if (willOpen && fileTabs.length === 0 && !terminalOpen) {
       setRightPanelMode("home");
     }
-  }, [rightPanelOpen, rightPanelMode, fileTabs]);
+  }, [rightPanelOpen, terminalOpen, fileTabs]);
 
-  const handleSelectActivity = useCallback((activity: ActivityOrPlugin) => {
+  const handleSelectActivity = useCallback((activity: Activity) => {
     // "rightPanel" just toggles the right panel — it's a one-off action, not a mode.
     if (activity === "rightPanel") {
       toggleRightPanel();
@@ -399,12 +364,6 @@ export function AppShell() {
     setSidebarOpen(true);
     if (isMobile) setActiveTopPanel(null);
   }, [isMobile, toggleRightPanel]);
-
-  const handleOpenPiSearch = useCallback((target: "plugins" | "skills", query: string) => {
-    setPiSearchRequest((prev) => ({ target, query, nonce: (prev?.nonce ?? 0) + 1 }));
-    setActiveActivity("skills");
-    setSidebarOpen(true);
-  }, []);
 
   // Position the session stats panel under the top bar
   useEffect(() => {
@@ -606,11 +565,30 @@ export function AppShell() {
   }, [router, selectedSession]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
+    // 主动打开某会话 = 用户切到该会话所属项目。提前更新项目根 ref，否则随后的
+    // onCwdChange 通知（点击项目行直接打开首个会话时，cwd 同步与选择在同一批次）
+    // 会因 ref 还停留在旧项目而把刚打开的会话当跨项目切换关掉。
+    const newProject = session.projectRoot ?? session.cwd;
+    const projectChanged = activeProjectRootRef.current != null
+      && !!newProject
+      && activeProjectRootRef.current !== newProject;
+    if (newProject) activeProjectRootRef.current = newProject;
+    if (projectChanged) {
+      // 与 handleCwdChange 的项目切换清理保持一致：旧项目的文件标签/分支树不再适用。
+      setFileTabs([]);
+      setActiveFileTabId(null);
+      setRightPanelOpen(false);
+      setBranchTree([]);
+      setBranchActiveLeafId(null);
+      setActiveTopPanel(null);
+    }
     setNewSessionCwd(null);
     setSelectedSession(session);
     setSessionKey((k) => k + 1);
     setSystemPrompt(null);
     setInitialSessionRestored(true);
+    // Clear any pending content-search jump when switching sessions.
+    setJumpTarget(null);
     // On mobile, collapse the overlay drawer so the chat is revealed after pick.
     if (isMobile && !isRestore) setSidebarOpen(false);
     if (isRestore) {
@@ -635,7 +613,17 @@ export function AppShell() {
     setActiveTopPanel(null);
     if (isMobile) setSidebarOpen(false);
     router.replace("/", { scroll: false });
+    // 可见反馈：重置为空白会话后聚焦输入框（光标闪烁 = 新会话已就绪）
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => chatInputRef.current?.focus());
+    });
   }, [router, isMobile]);
+
+  // Command-palette content match: open the session and jump to the message.
+  const handleSelectContentMatch = useCallback((session: SessionInfo, entryId: string) => {
+    handleSelectSession(session);
+    if (entryId) setJumpTarget({ entryId, nonce: Date.now() });
+  }, [handleSelectSession]);
 
   // Global keyboard shortcuts (handles Esc, Ctrl+Alt+N, Ctrl+F etc.)
   const handleOpenContentSearch = useCallback(() => {
@@ -758,11 +746,7 @@ export function AppShell() {
     }
   }, [selectedSession, router]);
 
-  // Mirror of fileTabs for stable callbacks that must not depend on the array
-  // identity (handleOpenFile keeps a [isMobile] dep on purpose).
-  const fileTabsRef = useRef<Tab[]>([]);
-  fileTabsRef.current = fileTabs;
-
+  // handleOpenFile is the single entry point that appends a file/web tab.
   const handleOpenFile = useCallback((
     filePath: string,
     fileName: string,
@@ -799,12 +783,10 @@ export function AppShell() {
       });
     });
     setActiveFileTabId(tabId);
-    // Auto-switch to the tab's HOME mode (see tabHomeMode): office-derived
-    // .univer files stay in 文件, spreadsheets go to 表格. Pure extension
-    // switching used to yank the panel to 表格 even for a slide deck.
-    const existing = fileTabsRef.current.find((t) => t.id === tabId);
-    const homeSource: Tab = existing ?? { id: tabId, kind: "file", label: fileName, filePath };
-    setRightPanelMode(homeMode ?? tabHomeMode(homeSource));
+    // One unified file bar hosts every content tab — spreadsheets and plain
+    // files no longer live in separate, mutually-exclusive modes (previously
+    // opening a file hid the open spreadsheet).
+    setRightPanelMode("files");
     setRightPanelOpen(true);
     // On mobile the file panel is full-screen; close the drawer so it shows.
     if (isMobile) setSidebarOpen(false);
@@ -862,22 +844,29 @@ export function AppShell() {
   }, [handleOpenFile, selectedSession?.id, translate]);
 
   const handleCloseFileTab = useCallback((tabId: string) => {
-    const closed = fileTabs.find((t) => t.id === tabId);
-    const closedHome = closed ? tabHomeMode(closed) : null;
+    // The terminal tab is a separate toggle, not part of fileTabs.
+    if (tabId === TERMINAL_TAB_ID) {
+      setTerminalOpen(false);
+      setActiveFileTabId((cur) => {
+        if (cur !== TERMINAL_TAB_ID) return cur;
+        const pool = fileTabs;
+        return pool.length > 0 ? pool[pool.length - 1].id : null;
+      });
+      if (fileTabs.length === 0) setRightPanelOpen(false);
+      return;
+    }
     setFileTabs((prev) => {
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0) setRightPanelOpen(false);
+      if (next.length === 0 && !terminalOpen) setRightPanelOpen(false);
       return next;
     });
     setActiveFileTabId((cur) => {
       if (cur !== tabId) return cur;
-      // Succeed within the closed tab's own mode first; the per-mode derived
-      // active in the render falls back to the most recent tab otherwise.
-      const sameHome = fileTabs.filter((t) => t.id !== tabId && (closedHome === null || tabHomeMode(t) === closedHome));
-      const pool = sameHome.length > 0 ? sameHome : fileTabs.filter((t) => t.id !== tabId);
+      // In the unified bar the active tab succeeds to the most recent one.
+      const pool = fileTabs.filter((t) => t.id !== tabId);
       return pool.length > 0 ? pool[pool.length - 1].id : null;
     });
-  }, [fileTabs]);
+  }, [fileTabs, terminalOpen]);
 
   // ---- 任务区卡片：选择本地文件打开（Electron 原生对话框；浏览器模式上传副本） ----
 
@@ -993,7 +982,7 @@ export function AppShell() {
       const existing = fileTabs.find((t) => t.kind === "web" && t.url === url);
       if (existing) {
         setActiveFileTabId(existing.id);
-        setRightPanelMode("browser");
+        setRightPanelMode("files");
         setRightPanelOpen(true);
         if (isMobile) setSidebarOpen(false);
         return;
@@ -1003,7 +992,7 @@ export function AppShell() {
     const id = `web:${++webTabSeqRef.current}`;
     setFileTabs((prev) => [...prev, { id, label, kind: "web", url: url ?? null }]);
     setActiveFileTabId(id);
-    setRightPanelMode("browser");
+    setRightPanelMode("files");
     setRightPanelOpen(true);
     if (isMobile) setSidebarOpen(false);
   }, [fileTabs, isMobile, translate]);
@@ -1012,6 +1001,15 @@ export function AppShell() {
   const handleOpenWebUrl = useCallback((url: string) => {
     openWebTab(url);
   }, [openWebTab]);
+
+  /** Open the terminal as a normal tab inside the unified file bar. */
+  const openTerminalTab = useCallback(() => {
+    setTerminalOpen(true);
+    setActiveFileTabId(TERMINAL_TAB_ID);
+    setRightPanelMode("files");
+    setRightPanelOpen(true);
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
 
   /** User navigated inside a web tab — refresh its label, drop any pending agent marker. */
   const handleWebNavigate = useCallback((tabId: string, url: string | null) => {
@@ -1207,13 +1205,6 @@ export function AppShell() {
 
   const activeCwdName = activeCwd ? getFileName(activeCwd) || activeCwd : null;
   const windowTitle = activeCwdName ? `${activeCwdName} - Pi Studio` : "Pi Studio";
-  // Session title + running status for the top-left of the chat column.
-  const isSessionRunning = Boolean(selectedSession && runningSessionIds.has(selectedSession.id));
-  const sessionTitle = selectedSession
-    ? (selectedSession.teamName || selectedSession.name || selectedSession.firstMessage.slice(0, 50) || selectedSession.id.slice(0, 12))
-    : translate("sidebar.selectSession");
-  // 项目组视图：合并顶部标题行为 1 行 —— 会话标题栏并入 TeamChat 头部，避免双行头部占位。
-  const isTeamChatMode = Boolean(selectedSession?.teamId && selectedSession.teamUiMode === "team");
 
   useEffect(() => {
     const syncWindowTitle = () => {
@@ -1260,17 +1251,21 @@ export function AppShell() {
         onSessionDeleted={handleSessionDeleted}
         selectedCwd={selectedSession?.cwd ?? newSessionCwd ?? null}
         onCwdChange={handleCwdChange}
-        onOpenFile={handleOpenFile}
-        explorerRefreshKey={explorerRefreshKey}
-        onExplorerRefresh={handleExplorerRefresh}
-        onAtMention={handleAtMention}
-        onAtMentions={handleAtMentions}
         onRunningSessionsChange={setRunningSessionIds}
         onUnreadSessionsChange={setUnreadSessionCount}
       />
       </div>
-      {activeActivity === "skills" && <SkillsPanel cwd={secondColumnCwd} piSearchRequest={piSearchRequest} />}
-      {activeActivity === "dsh" && <DshMarketPanel onOpenPiSearch={handleOpenPiSearch} />}
+      {activeActivity === "files" && (
+        <FileBrowserPanel
+          cwd={secondColumnCwd}
+          onOpenFile={handleOpenFile}
+          onAtMention={handleAtMention}
+          onAtMentions={handleAtMentions}
+          explorerRefreshKey={explorerRefreshKey}
+          onExplorerRefresh={handleExplorerRefresh}
+        />
+      )}
+      {activeActivity === "skills" && <SkillsPanel cwd={secondColumnCwd} />}
       {activeActivity === "settings" && (
         <SettingsPanel
           cwd={secondColumnCwd}
@@ -1287,12 +1282,6 @@ export function AppShell() {
           onAutoName={() => { void handleAutoName(); }}
         />
       )}
-      {activeActivity.startsWith("plugin:") &&
-        (() => {
-          const extId = activeActivity.slice("plugin:".length);
-          const ext = pluginExtensions.find((e) => e.id === extId);
-          return ext ? <PluginExtensionPanel extension={ext} /> : null;
-        })()}
     </div>
   );
 
@@ -1383,12 +1372,100 @@ export function AppShell() {
         <GlowBackground />
         {/* Top bar: window drag region + file panel toggle + window controls */}
         <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)", background: "var(--bg-panel)", position: "relative" }}>
+          {/* App brand: mark + name in the window title bar (top-most row) */}
+          <div
+            className="app-region-drag"
+            style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 12, paddingRight: 8, height: "100%", flexShrink: 0, userSelect: "none" }}
+          >
+            <button
+              type="button"
+              className="app-region-no-drag"
+              onClick={() => setActiveActivity("sessions")}
+              aria-label="Pi Studio"
+              title="Pi Studio"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, padding: 0, background: "none", border: "none", cursor: "pointer", flexShrink: 0 }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M4 4h7a5 5 0 0 1 5 5v11h-7a5 5 0 0 1-5-5V4z" fill="var(--accent)" stroke="none" />
+                <path d="M13 4h7v7a5 5 0 0 1-5 5h-2" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" fill="none" />
+              </svg>
+            </button>
+            <span style={{ fontSize: 13, fontWeight: 650, letterSpacing: "-0.01em", color: "var(--text)", whiteSpace: "nowrap" }}>Pi Studio</span>
+          </div>
           {/* Drag region — grab the window here (buttons below stay clickable) */}
           <div
             className="app-region-drag"
             aria-hidden="true"
             style={{ flex: 1, minWidth: 0, height: "100%", alignSelf: "stretch" }}
           />
+          {/* Content controls (session search + full-width + trust) — merged into the top bar */}
+          {showChat && (
+            <>
+              {projectTrust?.requiresTrust && !projectTrust.trusted && (
+                <button
+                  onClick={() => {
+                    setProjectTrustError(null);
+                    setProjectTrustDialogOpen(true);
+                  }}
+                  title={translate("trust.resourcesNotLoaded")}
+                  aria-label={translate("trust.resourcesNotLoaded")}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 36, height: "100%", padding: 0, flexShrink: 0,
+                    background: "none", border: "none", borderLeft: "1px solid var(--hairline)",
+                    color: "#d97706", cursor: "pointer", transition: "color 0.12s, background 0.12s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "#b45309"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "#d97706"; e.currentTarget.style.background = "none"; }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" /><path d="M12 8v4" /><path d="M12 16h.01" />
+                  </svg>
+                </button>
+              )}
+              <button
+                ref={contentSearchBtnRef}
+                onClick={() => { setContentSearchOpen((v) => !v); setContentSearchQuery(""); }}
+                title={`${translate("chat.searchContent")} (Ctrl+Shift+F)`}
+                aria-label={translate("chat.searchContent")}
+                aria-pressed={contentSearchOpen}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 36, height: "100%", padding: 0, flexShrink: 0,
+                  background: contentSearchOpen ? "var(--bg-selected)" : "none",
+                  border: "none",
+                  color: contentSearchOpen ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer", transition: "color 0.12s, background 0.12s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = contentSearchOpen ? "var(--text)" : "var(--text-muted)"; }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setChatFullWidth((v) => !v)}
+                title={translate("chat.fullWidth")}
+                aria-label={translate("chat.fullWidth")}
+                aria-pressed={chatFullWidth}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 36, height: "100%", padding: 0, flexShrink: 0,
+                  background: chatFullWidth ? "var(--bg-selected)" : "none",
+                  border: "none",
+                  color: chatFullWidth ? "var(--text)" : "var(--text-muted)",
+                  cursor: "pointer", transition: "color 0.12s, background 0.12s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = chatFullWidth ? "var(--text)" : "var(--text-muted)"; }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <polyline points="18 8 22 12 18 16" /><polyline points="6 8 2 12 6 16" /><line x1="2" y1="12" x2="22" y2="12" />
+                </svg>
+              </button>
+            </>
+          )}
           {/* Right panel toggle — in the top bar, left of the window controls */}
           <button
             onClick={toggleRightPanel}
@@ -1401,7 +1478,7 @@ export function AppShell() {
               display: "flex", alignItems: "center", justifyContent: "center",
               width: 36, height: "100%", padding: 0, flexShrink: 0,
               background: rightPanelOpen ? "var(--bg-selected)" : "none",
-              border: "none", borderLeft: "1px solid var(--hairline)",
+              border: "none",
               color: rightPanelOpen ? "var(--text)" : "var(--text-muted)",
               cursor: "pointer", transition: "color 0.12s, background 0.12s",
             }}
@@ -1612,7 +1689,6 @@ export function AppShell() {
         sidebarOpen={sidebarOpen}
         hasRunningSession={runningSessionIds.size > 0}
         hasUnreadSessions={unreadSessionCount > 0}
-        extensions={pluginExtensions}
       />
 
       {/* Left sidebar (second column) */}
@@ -1622,8 +1698,14 @@ export function AppShell() {
         className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarResizer.isResizing ? " sidebar-resizing" : ""}`}
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
-          background: "var(--bg-panel)",
-          borderRight: "1px solid var(--hairline)",
+          /* 玻璃工作区：与 Composer/用户气泡同配方的 iMessage 玻璃水滴材质——
+             半透明底 + 顶部淡 accent 斜向染 + backdrop 模糊，让动态背景从侧栏透出。
+             用内联样式写在 globals.css 之外，避开打包时 lightningcss 折叠 -webkit- 前缀的坑。 */
+          background:
+            "linear-gradient(168deg, color-mix(in srgb, var(--accent) 7%, transparent) 0%, color-mix(in srgb, var(--accent) 2%, transparent) 36%, transparent 64%), color-mix(in srgb, var(--bg-panel) 60%, transparent)",
+          backdropFilter: "blur(26px) saturate(1.45)",
+          WebkitBackdropFilter: "blur(26px) saturate(1.45)",
+          borderRight: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
           display: "flex",
           flexDirection: "column",
           flexShrink: 0,
@@ -1647,263 +1729,34 @@ export function AppShell() {
       {/* Center: chat */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
         {/* Chat header — session info + search + stats, above the chat content （项目组视图下合并进 TeamChat 头部，仅保留 1 行） */}
-        {!isTeamChatMode && (
-        <div style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: 36, background: "var(--bg-panel)" }}>
-          <button
-            ref={sessionToggleRef}
-            type="button"
-            onClick={() => setActiveTopPanel((cur) => (cur === "session" ? null : "session"))}
-            title={translate("session.title")}
-            aria-label={translate("session.title")}
-            aria-pressed={activeTopPanel === "session"}
-            style={{
-              display: "flex", alignItems: "center", gap: 7,
-              height: "100%", padding: "0 12px",
-              background: "none", border: "none", borderRight: "1px solid var(--hairline)",
-              color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
-              minWidth: 0, maxWidth: isMobile ? 150 : 340,
-              transition: "background 0.12s",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
-          >
-            <span
-              title={isSessionRunning ? translate("activity.running") : undefined}
-              style={{
-                width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
-                background: isSessionRunning ? "var(--accent)" : "var(--border)",
-                boxShadow: isSessionRunning ? "0 0 0 3px var(--accent-soft)" : "none",
-              }}
-            />
-            <span style={{ fontSize: 12, fontWeight: 550, letterSpacing: "-0.01em", color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {sessionTitle}
-            </span>
-          </button>
-          {showChat && selectedSession && !selectedSession.teamId && (
-            <button
-              type="button"
-              onClick={() => setTeamDialog({ mode: "convert", sessionId: selectedSession.id })}
-              title={translate("team.convertAction")}
-              aria-label={translate("team.convertAction")}
-              style={{
-                display: "flex", alignItems: "center", gap: 5, height: "100%", padding: "0 10px",
-                background: "none", border: "none", borderRight: "1px solid var(--hairline)",
-                color: "var(--text-muted)", cursor: "pointer", flexShrink: 0, fontSize: 11, whiteSpace: "nowrap",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
-            >
-              👥 {!isMobile && <span>{translate("team.convertAction")}</span>}
-            </button>
-          )}
-          {showChat && projectTrust?.requiresTrust && !projectTrust.trusted && (
-            <button
-              type="button"
-              onClick={() => {
-                setProjectTrustError(null);
-                setProjectTrustDialogOpen(true);
-              }}
-              title={translate("trust.resourcesNotLoaded")}
-              aria-label={translate("trust.resourcesNotLoaded")}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                height: "100%",
-                padding: isMobile ? "0 10px" : "0 12px",
-                background: "none",
-                border: "none",
-                borderRight: "1px solid var(--hairline)",
-                color: "#d97706",
-                cursor: "pointer",
-                flexShrink: 0,
-                fontSize: 11,
-                whiteSpace: "nowrap",
-              }}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
-                <path d="M12 8v4" />
-                <path d="M12 16h.01" />
-              </svg>
-              {!isMobile && <span>{translate("trust.resourcesNotLoaded")}</span>}
-            </button>
-          )}
-          <div
-            className="app-region-drag"
-            aria-hidden="true"
-            style={{ flex: 1, minWidth: 0, height: "100%", alignSelf: "stretch" }}
-          />
-          {showChat && (
-            <button
-              ref={contentSearchBtnRef}
-              type="button"
-              onClick={() => { setContentSearchOpen((v) => !v); setContentSearchQuery(""); }}
-              title={`${translate("chat.searchContent")} (Ctrl+Shift+F)`}
-              aria-label={translate("chat.searchContent")}
-              aria-pressed={contentSearchOpen}
-              style={{
-                marginLeft: "auto",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: TOP_BAR_ICON_BUTTON_SIZE, height: TOP_BAR_ICON_BUTTON_SIZE, padding: 0,
-                background: contentSearchOpen ? "var(--bg-selected)" : "none",
-                border: "none", borderRadius: 6,
-                color: contentSearchOpen ? "var(--text)" : "var(--text-muted)",
-                cursor: "pointer", flexShrink: 0, transition: "color 0.12s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = contentSearchOpen ? "var(--text)" : "var(--text-muted)"; }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            </button>
-          )}
-          {showChat && (sessionStats || contextUsage) && (() => {
-             const tokens = sessionStats?.tokens;
-            const c = sessionStats?.cost ?? 0;
-            const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
-            const costStr = c > 0 ? (c >= 0.01 ? `$${c.toFixed(2)}` : `<$0.01`) : null;
-
-            let ctxColor = "var(--text-muted)";
-            let ctxStr: string | null = null;
-            if (contextUsage?.contextWindow) {
-              const pct = contextUsage.percent;
-              if (pct !== null && pct > 90) ctxColor = "#ef4444";
-              else if (pct !== null && pct > 70) ctxColor = "rgba(234,179,8,0.95)";
-              ctxStr = pct !== null ? `${pct.toFixed(0)}% / ${fmt(contextUsage.contextWindow)}` : `? / ${fmt(contextUsage.contextWindow)}`;
-            }
-
-            const tooltipParts: string[] = [];
-             if (tokens) {
-               tooltipParts.push(`in: ${tokens.input.toLocaleString(locale)}`);
-               tooltipParts.push(`out: ${tokens.output.toLocaleString(locale)}`);
-               tooltipParts.push(`cache read: ${tokens.cacheRead.toLocaleString(locale)}`);
-               tooltipParts.push(`cache write: ${tokens.cacheWrite.toLocaleString(locale)}`);
-              if (c > 0) tooltipParts.push(`cost: $${c.toFixed(4)}`);
-            }
-            if (contextUsage?.contextWindow) {
-              const pct = contextUsage.percent;
-              tooltipParts.push(`context: ${pct !== null ? pct.toFixed(1) + "%" : "unknown"} of ${contextUsage.contextWindow.toLocaleString()} tokens`);
-            }
-            const tooltip = tooltipParts.join("  |  ");
-
-            return (
-              <button
-                ref={statsToggleRef}
-                type="button"
-                onClick={() => setActiveTopPanel((cur) => (cur === "session" ? null : "session"))}
-               title={tooltip || translate("session.title")}
-                 aria-label={translate("session.title")}
-                aria-pressed={activeTopPanel === "session"}
-                style={{
-                  display: "flex", alignItems: "center", gap: 10,
-                  paddingLeft: 12,
-                  paddingRight: 12,
-                  height: 26, alignSelf: "center", marginTop: 0, marginBottom: 0, marginRight: 2,
-                  background: activeTopPanel === "session" ? "var(--bg-selected)" : "none",
-                  border: "none", borderRadius: 6,
-                  fontSize: 12, color: "var(--text-muted)",
-                  whiteSpace: "nowrap", cursor: "pointer",
-                  fontVariantNumeric: "tabular-nums",
-                  transition: "color 0.12s, background 0.12s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = activeTopPanel === "session" ? "var(--text)" : "var(--text-muted)"; }}
-              >
-                {isMobile && (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
-                  </svg>
-                )}
-                 {!isMobile && tokens && tokens.input > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="5" y1="8.5" x2="5" y2="1.5" /><polyline points="2 4 5 1.5 8 4" />
-                    </svg>
-                     {fmt(tokens.input)}
-                  </span>
-                )}
-                 {!isMobile && tokens && tokens.output > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" />
-                    </svg>
-                     {fmt(tokens.output)}
-                  </span>
-                )}
-                 {!isMobile && tokens && tokens.cacheRead > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M8.5 5a3.5 3.5 0 1 1-1-2.45" /><polyline points="6.5 1.5 8.5 2.5 7.5 4.5" />
-                    </svg>
-                     {fmt(tokens.cacheRead)}
-                  </span>
-                )}
-                {!isMobile && costStr && (
-                  <span style={{ display: "flex", alignItems: "center", color: "var(--text)", fontWeight: 500 }}>
-                    {costStr}
-                  </span>
-                )}
-                {ctxStr && (
-                  <span style={{ display: "flex", alignItems: "center", gap: 4, color: ctxColor }}>
-                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M1 9 L1 5 Q1 1 5 1 Q9 1 9 5 L9 9" /><line x1="1" y1="9" x2="9" y2="9" />
-                    </svg>
-                    {ctxStr}
-                  </span>
-                )}
-              </button>
-            );
-          })()}
-        </div>
-        )}
 
         {/* Chat content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
-            selectedSession?.teamId && selectedSession.teamUiMode === "team" ? (
-              <TeamChat
-                key={`team-${selectedSession.id}`}
-                sessionId={selectedSession.id}
-                teamName={selectedSession.teamName ?? selectedSession.name}
-                onOpenFile={handleOpenLinkedFile}
-                chatInputRef={chatInputRef}
-              />
-            ) : (
-            <ChatWindow
-              key={sessionKey}
+            <ChatWorkspace
               session={selectedSession}
               newSessionCwd={effectiveNewSessionCwd}
+              sessionKey={sessionKey}
+              chatInputRef={chatInputRef}
+              fullWidth={chatFullWidth}
+              modelsRefreshKey={modelsRefreshKey}
+              runningSessionIds={runningSessionIds}
               onAgentEnd={handleAgentEnd}
               onSessionCreated={handleSessionCreated}
               onSessionForked={handleSessionForked}
-              modelsRefreshKey={modelsRefreshKey}
-              chatInputRef={chatInputRef}
-              onBranchDataChange={handleBranchDataChange}
-              onSystemPromptChange={handleSystemPromptChange}
-              onSessionStatsChange={handleSessionStatsChange}
-              onSessionStatsPanelOpen={openSessionStatsPanel}
-              onContextUsageChange={handleContextUsageChange}
               onOpenFile={handleOpenLinkedFile}
               onOpenWebUrl={handleOpenWebUrl}
               onOpenChangedFile={handleOpenChangedFile}
+              onSessionStatsPanelOpen={openSessionStatsPanel}
+              onBranchDataChange={handleBranchDataChange}
+              onSystemPromptChange={handleSystemPromptChange}
+              onSessionStatsChange={handleSessionStatsChange}
+              onContextUsageChange={handleContextUsageChange}
+              onSelectSession={handleSelectSession}
               jumpTarget={jumpTarget}
               aiEditContext={aiEditContext}
               onAiEditContextConsumed={() => setAiEditContext(null)}
             />
-            )
           ) : initialCwdStatus === "validating" ? (
             <div
               role="status"
@@ -1977,7 +1830,8 @@ export function AppShell() {
           background: "var(--bg)",
         } as React.CSSProperties}
       >
-        {/* Right panel header: Codex-style function pills + sub-tabs */}
+        {/* Right panel header: home toggle + panel controls (mode pills removed —
+            page switching is unified through the home task cards) */}
         <div style={{
           display: "flex",
           alignItems: "center",
@@ -1995,14 +1849,10 @@ export function AppShell() {
             type="button"
             onClick={() => {
               // Toggle: the grid icon opens the task-card home; clicking it
-              // again returns to the previous tab view so already-open file/
-              // web tabs stay reachable.
+              // again returns to the unified file bar so already-open tabs
+              // stay reachable.
               if (rightPanelMode === "home") {
-                let fallback = lastNonHomeModeRef.current;
-                if ((fallback === "files" || fallback === "sheets") && !fileTabs.some((t) => t.kind === "file")) {
-                  fallback = "browser"; // no file tabs left → land somewhere useful
-                }
-                setRightPanelMode(fallback);
+                setRightPanelMode(lastNonHomeModeRef.current);
               } else {
                 setRightPanelMode("home");
               }
@@ -2036,62 +1886,6 @@ export function AppShell() {
               <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
             </svg>
           </button>
-
-          {/* Function pills: Browser | Files | Sheets | Terminal — hidden on
-              the card home so the launcher stays clean (Codex-style). */}
-          {rightPanelMode !== "home" && (["browser", "files", "sheets", "terminal"] as const).map((mode) => {
-            const isActive = rightPanelMode === mode;
-            const iconMap = {
-              browser: <><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>,
-              files: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>,
-              sheets: <><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /></>,
-              terminal: <><polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" /></>,
-            };
-            const labelMap: Record<string, string> = {
-              browser: translate("rightPanel.browser"),
-              files: translate("rightPanel.files"),
-              sheets: translate("rightPanel.sheets"),
-              terminal: translate("rightPanel.terminal"),
-            };
-            return (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => setRightPanelMode(mode)}
-                title={labelMap[mode]}
-                aria-label={labelMap[mode]}
-                aria-pressed={isActive}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 5,
-                  height: 28,
-                  padding: "0 10px",
-                  background: isActive ? "var(--accent-soft)" : "none",
-                  border: "none",
-                  borderRadius: 7,
-                  color: isActive ? "var(--accent-hover)" : "var(--text-muted)",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: isActive ? 550 : 400,
-                  whiteSpace: "nowrap",
-                  flexShrink: 0,
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive) { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--text-muted)"; }
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={isActive ? 2 : 1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  {iconMap[mode]}
-                </svg>
-                <span>{labelMap[mode]}</span>
-              </button>
-            );
-          })}
 
           {/* Spacer */}
           <div style={{ flex: 1, minWidth: 0 }} />
@@ -2172,7 +1966,7 @@ export function AppShell() {
               { key: "files", color: "#2a7aff", desc: translate("rightPanel.cardFilesDesc"), onClick: () => pickLocalAndOpen("files") },
               { key: "sheets", color: "#14b8a6", desc: translate("rightPanel.cardSheetsDesc"), onClick: () => pickLocalAndOpen("sheets") },
               { key: "browser", color: "#7c5cff", desc: translate("rightPanel.cardBrowserDesc"), onClick: () => openWebTab(null) },
-              { key: "terminal", color: "#64748b", desc: translate("rightPanel.cardTerminalDesc"), onClick: () => setRightPanelMode("terminal") },
+              { key: "terminal", color: "#64748b", desc: translate("rightPanel.cardTerminalDesc"), onClick: openTerminalTab },
             ];
             return (
               <div style={{ height: "100%", overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 18px" }}>
@@ -2261,266 +2055,120 @@ export function AppShell() {
               </div>
             );
           })()}
-          {/* Browser mode */}
-          {rightPanelMode === "browser" && (
-            <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
-              {/* Web tab bar */}
-              <div style={{
-                display: "flex", alignItems: "center",
-                height: 34, flexShrink: 0,
-                background: "var(--bg-panel)",
-                borderBottom: "1px solid var(--hairline)",
-              }}>
-                <button
-                  type="button"
-                  onClick={() => openWebTab(DEFAULT_WEB_URL)}
-                  title={translate("browser.newTab")}
-                  aria-label={translate("browser.newTab")}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    width: 34, height: 34, padding: 0,
-                    background: "none", border: "none", borderRight: "1px solid var(--hairline)",
-                    color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
-                    transition: "color 0.12s",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                  </svg>
-                </button>
-                <div style={{ flex: 1, overflow: "hidden" }}>
-                  <TabBar
-                    tabs={fileTabs.filter((t) => t.kind === "web")}
-                    activeTabId={activeFileTabId ?? ""}
-                    onSelectTab={setActiveFileTabId}
-                    onCloseTab={handleCloseFileTab}
-                  />
-                </div>
-              </div>
-              {/* Web content */}
-              {fileTabs.filter((t) => t.kind === "web").map((tab) => {
-                const isActive = tab.id === activeFileTabId;
-                return (
-                  <div
-                    key={tab.id}
-                    style={{ height: "100%", display: isActive ? "flex" : "none", flexDirection: "column" }}
-                  >
-                    <WebViewer
-                      tabId={tab.id}
-                      initialUrl={tab.url ?? null}
-                      active={isActive}
-                      onNavigate={(url) => handleWebNavigate(tab.id, url)}
-                    />
-                  </div>
-                );
-              })}
-              {fileTabs.filter((t) => t.kind === "web").length === 0 && (
-                <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12, flexDirection: "column", gap: 8 }}>
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-                  </svg>
-                  <span>{translate("browser.newTab")}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Files + Sheets modes — mounted for the WHOLE app lifetime: only
-              closing a tab (X) or quitting the app unmounts a viewer (user
-              request 2026-08-27 — no unmount on mode switches or hiding the
-              panel; the panel container itself is always mounted and just
-              collapses to width 0). Hidden via visibility whenever the panel
-              shows another mode; within the pair the inactive one is hidden
-              too. */}
-          <div style={{
-            position: "absolute",
-            top: "calc(36px + env(safe-area-inset-top))",
-            left: 0,
-            right: 0,
-            bottom: 0,
-            visibility: rightPanelMode === "files" || rightPanelMode === "sheets" ? "visible" : "hidden",
-            zIndex: rightPanelMode === "files" || rightPanelMode === "sheets" ? 1 : 0,
-          }}>
-          {(() => {
-            // A file tab lives in exactly ONE mode (tabHomeMode): the .univer
-            // produced by AI-editing a document stays here in 文件, xlsx/csv
-            // live in 表格 — no duplicate tab in both bars (user report
-            // 2026-08-27). When the global active tab belongs to the other
-            // mode, fall back to this mode's most recent tab so the pane is
-            // never blank.
-            const fileModeTabs = fileTabs.filter((t) => t.kind === "file" && tabHomeMode(t) === "files");
-            const activeId = fileModeTabs.some((t) => t.id === activeFileTabId)
+          {/* Unified file bar: every open content tab lives here — files,
+              spreadsheets, browser pages and the terminal all sit side-by-side
+              in ONE tab bar, so opening anything never hides what was already
+              open (single bar + single keep-alive stack). */}
+          {rightPanelMode === "files" && (() => {
+            const terminalTab = terminalOpen ? {
+              id: TERMINAL_TAB_ID,
+              label: translate("rightPanel.terminal"),
+              kind: "terminal" as const,
+            } : null;
+            const allTabs = terminalTab ? [...fileTabs, terminalTab] : fileTabs;
+            const activeId = allTabs.some((t) => t.id === activeFileTabId)
               ? activeFileTabId
-              : fileModeTabs[fileModeTabs.length - 1]?.id ?? null;
+              : allTabs[allTabs.length - 1]?.id ?? null;
             return (
-            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", visibility: rightPanelMode === "files" ? "visible" : "hidden", zIndex: rightPanelMode === "files" ? 1 : 0 }}>
-              {/* File tab bar */}
-              {fileModeTabs.length > 0 && (
-                <div style={{
-                  display: "flex", alignItems: "center",
-                  height: 34, flexShrink: 0,
-                  background: "var(--bg-panel)",
-                  borderBottom: "1px solid var(--hairline)",
-                }}>
-                  <div style={{ flex: 1, overflow: "hidden" }}>
-                    <TabBar
-                      tabs={fileModeTabs}
-                      activeTabId={activeId ?? ""}
-                      onSelectTab={setActiveFileTabId}
-                      onCloseTab={handleCloseFileTab}
-                    />
-                  </div>
-                </div>
-              )}
-              {/* File content — keep-alive stack: every open tab stays mounted;
-                  inactive tabs are hidden with visibility (NOT unmounted), so
-                  gateway iframes (pptx read-only preview / Univer viewer) and
-                  the Univer grid survive tab switches instead of reloading on
-                  every flip (user feedback 2026-08-27). visibility:hidden keeps
-                  layout boxes sized, so background-mounted viewers measure a
-                  real container and lay out correctly when revealed. */}
-              {(() => {
-                if (fileModeTabs.length === 0) {
-                  return (
-                    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12, flexDirection: "column", gap: 8 }}>
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
-                      </svg>
-                      <span>{translate("files.noneOpen")}</span>
+              <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+                {allTabs.length > 0 && (
+                  <div style={{
+                    display: "flex", alignItems: "center",
+                    height: 34, flexShrink: 0,
+                    background: "var(--bg-panel)",
+                    borderBottom: "1px solid var(--hairline)",
+                  }}>
+                    <div style={{ flex: 1, overflow: "hidden" }}>
+                      <TabBar
+                        tabs={allTabs}
+                        activeTabId={activeId ?? ""}
+                        onSelectTab={setActiveFileTabId}
+                        onCloseTab={handleCloseFileTab}
+                      />
                     </div>
-                  );
-                }
-                return (
-                  <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-                    {fileModeTabs.map((tab) => {
-                      const isActive = tab.id === activeId;
-                      const p = tab.filePath;
-                      if (!p) return null;
+                  </div>
+                )}
+                {/* Keep-alive stack, applied uniformly: inactive content stays
+                    mounted and hidden via visibility so viewers, WebContentsView
+                    and gateway iframes keep their state instead of reloading. */}
+                <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+                  {allTabs.map((tab) => {
+                    const isActive = tab.id === activeId;
+                    if (tab.kind === "terminal") {
                       return (
                         <div
                           key={tab.id}
                           style={{
-                            position: "absolute",
-                            inset: 0,
-                            // "inherit" (NOT "visible"): a descendant with
-                            // explicit visible would punch through the mode
-                            // containers' visibility:hidden and render file
-                            // content in browser/terminal/home modes.
+                            position: "absolute", inset: 0,
                             visibility: isActive ? "inherit" : "hidden",
                             zIndex: isActive ? 1 : 0,
-                            // Hidden stacks must never eat clicks or hold focus.
                             pointerEvents: isActive ? "auto" : "none",
                           }}
                         >
-                          <FileViewer
-                            filePath={p}
-                            cwd={activeCwd ?? undefined}
-                            sourceSessionId={tab.sourceSessionId}
-                            gitRefreshKey={explorerRefreshKey}
-                            initialDisplayMode={tab.initialDisplayMode}
-                            onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
-                            onOpenFile={(filePath) => handleOpenFile(
-                              filePath,
-                              getFileName(filePath),
-                              { sourceSessionId: tab.sourceSessionId },
-                            )}
-                            onAiEdit={handleAiEdit}
+                          <TerminalPanel cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd ?? null} />
+                        </div>
+                      );
+                    }
+                    if (tab.kind === "web") {
+                      return (
+                        <div
+                          key={tab.id}
+                          style={{
+                            position: "absolute", inset: 0,
+                            visibility: isActive ? "inherit" : "hidden",
+                            zIndex: isActive ? 1 : 0,
+                            pointerEvents: isActive ? "auto" : "none",
+                          }}
+                        >
+                          <WebViewer
+                            tabId={tab.id}
+                            initialUrl={tab.url ?? null}
+                            active={isActive}
+                            onNavigate={(url) => handleWebNavigate(tab.id, url)}
                           />
                         </div>
                       );
-                    })}
-                  </div>
-                );
-              })()}
-            </div>
-            );
-          })()}
-              {/* Sheets mode — spreadsheet-home tabs only */}
-              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", visibility: rightPanelMode === "sheets" ? "visible" : "hidden", zIndex: rightPanelMode === "sheets" ? 1 : 0 }}>
-              {(() => {
-                const spreadsheetTabs = fileTabs.filter((t) => t.kind === "file" && !!t.filePath && tabHomeMode(t) === "sheets");
-                // Fall back to the most recent sheets tab when the global
-                // active tab is a files-mode one (see the files-mode note).
-                const activeSheetId = spreadsheetTabs.some((t) => t.id === activeFileTabId)
-                  ? activeFileTabId
-                  : spreadsheetTabs[spreadsheetTabs.length - 1]?.id ?? null;
-                if (spreadsheetTabs.length > 0) {
-                  return (
-                    <>
-                      <div style={{
-                        display: "flex", alignItems: "center",
-                        height: 34, flexShrink: 0,
-                        background: "var(--bg-panel)",
-                        borderBottom: "1px solid var(--hairline)",
-                      }}>
-                        <div style={{ flex: 1, overflow: "hidden" }}>
-                          <TabBar
-                            tabs={spreadsheetTabs}
-                            activeTabId={activeSheetId ?? ""}
-                            onSelectTab={setActiveFileTabId}
-                            onCloseTab={handleCloseFileTab}
-                          />
-                        </div>
+                    }
+                    if (!tab.filePath) return null;
+                    return (
+                      <div
+                        key={tab.id}
+                        style={{
+                          position: "absolute", inset: 0,
+                          visibility: isActive ? "inherit" : "hidden",
+                          zIndex: isActive ? 1 : 0,
+                          pointerEvents: isActive ? "auto" : "none",
+                        }}
+                      >
+                        <FileViewer
+                          filePath={tab.filePath}
+                          cwd={activeCwd ?? undefined}
+                          sourceSessionId={tab.sourceSessionId}
+                          gitRefreshKey={explorerRefreshKey}
+                          initialDisplayMode={tab.initialDisplayMode}
+                          onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
+                          onOpenFile={(filePath) => handleOpenFile(
+                            filePath,
+                            getFileName(filePath),
+                            { sourceSessionId: tab.sourceSessionId },
+                          )}
+                          onAiEdit={handleAiEdit}
+                        />
                       </div>
-                      {/* Keep-alive stack (same as files mode): switching
-                          between spreadsheets keeps each Univer grid and its
-                          gateway iframes alive instead of reloading. */}
-                      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-                        {spreadsheetTabs.map((tab) => {
-                          const isActive = tab.id === activeSheetId;
-                          const p = tab.filePath;
-                          if (!p) return null;
-                          return (
-                            <div
-                              key={tab.id}
-                              style={{
-                                position: "absolute",
-                                inset: 0,
-                                // Same inherit-not-visible rule as files mode.
-                                visibility: isActive ? "inherit" : "hidden",
-                                zIndex: isActive ? 1 : 0,
-                                pointerEvents: isActive ? "auto" : "none",
-                              }}
-                            >
-                              <FileViewer
-                                filePath={p}
-                                cwd={activeCwd ?? undefined}
-                                sourceSessionId={tab.sourceSessionId}
-                                gitRefreshKey={explorerRefreshKey}
-                                initialDisplayMode={tab.initialDisplayMode}
-                                onMentionLines={rightPanelOpen ? handleFileLineMention : undefined}
-                                onOpenFile={(filePath) => handleOpenFile(
-                                  filePath,
-                                  getFileName(filePath),
-                                  { sourceSessionId: tab.sourceSessionId },
-                                )}
-                                onAiEdit={handleAiEdit}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </>
-                  );
-                }
-                return (
+                    );
+                  })}
+                </div>
+                {allTabs.length === 0 && (
                   <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12, flexDirection: "column", gap: 8 }}>
                     <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" />
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
                     </svg>
                     <span>{translate("files.noneOpen")}</span>
                   </div>
-                );
-              })()}
+                )}
               </div>
-          </div>
-
-          {/* Terminal mode (moved from the left sidebar ActivityBar) */}
-          {rightPanelMode === "terminal" && (
-            <TerminalPanel cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd ?? null} />
-          )}
+            );
+          })()}
         </div>
       </div>
       </div>
@@ -2620,23 +2268,6 @@ export function AppShell() {
     )}
 
     {modelsConfigOpen && <ModelsConfig onClose={() => { setModelsConfigOpen(false); setModelsRefreshKey((k) => k + 1); }} />}
-    {teamDialog && (
-      <TeamCreateDialog
-        mode="convert"
-        sessionId={teamDialog.sessionId}
-        onClose={() => setTeamDialog(null)}
-        onCreated={(sessionId) => {
-          setTeamDialog(null);
-          setRefreshKey((k) => k + 1);
-          void fetch(`/api/sessions/${encodeURIComponent(sessionId)}`)
-            .then((r) => (r.ok ? r.json() : null))
-            .then((data) => {
-              if (data?.info) handleSelectSession(data.info as SessionInfo);
-            })
-            .catch(() => setRefreshKey((k) => k + 1));
-        }}
-      />
-    )}
     {projectTrustDialogOpen && projectTrustCwd && (
       <ProjectTrustDialog
         cwd={projectTrustCwd}
@@ -2686,6 +2317,7 @@ export function AppShell() {
       onClose={() => setPaletteOpen(false)}
       onOpenFile={(path, name) => handleOpenFile(path, name)}
       onSelectSession={handleSelectSession}
+      onSelectContentMatch={handleSelectContentMatch}
       onNewSession={() => {
         if (activeCwd) handleNewSession(`kb-${Date.now()}`, activeCwd);
       }}

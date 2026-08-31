@@ -13,8 +13,6 @@ import type {
 interface Props {
   cwd: string | null;
   onPluginsChanged?: () => void;
-  /** Cross-panel jump from the dsh market: switch tab + prefill a search. */
-  piSearchRequest?: { target: "plugins" | "skills"; query: string; nonce: number } | null;
 }
 
 type Tab = "skills" | "plugins";
@@ -92,7 +90,7 @@ function SkillDescription({ text, expanded, onToggle }: { text: string; expanded
   );
 }
 
-export function SkillsPanel({ cwd, onPluginsChanged, piSearchRequest }: Props) {
+export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("skills");
 
@@ -268,21 +266,6 @@ export function SkillsPanel({ cwd, onPluginsChanged, piSearchRequest }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, cwd]);
-
-  // Cross-panel jump from the dsh market: switch tab + prefill + search.
-  useEffect(() => {
-    if (!piSearchRequest) return;
-    if (piSearchRequest.target === "plugins") {
-      setTab("plugins");
-      setMarketQuery(piSearchRequest.query);
-      void loadCatalog(piSearchRequest.query);
-    } else {
-      setTab("skills");
-      setSearchQuery(piSearchRequest.query);
-      if (piSearchRequest.query.trim()) void runSearch(piSearchRequest.query);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [piSearchRequest?.nonce]);
 
   const toggleSkill = useCallback(async (skill: SkillInfo) => {
     const next = !skill.disableModelInvocation;

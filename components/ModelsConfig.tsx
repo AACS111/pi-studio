@@ -144,6 +144,21 @@ interface ModelsJson {
   providers?: Record<string, ProviderEntry>;
 }
 
+/**
+ * A provider that contains no configurable fields at all (only maybe the api
+ * default) cannot be loaded by the pi engine, which throws
+ * `must specify "baseUrl", "headers", "compat", "modelOverrides", or "models"`.
+ * Detect those empty stubs so we never write a broken config.
+ */
+function isEmptyProviderStub(p: ProviderEntry): boolean {
+  return !p.models?.length
+    && !p.baseUrl
+    && !p.headers
+    && !p.compat
+    && !(p.modelOverrides && Object.keys(p.modelOverrides).length > 0)
+    && !p.apiKey;
+}
+
 type ModelTestState =
   | { phase: "idle" }
   | { phase: "testing" }
@@ -193,8 +208,8 @@ const inputStyle = {
   boxSizing: "border-box" as const,
 };
 
-function TextInput({ value, onChange, placeholder, mono }: { value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean }) {
-  return <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder}
+function TextInput({ value, onChange, placeholder, mono, onKeyDown, onBlur }: { value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>; onBlur?: React.FocusEventHandler<HTMLInputElement>; }) {
+  return <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} onKeyDown={onKeyDown} onBlur={onBlur}
     style={{ ...inputStyle, fontFamily: mono ? "var(--font-mono)" : "inherit" }} />;
 }
 
@@ -321,6 +336,10 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
   const selectShownRef = useRef<HTMLInputElement>(null);
   useEffect(() => setEditingName(name), [name]);
   const set = <K extends keyof ProviderEntry>(k: K, v: ProviderEntry[K]) => onChange({ ...provider, [k]: v });
+  const commitName = () => {
+    const candidate = editingName.trim();
+    if (candidate && candidate !== name) onRename(candidate);
+  };
 
   useEffect(() => {
     if (!provider.api) onChange({ ...provider, api: "openai-completions" });
@@ -411,13 +430,16 @@ function ProviderDetail({ name, provider, onChange, onRename, onDelete, onAddMod
       </div>
 
        <Field label={t("i18n.providerName")}>
-        <TextInput value={editingName} onChange={setEditingName} placeholder="provider-name" mono />
+        <TextInput value={editingName} onChange={setEditingName} placeholder="provider-name" mono
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); commitName(); } }}
+          onBlur={commitName} />
         {editingName !== name && editingName.trim() && (
-          <button onClick={() => onRename(editingName.trim())}
+          <button onClick={() => { commitName(); setEditingName(name); }}
             style={{ marginTop: 4, padding: "3px 10px", background: "var(--accent)", border: "none", borderRadius: 4, color: "#fff", cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
              {t("i18n.rename")}
           </button>
         )}
+        <span style={{ fontSize: 10, color: "var(--text-dim)", marginTop: 2 }}>{t("models.providerNameHint")}</span>
       </Field>
 
       <Field label="Base URL">
@@ -1712,20 +1734,26 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
   }, []);
 
   const renameProvider = useCallback((oldName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) return;
+    if (config.providers?.[trimmed]) {
+      setSaveError(t("models.renameConflict", { name: trimmed }));
+      return;
+    }
     setConfig((prev) => {
       const entries = Object.entries(prev.providers ?? {});
       const idx = entries.findIndex(([k]) => k === oldName);
       if (idx === -1) return prev;
-      entries[idx] = [newName, entries[idx][1]];
+      entries[idx] = [trimmed, entries[idx][1]];
       return { ...prev, providers: Object.fromEntries(entries) };
     });
     setSelection((prev) => {
       if (!prev) return prev;
-      if (prev.type === "provider" && prev.name === oldName) return { type: "provider", name: newName };
-      if (prev.type === "model" && prev.providerName === oldName) return { ...prev, providerName: newName };
+      if (prev.type === "provider" && prev.name === oldName) return { type: "provider", name: trimmed };
+      if (prev.type === "model" && prev.providerName === oldName) return { ...prev, providerName: trimmed };
       return prev;
     });
-  }, []);
+  }, [config.providers, t]);
 
   const deleteProvider = useCallback((name: string) => {
     setConfig((prev) => {
@@ -1791,6 +1819,15 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
     setSaveError(null);
     setSavedOk(false);
     try {
+      // Never persist a provider that the pi engine rejects (an empty stub
+      // breaks ALL model loading). Surface it before writing to disk.
+      const emptyProviders = Object.keys(config.providers ?? {})
+        .filter((key) => isEmptyProviderStub(config.providers![key]));
+      if (emptyProviders.length > 0) {
+        setSaveError(t("models.saveEmptyProviderError", { providers: emptyProviders.join(", ") }));
+        setSaving(false);
+        return;
+      }
       const res = await fetch("/api/models-config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1804,7 +1841,7 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
     } finally {
       setSaving(false);
     }
-  }, [config]);
+  }, [config, t]);
 
   const providers = Object.entries(config.providers ?? {});
   const activeOAuth = oauthProviders.filter((p) => p.loggedIn);

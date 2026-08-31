@@ -50,6 +50,8 @@ interface Props {
   /** Pending sheet-edit context (set by the "AI 编辑" button). */
   aiEditContext?: { file: string; prompt: string } | null;
   onAiEditContextConsumed?: () => void;
+  /** Notion 式全宽：会话内容（消息流/输入框）去掉 820px 居中列宽限制 */
+  fullWidth?: boolean;
 }
 
 function phaseLabel(phase: AgentPhase, t: (key: string, params?: Record<string, string | number>) => string): string | null {
@@ -218,7 +220,7 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children, t }: { mes
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, jumpTarget, aiEditContext, onAiEditContextConsumed }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, onOpenFile, onOpenWebUrl, onOpenChangedFile, jumpTarget, aiEditContext, onAiEditContextConsumed, fullWidth = false }: Props) {
   const { t } = useI18n();
   const { soundEnabled, onSoundToggle, playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -291,6 +293,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const [msgFollowing, setMsgFollowing] = useState(true);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
+  const handledJumpNonceRef = useRef<number | null>(null);
 
   // IntersectionObserver on the sentinel div at the top of the message list.
   // When it becomes visible, load the next page of older messages.
@@ -325,19 +328,32 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   // Content-search jump: reveal and scroll to the target entry.
   useEffect(() => {
     if (!jumpTarget) return;
-    const idx = entryIds.indexOf(jumpTarget.entryId);
-    if (idx === -1) return;
+    // Only handle each nonce once; messages keep loading as the session hydrates.
+    if (handledJumpNonceRef.current === jumpTarget.nonce) return;
     const entryId = jumpTarget.entryId;
+    if (!entryId) return;
+    const doScroll = () => {
+      // Already handled by a sibling poll loop — stop.
+      if (handledJumpNonceRef.current === jumpTarget.nonce) return true;
+      const container = scrollContainerRef.current;
+      if (!container) return false;
+      const el = container.querySelector(`[data-entry-id="${CSS.escape(entryId)}"]`);
+      if (!el) return false;
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      handledJumpNonceRef.current = jumpTarget.nonce;
+      return true;
+    };
+    if (doScroll()) return;
     setVisibleCount((cur) => Math.max(cur, messages.length * 2));
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const container = scrollContainerRef.current;
-        if (!container) return;
-        const el = container.querySelector(`[data-entry-id="${CSS.escape(entryId)}"]`);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
-    });
-  }, [jumpTarget, entryIds, messages.length, scrollContainerRef]);
+    // Cross-session jumps arrive before the new session's messages load; the
+    // effect re-runs when `messages` changes, and this loop also polls frames.
+    let tries = 0;
+    const tick = () => {
+      if (doScroll()) return;
+      if (tries++ < 80) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }, [jumpTarget, messages, scrollContainerRef]);
   // Push session stats up to AppShell for the top bar.
   // Compare scalar fields to avoid loops from new object identity each render.
   const statsKey = sessionStats
@@ -506,6 +522,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const chatInputElement = (
     <ChatInput
       ref={chatInputRef}
+      fullWidth={fullWidth}
       onSend={sendWithAiEditContext}
       onAbort={handleAbort}
       onSteer={agentRunning ? handleSteer : undefined}
@@ -629,7 +646,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
       {isEmptyNew ? (
         <div className="flex flex-1 flex-col items-center justify-center overflow-y-auto px-4 py-8">
-          <div className="w-full max-w-[820px]">
+          <div className={fullWidth ? "w-[85%] ml-[5%] mr-[10%]" : "w-full max-w-[820px]"}>
             <div
               className="mb-3"
               style={{
@@ -669,11 +686,11 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             left: 0,
             right: isMobile || perchoActive ? 0 : CHAT_MINIMAP_WIDTH,
             zIndex: 40,
-            padding: `0 ${CHAT_COLUMN_PADDING}px`,
+            padding: fullWidth ? 0 : `0 ${CHAT_COLUMN_PADDING}px`,
             pointerEvents: "none",
           }}
         >
-          <div style={{ maxWidth: 820, margin: "0 auto" }}>
+          <div style={fullWidth ? { width: "85%", marginLeft: "5%", marginRight: "10%" } : { maxWidth: 820, margin: "0 auto" }}>
             <NoticeShelf notices={notices} floating align="right" />
           </div>
         </div>
@@ -683,8 +700,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             ? "chat-scrollbar relative z-10 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
             : "min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 [scrollbar-width:none]"}
         >
-          <div style={{ minWidth: 0, height: perchoActive ? "100%" : undefined, padding: `0 ${CHAT_COLUMN_PADDING}px` }}>
-            <div style={{ width: "100%", minWidth: 0, height: perchoActive ? "100%" : undefined, maxWidth: 820, margin: "0 auto" }}>
+          <div style={{ minWidth: 0, height: perchoActive ? "100%" : undefined, padding: fullWidth ? 0 : `0 ${CHAT_COLUMN_PADDING}px` }}>
+            {/* 全宽：内容占 85%，左 5% / 右 10%（右侧留白避开 NotionToc 目录条） */}
+            <div style={{ minWidth: 0, height: perchoActive ? "100%" : undefined, ...(fullWidth ? { width: "85%", marginLeft: "5%", marginRight: "10%" } : { width: "100%", maxWidth: 820, margin: "0 auto" }) }}>
               <ExtensionWidgets widgets={aboveEditorWidgets} />
 
             {perchoActive && session ? (
@@ -692,6 +710,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 sessionId={session.id}
                 isDark={isDark}
                 onOpenSubagent={(file) => onOpenFile?.(file)}
+                fullWidth={fullWidth}
                 scrollContainerRef={scrollContainerRef}
                 cwd={messageCwd}
                 onOpenFile={onOpenFile}
@@ -1002,16 +1021,16 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       <div className="relative">
         <div
           style={{
-            padding: `0 ${CHAT_COLUMN_PADDING}px`,
-            paddingRight: isMobile ? CHAT_COLUMN_PADDING : CHAT_INPUT_RIGHT_PADDING,
+            padding: fullWidth ? 0 : `0 ${CHAT_COLUMN_PADDING}px`,
+            paddingRight: fullWidth ? 0 : isMobile ? CHAT_COLUMN_PADDING : CHAT_INPUT_RIGHT_PADDING,
           }}
         >
-          <div style={{ maxWidth: 820, margin: "0 auto" }}>
+          <div style={fullWidth ? { width: "85%", marginLeft: "5%", marginRight: "10%" } : { maxWidth: 820, margin: "0 auto" }}>
             <ExtensionWidgets widgets={belowEditorWidgets} />
           </div>
         </div>
         {aiEditContext && (
-          <div style={{ maxWidth: 820, margin: "0 auto 8px", padding: "0 16px" }}>
+          <div style={{ margin: "0 auto 8px", padding: "0 16px", ...(fullWidth ? { width: "85%", marginLeft: "5%", marginRight: "10%" } : { maxWidth: 820 }) }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, background: "rgba(78,173,104,0.08)", border: "1px solid rgba(78,173,104,0.22)", color: "var(--text)", fontSize: 12 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)", flexShrink: 0 }}>
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -1036,6 +1055,17 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               </button>
             </div>
           </div>
+        )}
+        {session && (
+          <SessionStatusChip
+            session={session}
+            sessionStats={sessionStats}
+            contextUsage={contextUsage}
+            running={sessionBusy}
+            t={t}
+            fullWidth={fullWidth}
+            onOpen={() => onSessionStatsPanelOpen?.()}
+          />
         )}
         {chatInputElement}
         <ExtensionStatusBar statuses={extensionStatuses} />
@@ -1465,5 +1495,84 @@ function ExtensionCustomPanel({
         </pre>
       </div>
     </div>
+  );
+}
+
+
+function SessionStatusChip({ session, sessionStats, contextUsage, running, t, fullWidth, onOpen }: {
+  session: SessionInfo | null;
+  sessionStats: SessionStatsInfo | null;
+  contextUsage: { percent: number | null; contextWindow: number; tokens: number | null } | null;
+  running: boolean;
+  t: (k: string) => string;
+  fullWidth: boolean;
+  onOpen: () => void;
+}) {
+  const name = session
+    ? (session.teamName || session.name || session.firstMessage.slice(0, 50) || session.id.slice(0, 12))
+    : "";
+  const tokens = sessionStats?.tokens;
+  const c = sessionStats?.cost ?? 0;
+  const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
+  const costStr = c > 0 ? (c >= 0.01 ? `$${c.toFixed(2)}` : `<$0.01`) : null;
+  let ctxStr: string | null = null;
+  let ctxColor = "var(--text-muted)";
+  if (contextUsage?.contextWindow) {
+    const pct = contextUsage.percent;
+    if (pct !== null && pct > 90) ctxColor = "#ef4444";
+    else if (pct !== null && pct > 70) ctxColor = "rgba(234,179,8,0.95)";
+    ctxStr = pct !== null ? `${pct.toFixed(0)}% / ${fmt(contextUsage.contextWindow)}` : `? / ${fmt(contextUsage.contextWindow)}`;
+  }
+
+  const hasMeta = Boolean(
+    (tokens && (tokens.input > 0 || tokens.output > 0)) || costStr || ctxStr,
+  );
+  if (!hasMeta) return null;
+
+  return (
+    <button
+      onClick={onOpen}
+      title={name ? `${name}\n${t("session.title")}` : t("session.title")}
+      aria-label={t("session.title")}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        flexWrap: "wrap", justifyContent: "center",
+        width: fullWidth ? "85%" : "100%",
+        maxWidth: fullWidth ? "none" : 820,
+        marginLeft: fullWidth ? "5%" : "auto",
+        marginRight: fullWidth ? "10%" : "auto",
+        marginTop: 0,
+        marginBottom: 6,
+        padding: "3px 10px",
+        background: "none", border: "none", borderRadius: 6,
+        color: "var(--text-muted)", cursor: "pointer",
+        fontSize: 12, fontVariantNumeric: "tabular-nums",
+        transition: "background 0.12s, color 0.12s",
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.color = "var(--text-muted)"; }}
+    >
+      {running ? (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+        </svg>
+      ) : (
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--border)", flexShrink: 0 }} />
+      )}
+      {tokens && tokens.input > 0 && (
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="8.5" x2="5" y2="1.5" /><polyline points="2 4 5 1.5 8 4" /></svg>
+          {fmt(tokens.input)}
+        </span>
+      )}
+      {tokens && tokens.output > 0 && (
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <svg width="11" height="11" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" /></svg>
+          {fmt(tokens.output)}
+        </span>
+      )}
+      {costStr && <span style={{ color: "var(--text)", fontWeight: 500 }}>{costStr}</span>}
+      {ctxStr && <span style={{ color: ctxColor }}>ctx {ctxStr}</span>}
+    </button>
   );
 }

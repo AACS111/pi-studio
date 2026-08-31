@@ -178,9 +178,12 @@ function waitForServerUrl(child) {
   });
 }
 
-/** 轮询直到服务可以响应（构建产物是预编译的，通常 1~3 秒内就绪）。 */
-function waitForReady(url, timeoutMs = 30_000) {
+/** 轮询直到服务可以响应。打包产物是预编译的（通常 1~3 秒就绪，30s 封顶）；
+ *  dev 模式下首个 HTTP 请求会触发 Turbopack 编译整个页面树，冷启动可达 2~4 分钟，
+ *  需放宽上限并周期性打印等待进度，避免把「正在编译」误报成「启动失败」。 */
+function waitForReady(url, { timeoutMs = 30_000, devMode = false } = {}) {
   const started = Date.now();
+  let lastLog = started;
   return new Promise((resolve, reject) => {
     const ping = () => {
       const req = http.get(url, (res) => {
@@ -189,14 +192,24 @@ function waitForReady(url, timeoutMs = 30_000) {
         else retry();
       });
       req.on("error", retry);
-      req.setTimeout(3000, () => {
+      // dev 下编译期间请求会被服务端长时间挂起，3s 就超时重试会堆积大量排队请求，
+      // 放宽到 15s 让单个请求安静等完编译；打包模式维持 3s 快速失败。
+      req.setTimeout(devMode ? 15_000 : 3000, () => {
         req.destroy();
         retry();
       });
     };
     const retry = () => {
-      if (Date.now() - started > timeoutMs) reject(new Error("服务就绪检测超时"));
-      else setTimeout(ping, 500);
+      const now = Date.now();
+      if (now - started > timeoutMs) reject(new Error("服务就绪检测超时"));
+      else {
+        if (now - lastLog >= 10_000) {
+          lastLog = now;
+          const hint = devMode ? "（Turbopack 正在编译首次页面，冷启动可能需要 2~4 分钟，请耐心等待）" : "";
+          console.log(`[pi-studio] 等待服务就绪… ${Math.round((now - started) / 1000)}s ${hint}`);
+        }
+        setTimeout(ping, 500);
+      }
     };
     ping();
   });
@@ -755,7 +768,11 @@ if (!gotLock) {
       serverProc = startServer(extraEnv);
       if (!serverProc) return;
       const url = await waitForServerUrl(serverProc);
-      await waitForReady(url);
+      const devMode = SERVER_MODE === "dev";
+      await waitForReady(url, {
+        timeoutMs: devMode ? 10 * 60_000 : 30_000,
+        devMode,
+      });
       createWindow(url);
     } catch (err) {
       console.error("[pi-studio] 启动失败:", err.message);

@@ -31,41 +31,45 @@
 }
 
 :root {
-  --bg: #F6F6F3;
-  --bg-panel: #EDEEE7;
-  --bg-hover: #DDE7D0;
-  --bg-selected: #DDE7D0;
-  --border: #B8C4B0;
+  /* Neutral surfaces — deliberately NOT accent-tinted: the dynamic background
+     and accent-colored icons carry the theme color, the base stays clean. */
+  --bg: #F5F5F5;
+  --bg-panel: #ECECEC;
+  --bg-hover: #E2E2E2;
+  --bg-selected: #DCDCDC;
+  --border: #B8B8B8;
   --hairline: rgba(46, 52, 49, 0.10);
   --text: #2E3431;
-  --text-muted: #8E9991;
-  --text-dim: #B8C4B0;
-  --accent: #5BAF68;
-  --accent-hover: #4a9a57;
-  --accent-soft: rgba(91, 175, 104, 0.10);
-  --user-bg: #EDEEE7;
-  --assistant-bg: #F6F6F3;
-  --tool-bg: #EDEEE7;
+  --text-muted: #7A857C;
+  --text-dim: #B9B9B9;
+  --accent: #3B82F6;
+  --accent-hover: #0b5fe9;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(59, 130, 246, 0.10);
+  --user-bg: #ECECEC;
+  --assistant-bg: #F5F5F5;
+  --tool-bg: #ECECEC;
   --bg-subtle: rgba(46, 52, 49, 0.04);
   --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 html.dark {
-  --bg: #1B1D20;
-  --bg-panel: #222529;
-  --bg-hover: #292C31;
-  --bg-selected: #2D3136;
-  --border: #3A3E44;
+  --bg: #1C1C1E;
+  --bg-panel: #222224;
+  --bg-hover: #28282A;
+  --bg-selected: #2D2D2F;
+  --border: #3A3A3C;
   --hairline: rgba(255, 255, 255, 0.10);
   --text: #D0D4D9;
   --text-muted: #8A8F97;
   --text-dim: #585D65;
-  --accent: #76C97E;
-  --accent-hover: #96D99C;
-  --accent-soft: rgba(118, 201, 126, 0.12);
-  --user-bg: rgba(118, 201, 126, 0.10);
-  --assistant-bg: #1B1D20;
-  --tool-bg: #222529;
+  --accent: #3B82F6;
+  --accent-hover: #6ca1f8;
+  --accent-contrast: #10233f;
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --user-bg: rgba(59, 130, 246, 0.10);
+  --assistant-bg: #1C1C1E;
+  --tool-bg: #222224;
   --bg-subtle: rgba(255, 255, 255, 0.05);
   --shadow-pop: 0 4px 16px rgba(255, 255, 255, 0.14);
 }
@@ -1232,19 +1236,19 @@ span.linenumber {
    来源：percho packages/desktop/src/renderer/src/styles/globals.css
    ============================================================ */
 :root {
-  --shimmer-highlight: rgba(220, 245, 230, 0.9);
-  --markdown-quote-border: #B8C4B0;
-  --markdown-quote-text: #8E9991;
-  --markdown-link-decoration: #5BAF68;
-  --markdown-link-hover: #4a9a57;
-  --markdown-table-border: #DDE7D0;
+  --shimmer-highlight: rgba(219, 234, 254, 0.9);
+  --markdown-quote-border: #B0BECC;
+  --markdown-quote-text: #8B98A5;
+  --markdown-link-decoration: #3B82F6;
+  --markdown-link-hover: #0b5fe9;
+  --markdown-table-border: #D9E2F2;
 }
 html.dark {
-  --shimmer-highlight: rgba(150, 217, 156, 0.7);
+  --shimmer-highlight: rgba(108, 161, 248, 0.7);
   --markdown-quote-border: #3A3E44;
   --markdown-quote-text: #8A8F97;
-  --markdown-link-decoration: #76C97E;
-  --markdown-link-hover: #96D99C;
+  --markdown-link-decoration: #6ca1f8;
+  --markdown-link-hover: #93c5fd;
   --markdown-table-border: #3A3E44;
 }
 
@@ -1312,6 +1316,32 @@ html.dark {
 }
 .toc-item.is-active {
   color: var(--accent);
+}
+/* 用户消息分隔节点：加点号标记 + 微强调色，作为目录里的一次“你发送的消息”分割线 */
+.toc-item.toc-user {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-muted) 72%, var(--accent));
+}
+.toc-item.toc-user.is-active {
+  color: var(--accent);
+}
+.toc-user-marker {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.toc-user-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Working 文字高亮扫过（codex 风格）：光带只扫文字本身 */
@@ -1435,6 +1465,20 @@ html.dark {
 .markdown-body .code-block-container .monaco-editor .view-line {
   background: transparent !important;
 }
+/* is-plain-text（```text 等纯文本块）专属坑：markstream 对
+   .code-block-container.is-plain-text:not(.is-diff) .monaco-editor… 用 (0,4,0)!important
+   强制 background: var(--vscode-editor-background, …)，而 Monaco 主题服务运行时会生成
+   `.monaco-editor { --vscode-editor-background: <主题色> }` 直接定义在元素上——
+   元素自有定义压过容器继承的 transparent，于是纯文本块回到黑底。
+   这里逐条复刻 markstream 选择器并加 .markdown-body 前缀（每组恰好 +1 特异性）反杀。 */
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor,
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor .monaco-editor-background,
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor .margin,
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor .lines-content,
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor .view-lines,
+.markdown-body .code-block-container.is-plain-text:not(.is-diff) .monaco-editor .view-line {
+  background: transparent !important;
+}
 .markdown-body .shiki span,
 .markdown-body .code-fallback-plain span,
 .markdown-body .code-block-content pre code span {
@@ -1505,6 +1549,82 @@ html.dark {
 }
 .percho-fab:hover {
   border-color: color-mix(in srgb, var(--accent) 48%, transparent);
+}
+
+/* ── Chat 输入框：Composer 卡片结构 + iMessage 玻璃水滴材质（与 .percho-user-bubble 同配方）──
+   注意不能设 overflow:hidden：slash/@/历史菜单和 thinking/tool 下拉要从卡内向上弹出 */
+.chat-composer {
+  position: relative;
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--accent) 9%, transparent) 0%,
+      color-mix(in srgb, var(--accent) 3%, transparent) 38%,
+      transparent 68%
+    ),
+    color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  backdrop-filter: blur(22px) saturate(1.55);
+  -webkit-backdrop-filter: blur(22px) saturate(1.55);
+  border: 1px solid color-mix(in srgb, var(--border) 45%, color-mix(in srgb, var(--accent) 22%, transparent));
+  border-radius: 20px;
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 12px 32px -16px rgba(15, 23, 42, 0.18);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+/* 顶部玻璃反光高光涂层（glass sheen，光泽随主题色 accent，铺在内容之下） */
+.chat-composer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 11%, transparent) 0%,
+    color-mix(in srgb, var(--accent) 4%, transparent) 30%,
+    transparent 55%
+  );
+}
+.chat-composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow:
+    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent),
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 12px 32px -16px rgba(15, 23, 42, 0.2);
+}
+/* 流式态：accent 细呼吸光晕，表达「agent 工作中」（替代原来的脏黄边框） */
+.chat-composer.chat-composer-streaming {
+  animation: composer-breathe 2.6s ease-in-out infinite;
+}
+@keyframes composer-breathe {
+  0%,
+  100% {
+    border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+    box-shadow:
+      inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
+      0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent),
+      0 12px 32px -16px rgba(15, 23, 42, 0.18);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+    box-shadow:
+      inset 0 1px 0 0 color-mix(in srgb, var(--accent) 30%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
+      0 12px 32px -16px rgba(15, 23, 42, 0.18);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-composer.chat-composer-streaming {
+    animation: none;
+  }
+}
+/* placeholder 对比度：从 UA 默认（≈text-dim，浅色玻璃底上不可读）提到 muted */
+.chat-composer textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
 }
 
 /* <details> 内容区抽屉式展开/折叠动画 */

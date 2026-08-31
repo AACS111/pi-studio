@@ -11,6 +11,12 @@ import { useTheme } from "./useTheme";
  * `--user-bg`) that are computed per light/dark mode and written onto
  * `document.documentElement`, overriding the defaults in globals.css.
  *
+ * Surfaces (`--bg`, `--bg-panel`, `--bg-hover`, `--bg-selected`, `--border`)
+ * are deliberately NOT derived from the accent: they stay neutral (light gray
+ * in light mode, dark gray in dark mode) so switching the accent never tints
+ * the overall background — the dynamic background and accent-colored icons
+ * already carry the theme color.
+ *
  * The value is persisted to localStorage. The store lives on globalThis so it
  * survives Next.js hot reload (same pattern as the session registry).
  */
@@ -21,9 +27,12 @@ export interface AccentPreset {
   value: string;
 }
 
+/** 内置默认主题色（蓝色）——store 初值、reset 目标、各处回退值的唯一源。 */
+export const DEFAULT_ACCENT = "#3B82F6";
+
 export const ACCENT_PRESETS: AccentPreset[] = [
+  { name: "blue", value: DEFAULT_ACCENT },
   { name: "green", value: "#5BAF68" },
-  { name: "blue", value: "#3B82F6" },
   { name: "violet", value: "#8B5CF6" },
   { name: "orange", value: "#F59E0B" },
   { name: "red", value: "#EF4444" },
@@ -53,7 +62,7 @@ export function normalizeHex(input: string): string | null {
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
   const normalized = normalizeHex(hex);
-  const raw = normalized ? normalized.slice(1) : "5baf68";
+  const raw = normalized ? normalized.slice(1) : DEFAULT_ACCENT.slice(1);
   return {
     r: parseInt(raw.slice(0, 2), 16),
     g: parseInt(raw.slice(2, 4), 16),
@@ -98,41 +107,16 @@ function hslToHex(h: number, s: number, l: number): string {
   return rgbToHex((rgb[0] + m) * 255, (rgb[1] + m) * 255, (rgb[2] + m) * 255);
 }
 
-/** Shift lightness by a signed delta (percent). */
+/** Shift lightness by a signed delta (fraction: 0.12 = 12 percentage points). */
 function adjustLightness(hex: string, delta: number): string {
   const { h, s, l } = hexToHsl(hex);
-  return hslToHex(h, s, clamp(l + delta, 0, 100));
+  return hslToHex(h, s, clamp(l + delta * 100, 0, 100));
 }
 
 function rgba(hex: string, alpha: number): string {
   const { r, g, b } = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
-
-/** Mix hexA (weight 0..1) with hexB. weight=1 → pure hexA. */
-function mix(hexA: string, hexB: string, weight: number): string {
-  const a = hexToRgb(hexA);
-  const b = hexToRgb(hexB);
-  const w = clamp(weight, 0, 1);
-  return rgbToHex(
-    a.r * w + b.r * (1 - w),
-    a.g * w + b.g * (1 - w),
-    a.b * w + b.b * (1 - w),
-  );
-}
-
-/** Neutral base surfaces (pure neutrals — no leftover green tint from the
- *  original palette) that the accent gets mixed into. */
-const NEUTRAL_BG = {
-  light: { bg: "#F5F5F5", panel: "#ECECEC", border: "#B8B8B8" },
-  dark: { bg: "#1C1C1E", panel: "#222224", border: "#3A3A3C" },
-};
-
-/** Per-mode accent tint weight for the surface variables (kept subtle). */
-const SURFACE_TINTS = {
-  light: { bg: 0.03, panel: 0.03, hover: 0.06, selected: 0.07, border: 0.05 },
-  dark: { bg: 0.025, panel: 0.025, hover: 0.05, selected: 0.06, border: 0.05 },
-};
 
 /* ── store (globalThis-backed so it survives hot reload) ───────────────── */
 
@@ -200,21 +184,13 @@ export function useAccentColor(options?: { apply?: boolean }) {
   useEffect(() => {
     if (!shouldApply) return;
     const root = document.documentElement;
-    const neutral = isDark ? NEUTRAL_BG.dark : NEUTRAL_BG.light;
-    const tint = isDark ? SURFACE_TINTS.dark : SURFACE_TINTS.light;
+    // Only accent-driven variables. Surfaces stay neutral via globals.css.
     const derived: Record<string, string> = {
       "--accent": accent,
       // light: hover darkens; dark: hover lightens
       "--accent-hover": adjustLightness(accent, isDark ? 0.10 : -0.12),
       "--accent-soft": rgba(accent, isDark ? 0.12 : 0.10),
       "--user-bg": rgba(accent, isDark ? 0.10 : 0.06),
-      // Surfaces follow the accent with a very subtle tint (lighter than the
-      // old hard-coded green) so the whole theme shifts with the accent.
-      "--bg": mix(accent, neutral.bg, tint.bg),
-      "--bg-panel": mix(accent, neutral.panel, tint.panel),
-      "--bg-hover": mix(accent, neutral.bg, tint.hover),
-      "--bg-selected": mix(accent, neutral.bg, tint.selected),
-      "--border": mix(accent, neutral.border, tint.border),
     };
     for (const [key, value] of Object.entries(derived)) {
       root.style.setProperty(key, value);
@@ -240,7 +216,7 @@ export function useAccentColor(options?: { apply?: boolean }) {
 
   /** Back to the built-in default accent. */
   const resetAccentColor = useCallback(() => {
-    setAccentColor(ACCENT_PRESETS[0].value);
+    setAccentColor(DEFAULT_ACCENT);
     try {
       window.localStorage.removeItem(STORAGE_KEY);
     } catch {

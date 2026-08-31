@@ -3,22 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent, ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
-import type { PiUiExtension } from "@/lib/plugins/ui/types";
-import { pluginIconNode } from "./PluginHost";
 
-/** First-level capability entries (一级导航). File is deliberately NOT here —
- *  the file explorer lives in the second column. Terminal moved to right panel. */
-export type Activity = "sessions" | "skills" | "dsh" | "settings" | "rightPanel";
-
-/** 插件注册的动态扩展（ActivityBar rail 里的可点击条目）。 */
-export type PluginActivityId = `plugin:${string}`;
-
-export type ActivityOrPlugin = Activity | PluginActivityId;
+/** First-level capability entries (一级导航). Terminal moved to right panel. */
+export type Activity = "sessions" | "files" | "skills" | "settings" | "rightPanel";
 
 interface ActivityItem {
   id: Activity;
   titleKey: string;
-  /** 图标主色——仅主会话保留品牌色，其余走中性 text-muted，整体单色导航栏。 */
+  /** 图标主色——仅主会话跟随主题色（accent），其余走中性 text-muted，整体单色导航栏。 */
   tint?: string;
   icon: (active: boolean) => ReactNode;
 }
@@ -78,7 +70,7 @@ const ITEMS: ActivityItem[] = [
   {
     id: "sessions",
     titleKey: "activity.sessions",
-    tint: "#4f8ef7",
+    tint: "var(--accent)",
     icon: (active) => (
       <IconSvg active={active}>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
@@ -98,29 +90,26 @@ const ITEMS: ActivityItem[] = [
       </IconSvg>
     ),
   },
-  {
-    id: "dsh",
-    titleKey: "activity.dshMarket",
-    icon: (active) => (
-      <IconSvg active={active}>
-        <path d="M3 9l1.5-5h15L21 9" />
-        <path d="M3 9h18v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9z" />
-        <path d="M8 9V7a4 4 0 0 1 8 0v2" />
-      </IconSvg>
-    ),
-  },
 ];
 
+const FILES_ITEM: ActivityItem = {
+  id: "files",
+  titleKey: "activity.filesBrowser",
+  icon: (active) => (
+    <IconSvg active={active}>
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </IconSvg>
+  ),
+};
+
 interface Props {
-  active: ActivityOrPlugin;
-  onSelect: (activity: ActivityOrPlugin) => void;
+  active: Activity;
+  onSelect: (activity: Activity) => void;
   onSearch: () => void;
   onToggleSidebar: () => void;
   sidebarOpen: boolean;
   hasRunningSession: boolean;
   hasUnreadSessions: boolean;
-  /** 插件注册的动态扩展条目（在 skills/terminal/dsh 之后渲染）。 */
-  extensions?: PiUiExtension[];
 }
 
 /** Icon-only rail entry: 20px icon, hover highlight + custom tooltip on the right. */
@@ -214,7 +203,7 @@ function RailButton({
   );
 }
 
-export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sidebarOpen, hasRunningSession, hasUnreadSessions, extensions = [] }: Props) {
+export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sidebarOpen, hasRunningSession, hasUnreadSessions }: Props) {
   const { t } = useI18n();
 
   const sessionsBadge = (
@@ -262,37 +251,17 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
         alignItems: "center",
         paddingTop: "env(safe-area-inset-top)",
         paddingBottom: "env(safe-area-inset-bottom)",
-        background: "var(--bg)",
-        borderRight: "1px solid var(--hairline)",
+        /* 与右侧玻璃工作区同材质（内联写法避开打包 -webkit- 折叠坑）：
+           不透明底色会让玻璃侧栏在最左断崖式截断，整条左边缘一起透才能读成一块玻璃 */
+        background:
+          "linear-gradient(168deg, color-mix(in srgb, var(--accent) 7%, transparent) 0%, color-mix(in srgb, var(--accent) 2%, transparent) 36%, transparent 64%), color-mix(in srgb, var(--bg) 55%, transparent)",
+        backdropFilter: "blur(26px) saturate(1.45)",
+        WebkitBackdropFilter: "blur(26px) saturate(1.45)",
+        borderRight: "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
         zIndex: 210,
       }}
     >
-      {/* Brand logo — just the mark */}
-      <button
-        type="button"
-        onClick={() => onSelect("sessions")}
-        aria-label="Pi Studio"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 40,
-          height: 40,
-          margin: "10px auto 14px",
-          padding: 0,
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          flexShrink: 0,
-        }}
-      >
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M4 4h7a5 5 0 0 1 5 5v11h-7a5 5 0 0 1-5-5V4z" fill="var(--accent)" stroke="none" />
-          <path d="M13 4h7v7a5 5 0 0 1-5 5h-2" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" fill="none" />
-        </svg>
-      </button>
-
-      <nav style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", flex: 1 }}>
+      <nav style={{ display: "flex", flexDirection: "column", alignItems: "center", width: "100%", flex: 1, paddingTop: 10 }}>
         <RailButton
           label={t("activity.sessions")}
           active={active === "sessions"}
@@ -301,6 +270,9 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
           tint={ITEMS[0].tint}
         >
           {ITEMS[0].icon(active === "sessions")}
+        </RailButton>
+        <RailButton label={t("activity.filesBrowser")} active={active === "files"} onClick={() => onSelect("files")}>
+          {FILES_ITEM.icon(active === "files")}
         </RailButton>
         <RailButton label={`${t("activity.search")} (Ctrl+K)`} onClick={onSearch}>
           <IconSvg active={false}>
@@ -319,20 +291,6 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
             {item.icon(active === item.id)}
           </RailButton>
         ))}
-        {extensions.map((ext) => {
-          const pid = `plugin:${ext.id}` as PluginActivityId;
-          const activePid = active === pid;
-          return (
-            <RailButton
-              key={pid}
-              label={ext.sidebarEntry?.label ?? ext.title}
-              active={activePid}
-              onClick={() => onSelect(pid)}
-            >
-              <IconSvg active={activePid}>{pluginIconNode(ext.sidebarEntry?.icon)}</IconSvg>
-            </RailButton>
-          );
-        })}
       </nav>
 
       {/* Bottom: settings + collapse. The right-panel toggle lives in the top

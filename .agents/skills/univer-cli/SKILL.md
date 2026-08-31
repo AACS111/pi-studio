@@ -36,6 +36,19 @@ univer skills get core
 If `univer update` reports that the shared daemon must stop, rerun it with `--force` after confirming
 that stopping the daemon is safe. Reload core and the target Unit Skill after every update.
 
+## Official docs for agents
+
+Both Univer doc sites serve clean per-page Markdown plus llms.txt indexes; prefer these over HTML:
+
+- Architecture, CLI SDK, Collaboration SDK, Worktree: `https://office.univer.ai/llms.txt`
+  (any page: append `.md`, e.g. `https://office.univer.ai/cli/worktree.md`)
+- Runtime SDK and Facade API reference: `https://docs.univer.ai/llms.txt`
+  (sub-indexes: `guides/llms.txt`, `reference/llms.txt`, `icons/llms.txt`)
+
+Website docs are versioned (currently `1.0.0-beta.2`) and may be newer than the installed CLI. The
+bundled `univer skills get *` output stays the version-matched operational reference for how-to-run
+commands; use website `.md` pages for architecture background and Facade API lookups.
+
 ## Start here
 
 This file is the discovery entry, not the operational guide. Before using Univer commands for a

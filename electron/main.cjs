@@ -48,6 +48,8 @@ const { startBridge } = require("./bridge.cjs");
 const PRELOAD = path.join(__dirname, "preload.cjs");
 
 const APP_ROOT = path.join(__dirname, "..");
+// 开发模式窗口/任务栏图标（打包模式 build/ 不随包分发，自动回退 exe 内嵌图标）
+const WINDOW_ICON = path.join(APP_ROOT, "build", "icon.ico");
 const DIST_DIR = process.env.PI_WEB_DIST_DIR || ".next-pkg";
 const SERVER_MODE = process.env.PI_WEB_SERVER_MODE === "dev" ? "dev" : "start";
 const HOST = "127.0.0.1";
@@ -559,6 +561,7 @@ function createWindow(url) {
     show: false,
     backgroundColor: "#0d0d0d",
     title: "Pi Studio",
+    icon: fs.existsSync(WINDOW_ICON) ? WINDOW_ICON : undefined,
     // 自定义窗口：无原生标题栏/菜单栏（titleBarStyle:"hidden" 保留原生缩放边缘，
     // titleBarOverlay:false 不叠加原生窗口按钮），窗口控制（— □ ×）由网页里的
     // WindowControls 组件实现（见 pi-window-minimize / -maximize-toggle / -close IPC）。

@@ -87,6 +87,50 @@ function getHostname(url: string): string {
 /** Used for the terminal tab inside the unified file bar. */
 const TERMINAL_TAB_ID = "terminal:main";
 
+// Per-project right-panel memory (module-scoped so it survives an AppShell
+// remount, and mirrored to sessionStorage so it survives a full page reload).
+// AppShell is wrapped in <Suspense> and calls useSearchParams(); switching
+// sessions does router.replace("?session=…"), which remounts the shell and
+// resets component-local state — so the panel must be restored from here.
+type PanelSnapshot = {
+  fileTabs: Tab[];
+  activeFileTabId: string | null;
+  rightPanelOpen: boolean;
+  rightPanelMode: "home" | "files";
+  terminalOpen: boolean;
+};
+
+const PANEL_MEMORY_STORAGE_KEY = "pi.panelMemory.v1";
+const panelMemoryByProject = new Map<string, PanelSnapshot>();
+
+function loadPanelMemory() {
+  try {
+    if (typeof sessionStorage === "undefined") return;
+    const raw = sessionStorage.getItem(PANEL_MEMORY_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, PanelSnapshot>;
+    for (const [k, v] of Object.entries(parsed)) {
+      if (v && Array.isArray(v.fileTabs)) panelMemoryByProject.set(k, v);
+    }
+  } catch {
+    // ignore corrupt/denied storage
+  }
+}
+
+function savePanelMemory() {
+  try {
+    if (typeof sessionStorage === "undefined") return;
+    sessionStorage.setItem(
+      PANEL_MEMORY_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(panelMemoryByProject)),
+    );
+  } catch {
+    // ignore quota/denied storage
+  }
+}
+
+loadPanelMemory();
+
 export function AppShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -484,6 +528,17 @@ export function AppShell() {
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !initialSessionId);
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
   const suppressCwdBumpRef = useRef(false);
+  // Keep the active project's snapshot fresh so a cross-project switch or an
+  // AppShell remount / page reload restores the most recent panel state (see
+  // the module-level panelMemoryByProject store above).
+  useEffect(() => {
+    const proj = activeProjectRootRef.current;
+    if (!proj) return;
+    panelMemoryByProject.set(proj, {
+      fileTabs, activeFileTabId, rightPanelOpen, rightPanelMode, terminalOpen,
+    });
+    savePanelMemory();
+  }, [fileTabs, activeFileTabId, rightPanelOpen, rightPanelMode, terminalOpen]);
 
   useEffect(() => {
     const requestedCwd = initialNavigation.requestedCwd;
@@ -556,11 +611,21 @@ export function AppShell() {
     // File tabs are keyed by absolute path, so tabs opened in the previous
     // project would otherwise linger after switching to a different project.
     // Reached only past the same-project early return above, so worktrees of
-    // one repo keep their open tabs. Mirror handleCloseFileTab and close the
-    // now-empty right panel.
-    setFileTabs([]);
-    setActiveFileTabId(null);
-    setRightPanelOpen(false);
+    // one repo keep their open tabs. Restore the target project's last panel
+    // (kept in the module-level store, which survives an AppShell remount),
+    // falling back to an empty panel only when that project has no snapshot.
+    const savedPanel = newProject ? panelMemoryByProject.get(newProject) : undefined;
+    if (savedPanel) {
+      setFileTabs(savedPanel.fileTabs);
+      setActiveFileTabId(savedPanel.activeFileTabId);
+      setRightPanelOpen(savedPanel.rightPanelOpen);
+      setRightPanelMode(savedPanel.rightPanelMode);
+      setTerminalOpen(savedPanel.terminalOpen);
+    } else {
+      setFileTabs([]);
+      setActiveFileTabId(null);
+      setRightPanelOpen(false);
+    }
     router.replace("/", { scroll: false });
   }, [router, selectedSession]);
 
@@ -568,19 +633,31 @@ export function AppShell() {
     // 主动打开某会话 = 用户切到该会话所属项目。提前更新项目根 ref，否则随后的
     // onCwdChange 通知（点击项目行直接打开首个会话时，cwd 同步与选择在同一批次）
     // 会因 ref 还停留在旧项目而把刚打开的会话当跨项目切换关掉。
+    const previousProject = activeProjectRootRef.current;
     const newProject = session.projectRoot ?? session.cwd;
-    const projectChanged = activeProjectRootRef.current != null
+    const crossingProject = previousProject != null
       && !!newProject
-      && activeProjectRootRef.current !== newProject;
+      && previousProject !== newProject;
     if (newProject) activeProjectRootRef.current = newProject;
-    if (projectChanged) {
-      // 与 handleCwdChange 的项目切换清理保持一致：旧项目的文件标签/分支树不再适用。
-      setFileTabs([]);
-      setActiveFileTabId(null);
-      setRightPanelOpen(false);
+    if (crossingProject) {
+      // 与 handleCwdChange 的项目切换清理保持一致：旧项目的分支树/顶部面板不再适用。
       setBranchTree([]);
       setBranchActiveLeafId(null);
       setActiveTopPanel(null);
+    }
+    // 恢复目标项目最近一次的面板快照（模块级 store 持久化，跨 AppShell 重挂/页面刷新
+    // 都不丢）；仅当该项目从未有过快照、且确实发生了项目切换或首次挂载时才清空关面板。
+    const savedPanel = newProject ? panelMemoryByProject.get(newProject) : undefined;
+    if (savedPanel) {
+      setFileTabs(savedPanel.fileTabs);
+      setActiveFileTabId(savedPanel.activeFileTabId);
+      setRightPanelOpen(savedPanel.rightPanelOpen);
+      setRightPanelMode(savedPanel.rightPanelMode);
+      setTerminalOpen(savedPanel.terminalOpen);
+    } else if (previousProject !== newProject) {
+      setFileTabs([]);
+      setActiveFileTabId(null);
+      setRightPanelOpen(false);
     }
     setNewSessionCwd(null);
     setSelectedSession(session);

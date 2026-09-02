@@ -8,3 +8,6 @@ allowBuilds:
   sharp: true
   univer-cli: true
   unrs-resolver: true
+
+patchedDependencies:
+  '@univerjs-pro/uexcli@0.4.1': patches/@univerjs-pro__uexcli@0.4.1.patch

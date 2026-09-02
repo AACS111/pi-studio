@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@univerjs-pro/uexcli@0.4.1': 17450c6cdca69faec2769d2c079e0abf8757f75c943b48c4a533827cafcf9c7d
+
 importers:
 
   .:
@@ -10511,7 +10514,7 @@ snapshots:
   '@univerjs-pro/uexcli-windows-x64@0.4.1':
     optional: true
 
-  '@univerjs-pro/uexcli@0.4.1':
+  '@univerjs-pro/uexcli@0.4.1(patch_hash=17450c6cdca69faec2769d2c079e0abf8757f75c943b48c4a533827cafcf9c7d)':
     optionalDependencies:
       '@univerjs-pro/uexcli-darwin-arm64': 0.4.1
       '@univerjs-pro/uexcli-linux-arm64': 0.4.1
@@ -16339,7 +16342,7 @@ snapshots:
       '@univerjs-pro/cli-assets': 0.1.0
       '@univerjs-pro/doc-typst-native-binding': 1.0.0-insiders.20260723-c21613b
       '@univerjs-pro/engine-formula-rust-binding': 1.0.0-insiders.20260819-8209aa8
-      '@univerjs-pro/uexcli': 0.4.1
+      '@univerjs-pro/uexcli': 0.4.1(patch_hash=17450c6cdca69faec2769d2c079e0abf8757f75c943b48c4a533827cafcf9c7d)
       libsql: 0.5.29
       puppeteer-core: 25.9.0
       typescript: 6.0.3

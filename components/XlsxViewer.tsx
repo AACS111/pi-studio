@@ -168,6 +168,10 @@ interface XlsxAdvancedSheetMeta {
   /** A1-address → Univer alignment ({ ht, vt }) — SheetJS CE drops alignment
    *  from cell styles on read, so it is recovered from the raw sheet XML. */
   cellAlign?: Record<string, { ht?: number; vt?: number }>;
+  /** Cell notes (批注): row → col → Univer ISheetNote. SheetJS CE ignores
+   *  xl/comments*.xml entirely; notes live in a workbook resource, not
+   *  cellData, so they are parsed from the raw xlsx here. */
+  notes?: Record<string, Record<string, unknown>>;
 }
 
 interface XlsxAdvancedMeta {
@@ -412,6 +416,38 @@ export function parseXlsxAdvancedFeatures(bytes: Uint8Array): XlsxAdvancedMeta |
     });
     if (Object.keys(cellAlign).length > 0) info.cellAlign = cellAlign;
 
+    // Cell notes (批注): xl/commentsN.xml linked from this sheet's rels.
+    // Text is inline runs (<text><r><t>…) — no shared-strings indirection.
+    const sheetRelsPath = file.replace(/(xl\/worksheets\/)([^/]+)$/, "$1_rels/$2.rels");
+    const sheetRelsBytes = zip[sheetRelsPath];
+    if (sheetRelsBytes) {
+      const sheetRelsDoc = parseXmlBytes(sheetRelsBytes);
+      for (const rel of Array.from(sheetRelsDoc.getElementsByTagName("Relationship"))) {
+        const target = rel.getAttribute("Target") ?? "";
+        if (!/comments\d*\.xml$/.test(target)) continue;
+        const commentsPath = target.replace(/^\.\.\//, "xl/").replace(/^\//, "");
+        const commentsBytes = zip[commentsPath];
+        if (!commentsBytes) break;
+        const commentsDoc = parseXmlBytes(commentsBytes);
+        const notes: Record<string, Record<string, unknown>> = {};
+        Array.from(commentsDoc.getElementsByTagName("comment")).forEach((cm) => {
+          const ref = cm.getAttribute("ref");
+          if (!ref) return;
+          try {
+            const range = a1ToRange(ref);
+            const text = Array.from(cm.getElementsByTagName("t"))
+              .map((t) => t.textContent ?? "")
+              .join("");
+            if (!text.trim()) return;
+            const note = { id: randomId(), row: range.startRow, col: range.startColumn, width: 280, height: 96, note: text };
+            (notes[String(range.startRow)] ??= {})[String(range.startColumn)] = note;
+          } catch { /* bad ref — skip this comment */ }
+        });
+        if (Object.keys(notes).length > 0) info.notes = notes;
+        break;
+      }
+    }
+
     sheets[String(i)] = info;
   });
 
@@ -445,6 +481,14 @@ function buildAdvancedResources(meta: XlsxAdvancedMeta | null, unitId: string): 
   if (Object.keys(cf).length > 0) resources.push({ name: "SHEET_CONDITIONAL_FORMATTING_PLUGIN", data: JSON.stringify(cf) });
   if (Object.keys(dv).length > 0) resources.push({ name: "SHEET_DATA_VALIDATION_PLUGIN", data: JSON.stringify(dv) });
   if (Object.keys(fl).length > 0) resources.push({ name: "SHEET_FILTER_PLUGIN", data: JSON.stringify(fl) });
+  // Cell notes — same {sheetId: {row: {col: note}}} shape the sheets-note
+  // plugin registers in its resource controller (v0.25.x), so onLoad feeds
+  // each note into SheetsNoteModel and the preset renders marker + popup.
+  const nt: Record<string, unknown> = {};
+  for (const [sheetId, info] of Object.entries(meta.sheets)) {
+    if (info.notes) nt[sheetId] = info.notes;
+  }
+  if (Object.keys(nt).length > 0) resources.push({ name: "SHEET_NOTE_PLUGIN", data: JSON.stringify(nt) });
   return resources;
 }
 
@@ -644,7 +688,7 @@ class XlsxLoadError extends Error {
 // convertWorkbook / fetchAndParseScope). It prefixes every cache key, so browsers
 // holding parses from older code re-fetch + re-parse instead of serving pre-fix data
 // for the same scope+headCommit (user-visible as "stale until I click refresh").
-const SCOPE_PARSER_VERSION = 2;
+const SCOPE_PARSER_VERSION = 3;
 const scopeDataCache = new Map<string, Promise<ScopeData>>();
 
 function scopedCacheKey(scopeKey: string): string {
@@ -970,10 +1014,19 @@ function triggerDownload(bytes: Uint8Array, filename: string, mime: string): voi
 /** Convert an edited Univer IWorkbookData back into an xlsx workbook (in-memory). */
 export function univerToXlsx(data: UniverWorkbookData, utils: typeof XLSX.utils): XLSX.WorkBook {
   const wb = utils.book_new();
+  // Univer keeps cell notes in the SHEET_NOTE_PLUGIN workbook resource, not
+  // cellData — restore them as SheetJS comments so .xlsx exports carry them
+  // (written as xl/comments*.xml, visible as hover notes in Excel/WPS).
+  let notesBySheet: Record<string, Record<string, Record<string, { note?: string }>>> | null = null;
+  const noteRes = data.resources?.find((r) => r.name === "SHEET_NOTE_PLUGIN");
+  if (noteRes?.data) {
+    try { notesBySheet = JSON.parse(noteRes.data); } catch { /* ignore malformed */ }
+  }
   const sheets: Record<string, UniverSheet> = data?.sheets ?? {};
-  for (const sheet of Object.values(sheets)) {
+  for (const [sheetId, sheet] of Object.entries(sheets)) {
     const ws: Record<string, unknown> = {};
     const cellData: Record<string, Record<string, UniverCell>> = sheet?.cellData ?? {};
+    const sheetNotes = notesBySheet?.[sheetId] ?? null;
     for (const [rStr, row] of Object.entries(cellData)) {
       for (const [cStr, cell] of Object.entries(row)) {
         const addr = utils.encode_cell({ r: Number(rStr), c: Number(cStr) });
@@ -986,6 +1039,8 @@ export function univerToXlsx(data: UniverWorkbookData, utils: typeof XLSX.utils)
         else { out.t = "s"; out.v = v == null ? "" : String(v); }
         if (nPattern && out.t === "n" && isDateLikeFormat(nPattern)) out.t = "d";
         if (nPattern) out.z = nPattern;
+        const noteText = sheetNotes?.[rStr]?.[cStr]?.note;
+        if (typeof noteText === "string" && noteText) out.c = [{ a: "", t: noteText }];
         ws[addr] = out;
       }
     }

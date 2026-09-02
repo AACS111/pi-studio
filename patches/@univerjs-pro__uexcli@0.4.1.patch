@@ -1,0 +1,12 @@
+diff --git a/bin/cli.js b/bin/cli.js
+index a356c1d7f00a6bbf2cc85d153e2452e1f139478b..acc7eb2377221981d21c5a41ad0e8fd78e47ed17 100644
+--- a/bin/cli.js
++++ b/bin/cli.js
+@@ -49,6 +49,7 @@ function main() {
+ 
+   const result = spawnSync(binPath, process.argv.slice(2), {
+     stdio: "inherit",
++    windowsHide: true,
+   });
+ 
+   if (result.error) {

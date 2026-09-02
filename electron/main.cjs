@@ -773,7 +773,9 @@ if (!gotLock) {
       const url = await waitForServerUrl(serverProc);
       const devMode = SERVER_MODE === "dev";
       await waitForReady(url, {
-        timeoutMs: devMode ? 10 * 60_000 : 30_000,
+        // dev 冷启动（依赖变动后 Turbopack 缓存作废）全量编译可能超过 10 分钟，
+        // 超时会整体退出应用；放宽到 20 分钟避免慢机上功亏一篑
+        timeoutMs: devMode ? 20 * 60_000 : 30_000,
         devMode,
       });
       createWindow(url);

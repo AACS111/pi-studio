@@ -182,14 +182,14 @@ Pi Studio 以 Windows 桌面应用形式发布，右侧浏览器由原生 `WebCo
 从源码构建：
 
 ```bash
-npm run pack:dir       # release/ 下的未打包目录（最快验证）
-npm run pack:portable  # 单文件便携版 .exe
-npm run pack:nsis      # 安装版 .exe
-npm run pack:msi       # .msi
-npm run pack           # 安装版 + 便携版
+pnpm run pack:dir       # release/ 下的未打包目录（最快验证）
+pnpm run pack:portable  # 单文件便携版 .exe
+pnpm run pack:nsis      # 安装版 .exe
+pnpm run pack:msi       # .msi
+pnpm run pack           # 安装版 + 便携版
 ```
 
-打包使用独立构建目录（`.next-pkg`），与 `npm run dev` 互不干扰。打包后的应用把内置 Next 服务跑在随机
+打包使用独立构建目录（`.next-pkg`），与 `pnpm run dev` 互不干扰。打包后的应用把内置 Next 服务跑在随机
 localhost 端口，数据存放在 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写），退出时清理
 整棵子进程树。
 
@@ -233,9 +233,12 @@ npx @aacs111/pi-studio@latest
 
 ## 开发
 
+开发需 Node.js ≥ 22.19 与 pnpm ≥ 11（本仓库用 pnpm 管理依赖，`package.json` 已钉版本，
+安装过 corepack 的可用 `corepack enable` 自动取用）。
+
 ```bash
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 ```
 
 本地开发服务器运行在 [http://127.0.0.1:10141](http://127.0.0.1:10141)。给 AI 助手/贡献者的开发约定
@@ -245,10 +248,10 @@ npm run dev
 
 ```bash
 node_modules/.bin/tsc --noEmit
-npm run lint
+pnpm run lint
 ```
 
-开发期间不要运行 `next build` / `npm run build`——它会写 `.next/` 并干扰 dev server；构建留给发布流程。
+开发期间不要运行 `next build` / `pnpm run build`——它会写 `.next/` 并干扰 dev server；构建留给发布流程。
 
 ## 项目结构
 

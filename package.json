@@ -16,7 +16,6 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "preinstall": "npx only-allow pnpm",
   "bin": {
     "pi-studio": "bin/pi-studio.js"
   },

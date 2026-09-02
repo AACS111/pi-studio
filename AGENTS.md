@@ -26,33 +26,35 @@
 
 ## 核心铁律
 
-- **开发期间永远不要跑 `next build`** — 它污染 `.next/` 并搞坏 `npm run dev`。打包构建走独立目录 `.next-pkg`（`PI_WEB_DIST_DIR`），互不干扰。
+- **开发期间永远不要跑 `next build`** — 它污染 `.next/` 并搞坏 `pnpm run dev`。打包构建走独立目录 `.next-pkg`（`PI_WEB_DIST_DIR`），互不干扰。
 - **Agent 永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。**该铁律对所有 skill 一律适用，不限于 sheet-edit**：任何 skill 模板/流水线**不得写死 `univer worktree merge`**（office-edit 第 3 步已改为 `worktree ready`），编辑完只标记 ready 即停手。
 - **用户说「编辑这张表」又没点名文件时，默认编辑 open-file 标记记录的文件**（右侧查看器里打开的那个）。用 `GET /api/open-file` 或读 `<数据目录>/.internal/pi-web-open-file.json`；缺失/未设置就问用户。
-- 右侧浏览器**仅 Electron 模式可用**（`npm run dev:electron` 或打包应用）；`npm run dev` 纯浏览器模式无桥，`/api/browser/control/*` 返回 502。
-- 每个改动必须过 `tsc --noEmit` + `npm run lint` 再交付；Univer 改动还要 headless 浏览器往返验证。
+- 右侧浏览器**仅 Electron 模式可用**（`pnpm run dev:electron` 或打包应用）；`pnpm run dev` 纯浏览器模式无桥，`/api/browser/control/*` 返回 502。
+- 每个改动必须过 `tsc --noEmit` + `pnpm run lint` 再交付；Univer 改动还要 headless 浏览器往返验证。
 
 ---
 
 ## Quick Start
 
+包管理器为 pnpm（≥ 11，`package.json` 已钉版本）：依赖装删一律 `pnpm add/remove`，不要用 npm，否则会生成野的 package-lock.json。
+
 ```bash
-npm run dev            # 浏览器模式，127.0.0.1:10141（见 package.json 的 dev script）
-npm run dev:electron   # Electron 壳 + dev server（scripts/dev-electron.mjs）
-npm run dev:lan        # 局域网模式 0.0.0.0:30141
+pnpm run dev            # 浏览器模式，127.0.0.1:10141（见 package.json 的 dev script）
+pnpm run dev:electron   # Electron 壳 + dev server（scripts/dev-electron.mjs）
+pnpm run dev:lan        # 局域网模式 0.0.0.0:30141
 ```
 
 Typecheck: `node_modules/.bin/tsc --noEmit`
-Lint: `npm run lint`
+Lint: `pnpm run lint`
 
 ### 打包桌面应用
 
 ```bash
-npm run pack:dir       # 只生成 release/win-unpacked（快速验证）
-npm run pack:portable  # 单文件便携版 .exe
-npm run pack:nsis      # 安装版 .exe
-npm run pack:msi       # .msi
-npm run pack           # 安装版 + 便携版
+pnpm run pack:dir       # 只生成 release/win-unpacked（快速验证）
+pnpm run pack:portable  # 单文件便携版 .exe
+pnpm run pack:nsis      # 安装版 .exe
+pnpm run pack:msi       # .msi
+pnpm run pack           # 安装版 + 便携版
 ```
 
 - `scripts/package.mjs` 自动设置 `PI_WEB_DIST_DIR=.next-pkg` 和国内镜像（electron-builder-binaries / electron），GitHub 不可达时不会卡下载。

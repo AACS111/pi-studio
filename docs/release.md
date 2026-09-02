@@ -37,7 +37,7 @@ npm version patch --no-git-tag-version && npm run build && npm publish --access 
 
 Notes:
 
-- This bumps `package.json` and `package-lock.json`.
+- This bumps `package.json` and `pnpm-lock.yaml`.
 - It intentionally runs a production build. Do not run `next build` during normal development; release work is the exception.
 - If `npm view @aacs111/pi-studio version` briefly shows the previous version, check the exact version instead:
 
@@ -51,8 +51,8 @@ npm view @aacs111/pi-studio versions --json --registry https://registry.npmjs.or
 Replace `<version>` with the new package version, for example `0.7.5`.
 
 ```bash
-git diff -- package.json package-lock.json
-git add package.json package-lock.json
+git diff -- package.json pnpm-lock.yaml
+git add package.json pnpm-lock.yaml
 git commit -m "Release v<version>"
 ```
 

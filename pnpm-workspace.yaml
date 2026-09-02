@@ -1,3 +1,6 @@
+nodeLinker: hoisted
+
+# 依赖安装脚本白名单（pnpm 11 默认拦截构建脚本）
 allowBuilds:
   '@google/genai': true
   electron-winstaller: true

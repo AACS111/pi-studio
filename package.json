@@ -1,6 +1,7 @@
 {
   "name": "@aacs111/pi-studio",
   "version": "0.8.6",
+  "packageManager": "pnpm@11.18.0",
   "description": "Web UI for the pi coding agent",
   "homepage": "https://github.com/AACS111/pi-studio#readme",
   "repository": {
@@ -15,6 +16,7 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "preinstall": "npx only-allow pnpm",
   "bin": {
     "pi-studio": "bin/pi-studio.js"
   },

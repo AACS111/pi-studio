@@ -4,7 +4,7 @@ import { runAppUpdate } from "@/lib/update-manager";
 export const dynamic = "force-dynamic";
 
 /** POST /api/update/run — 把全局安装的 pi-studio 更新到指定版本（默认 npm 最新）。
- *  源码/开发模式（本仓库直接运行）拒绝自动更新，提示手动 git pull && npm install。 */
+ *  源码/开发模式（本仓库直接运行）拒绝自动更新，提示手动 git pull && pnpm install。 */
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as { version?: unknown };

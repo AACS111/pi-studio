@@ -32,7 +32,9 @@ interface ModelOption {
 }
 
 interface Props {
-  onSend: (message: string, images?: AttachedImage[]) => void;
+  // 返回 boolean/false 表示消息未被接受（如视觉代理识别失败），
+  // 输入框会把文字与图片恢复回来；true/undefined = 已接受，正常清空。
+  onSend: (message: string, images?: AttachedImage[]) => boolean | void | Promise<boolean | void>;
   onAbort: () => void;
   onSteer?: (message: string, images?: AttachedImage[]) => void;
   onFollowUp?: (message: string, images?: AttachedImage[]) => void;
@@ -425,6 +427,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const attachedImagesRef = useRef(attachedImages);
   const pendingImageCountRef = useRef(0);
   const isStreamingRef = useRef(isStreaming);
+  // 发送确认中锁：带图片的发送要等视觉代理/prompt 提交完成，期间禁止重复发送
+  const pendingSendRef = useRef(false);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
   isStreamingRef.current = isStreaming;
@@ -612,7 +616,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const handleSend = useCallback(async () => {
     const msg = value.trim();
     if (!msg && !attachedImages.length) return;
-    if (isStreaming) return;
+    if (isStreaming || pendingSendRef.current) return;
     onAudioUnlock?.();
     if (!attachedImages.length && msg.startsWith("/") && onBuiltinCommand) {
       const result = await onBuiltinCommand(msg);
@@ -621,7 +625,44 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
         return;
       }
     }
-    onSend(msg, attachedImages.length ? attachedImages : undefined);
+    // 纯文本：保持原乐观清空行为，连接失败由 useAgentSession 的
+    // insertIfEmpty 兑底恢复。
+    if (!attachedImages.length) {
+      onSend(msg);
+      clearInput();
+      return;
+    }
+    // 带图片：等待发送方确认（视觉代理识别可能失败，可能耗时数秒到几十秒），
+    // 期间用 pendingSendRef 锁住重复发送；发送方返回 false = 消息未发送，
+    // 此时把文字与图片恢复回输入框，绝不吞消息。
+    const sentValue = value;
+    const sentImages = attachedImages;
+    pendingSendRef.current = true;
+    let accepted: boolean | void;
+    try {
+      accepted = await onSend(msg, sentImages);
+    } catch {
+      accepted = false; // 发送方异常：视为未发送，恢复内容
+    } finally {
+      pendingSendRef.current = false;
+    }
+    if (accepted === false) {
+      // clearInput 已 revoke 原 blob previewUrl，用 data URL 重建缩略图
+      const rebuildPreview = (img: AttachedImage): AttachedImage => ({
+        ...img,
+        previewUrl: `data:${img.mimeType};base64,${img.data}`,
+      });
+      if (!valueRef.current.trim()) {
+        // 输入框仍为空：原样恢复文字与图片
+        setValue(sentValue);
+        setAttachedImages(sentImages.map(rebuildPreview));
+      } else {
+        // 用户在等待期间输入了新内容：只补回图片，不覆盖新输入
+        setAttachedImages((prev) => [...prev, ...sentImages.map(rebuildPreview)]);
+      }
+      requestAnimationFrame(() => textareaRef.current?.focus());
+      return;
+    }
     clearInput();
   }, [value, attachedImages, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
 
@@ -1315,7 +1356,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             <span style={{ overflowWrap: "anywhere" }}>
               {visionProxyStatus.phase === "recognizing"
                 ? "正在用视觉模型识别图片…"
-                : visionProxyStatus.message}
+                : `${visionProxyStatus.message}（可在左下角模型菜单的「附属模型」中更换视觉模型后重发）`}
             </span>
           </div>
         )}

@@ -68,7 +68,7 @@ async function callVisionModel(
 
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      lastError = `视觉模型请求失败 (HTTP ${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`;
+      lastError = `视觉模型 ${vision.modelId} 请求失败 (HTTP ${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`;
       // 429 / 5xx 可能是免费额度排队，等 3s 重试一次。
       if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
         await new Promise((resolve) => setTimeout(resolve, VISION_RETRY_DELAY_MS));

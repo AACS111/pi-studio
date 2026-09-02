@@ -509,14 +509,14 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
   // Prepend the pending sheet-edit context to the user's next message, so the
   // "AI 编辑" prompt never sits in the input box (where it could be deleted).
+  // 透传 handleSend 的返回值：false = 消息未发送，输入框需要恢复内容。
   const sendWithAiEditContext = useCallback((message: string, images?: Parameters<typeof handleSend>[1]) => {
     if (aiEditContext) {
       const combined = `${aiEditContext.prompt}\n\n${message}`;
       onAiEditContextConsumed?.();
-      void handleSend(combined, images);
-    } else {
-      void handleSend(message, images);
+      return handleSend(combined, images);
     }
+    return handleSend(message, images);
   }, [aiEditContext, handleSend, onAiEditContextConsumed]);
 
   const chatInputElement = (

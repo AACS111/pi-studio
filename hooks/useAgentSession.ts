@@ -1294,19 +1294,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [displayModel, modelList, visionModelSelected]);
 
-  const handleSend = useCallback(async (message: string, images?: AttachedImage[]) => {
+  // 返回值：true/undefined = 消息已被接受（输入框可以清空）；false = 消息没有
+  // 发送出去（视觉代理识别失败、连接失败、agent 忙等），调用方应把内容恢复
+  // 回输入框，而不是把用户的消息吞掉。
+  const handleSend = useCallback(async (message: string, images?: AttachedImage[]): Promise<boolean> => {
     const trimmedMessage = message.trim();
-    if (!trimmedMessage && !images?.length) return;
-    if (agentRunningRef.current || bashRunningRef.current) return;
+    if (!trimmedMessage && !images?.length) return false;
+    if (agentRunningRef.current || bashRunningRef.current) return false;
     const isSlashCommandPrompt = !images?.length && trimmedMessage.startsWith("/");
 
     const isBashCommand = !images?.length && trimmedMessage.startsWith("!");
     if (isBashCommand) {
       const isExcluded = trimmedMessage.startsWith("!!");
       const bashCmd = (isExcluded ? trimmedMessage.slice(2) : trimmedMessage.slice(1)).trim();
-      if (!bashCmd) return;
+      if (!bashCmd) return false;
       await executeBashRef.current?.(bashCmd, isExcluded);
-      return;
+      return true;
     }
 
     const promptRunId = promptRunIdRef.current + 1;
@@ -1320,7 +1323,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         effectiveMessage = proxied.message;
         effectiveImages = proxied.images;
       } catch {
-        return;
+        // 视觉代理识别失败（如附属模型 404）：消息未发送，让调用方把文字与
+        // 图片恢复回输入框。错误详情已写入 visionProxyStatus 展示。
+        return false;
       }
     }
     cancelEventStreamGrace();
@@ -1384,6 +1389,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (isSlashCommandPrompt && sentSessionId) {
         void waitForPromptSettlement(sentSessionId, promptRunId);
       }
+      return true;
     } catch (e) {
       console.error("Failed to send message:", e);
       // A failed prompt POST is ambiguous: the server may have accepted it
@@ -1391,7 +1397,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // server confirms idle so a real run cannot continue unseen.
       if (promptRequestStarted && sentSessionId) {
         void waitForPromptSettlement(sentSessionId, promptRunId);
-        return;
+        // prompt 可能已被服务器接受：视为已发送，输入框正常清空。
+        return true;
       }
       rpcPromptPendingRef.current = false;
       agentRunningRef.current = false;
@@ -1416,6 +1423,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentRunning(false);
       setAgentPhase(null);
       dispatch({ type: "end" });
+      // prompt 尚未发出（或明确被拒）：告诉调用方消息没发送成功，应恢复输入框。
+      return false;
     }
   }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, proxyImagesIfNeeded, opts.chatInputRef]);
 

@@ -238,7 +238,7 @@ npx @aacs111/pi-studio@latest
 
 ```bash
 pnpm install
-pnpm run dev
+pnpm run dev:electron
 ```
 
 本地开发服务器运行在 [http://127.0.0.1:10141](http://127.0.0.1:10141)。给 AI 助手/贡献者的开发约定

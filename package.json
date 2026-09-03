@@ -1,6 +1,6 @@
 {
   "name": "@aacs111/pi-studio",
-  "version": "0.8.6",
+  "version": "1.0.0",
   "packageManager": "pnpm@11.18.0",
   "description": "Web UI for the pi coding agent",
   "homepage": "https://github.com/AACS111/pi-studio#readme",

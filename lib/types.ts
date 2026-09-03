@@ -29,6 +29,15 @@ export interface ImageContent {
     data?: string;
     url?: string;
   };
+  /** 扁平 base64（SDK 实际落盘格式，live reducer 亦用此） */
+  data?: string;
+  mimeType?: string;
+  /**
+   * 初始历史负载里被剔掉的图片（deferMedia=1）：正文不再内嵌 base64，
+   * 改为客户端按需拉取 `GET /api/sessions/[id]/media?ref=<mediaRef>`。
+   * 格式 `<entryId>:<contentBlockIndex>`。
+   */
+  mediaRef?: string;
 }
 
 export interface ThinkingContent {
@@ -50,7 +59,10 @@ export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent
 export interface UserMessage {
   role: "user";
   content: string | (TextContent | ImageContent)[];
+  /** 发送时刻（= 条目落盘时刻） */
   timestamp?: number;
+  /** 条目落盘时刻（历史回放补齐；用户消息与 timestamp 相同） */
+  endTimestamp?: number;
 }
 
 export interface AssistantMessage {
@@ -60,7 +72,14 @@ export interface AssistantMessage {
   provider: string;
   stopReason?: string;
   errorMessage?: string;
+  /** 本轮回复「开始」时刻（pi 写入 message 时打的时间戳） */
   timestamp?: number;
+  /**
+   * 本轮回复「完成」时刻：取会话条目的落盘时间戳（entry.timestamp）。
+   * 与 timestamp 区分：assistant 的 message.timestamp 是生成起点，条目写入才是终点；
+   * 对话区显示「模型回复完成节点」和每轮耗时用这个。
+   */
+  endTimestamp?: number;
   usage?: {
     input: number;
     output: number;
@@ -84,6 +103,8 @@ export interface ToolResultMessage {
   isError?: boolean;
   details?: unknown;
   timestamp?: number;
+  /** 条目落盘时刻（工具执行完成）；历史回放由 entry.timestamp 补齐 */
+  endTimestamp?: number;
 }
 
 export interface CustomMessage {
@@ -93,6 +114,7 @@ export interface CustomMessage {
   display: boolean;
   details?: unknown;
   timestamp?: number;
+  endTimestamp?: number;
 }
 
 export interface BashExecutionMessage {
@@ -105,6 +127,7 @@ export interface BashExecutionMessage {
   fullOutputPath?: string;
   excludeFromContext?: boolean;
   timestamp?: number;
+  endTimestamp?: number;
 }
 
 export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage | CustomMessage | BashExecutionMessage;

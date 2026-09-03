@@ -13,6 +13,8 @@ import type { ActivityEntry, SessionTranscriptState, SubagentRunUi, UIMessage, U
 export interface MetaItem {
 	thinking: string;
 	tools: UIToolCall[];
+	/** 思考正文被剔掉时的按需拉取引用（deferThinking 才有；首次展开才去补） */
+	thinkingRef?: { entryId: string; blockIndex: number };
 	/** 流式项的活动序列（到达顺序），预览行数据源；仅流式（未提交）项携带 */
 	activity?: ActivityEntry[];
 }
@@ -76,7 +78,11 @@ const committedMetaCache = new WeakMap<Extract<UIMessage, { kind: "assistant" }>
 function committedMetaItem(message: Extract<UIMessage, { kind: "assistant" }>): MetaItem {
 	let item = committedMetaCache.get(message);
 	if (!item) {
-		item = { thinking: message.thinking, tools: message.tools };
+		item = {
+			thinking: message.thinking,
+			tools: message.tools,
+			...(message.thinkingRef !== undefined ? { thinkingRef: message.thinkingRef } : {}),
+		};
 		committedMetaCache.set(message, item);
 	}
 	return item;
@@ -184,7 +190,7 @@ export function buildChatRows(
 			continue;
 		}
 		// 思考/工具（含正文消息自带的）全部进当前组（缓存复用，保证 items 元素引用跨渲染稳定）
-		if (message.thinking || message.tools.length > 0) {
+		if (message.thinking || message.thinkingRef !== undefined || message.tools.length > 0) {
 			metaItems.push(committedMetaItem(message));
 		}
 		// 正文是边界：组关闭，正文独立成行（meta 已并入组）

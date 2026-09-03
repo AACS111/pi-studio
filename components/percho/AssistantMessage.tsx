@@ -14,6 +14,7 @@ export function AssistantMessage({
 	streaming,
 	metaInGroup = false,
 	isDark,
+	sessionId,
 	cwd,
 	onOpenFile,
 	onOpenWebUrl,
@@ -24,6 +25,8 @@ export function AssistantMessage({
 	streaming?: boolean;
 	metaInGroup?: boolean;
 	isDark?: boolean;
+	/** 会话 id（延期思考按需拉取用） */
+	sessionId?: string | null;
 	cwd?: string;
 	onOpenFile?: (filePath: string) => void;
 	onOpenWebUrl?: (url: string) => void;
@@ -33,7 +36,9 @@ export function AssistantMessage({
 
 	return (
 		<div className="flex flex-col gap-2">
-			{items.length > 0 && <MetaGroup items={items} working={Boolean(streaming) && !text} />}
+			{items.length > 0 && (
+				<MetaGroup items={items} working={Boolean(streaming) && !text} sessionId={sessionId} />
+			)}
 			{text && (
 				<Markdown
 					text={text}

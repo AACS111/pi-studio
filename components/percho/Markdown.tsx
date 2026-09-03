@@ -89,7 +89,7 @@ export function Markdown({
 				codeBlockLightTheme="vitesse-light"
 				codeBlockDarkTheme="vitesse-dark"
 				codeBlockProps={CODE_BLOCK_PROPS}
-				deferNodesUntilVisible={false}
+				deferNodesUntilVisible={true}
 			/>
 		</div>
 	);

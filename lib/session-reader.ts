@@ -229,7 +229,7 @@ export function getSessionEntries(filePath: string): SessionEntry[] {
 export function buildSessionContext(
   entries: SessionEntry[],
   leafId?: string | null,
-  options: { deferThinking?: boolean; deferToolResultImages?: boolean } = {},
+  options: { deferThinking?: boolean; deferToolResultImages?: boolean; deferAllImages?: boolean } = {},
 ): SessionContext {
   const byId = new Map<string, SessionEntry>();
   for (const e of entries) byId.set(e.id, e);
@@ -291,6 +291,11 @@ function base64ImageInfo(block: unknown): { bytes: number; mime?: string } | nul
   return { bytes: Math.max(0, Math.floor(data.length * 3 / 4) - padding), mime };
 }
 
+/**
+ * 工具结果里的 base64 截图：初始历史负载不带（今天行为）。
+ * 用户/助手消息里的图片走 `replaceBase64ImagesWithRefs`（按需拉回）；
+ * 工具结果图仍直接丢 + 文字占位（它们只出现在工具卡里，价值低、体积大）。
+ */
 function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
   if (message.role !== "toolResult") return message;
 
@@ -315,11 +320,33 @@ function omitToolResultBase64Images(message: AgentMessage): AgentMessage {
   return { ...message, content };
 }
 
+/**
+ * 把消息里所有内嵌 base64 图片换成「按需引用」桩：`{ type:"image", mediaRef, mimeType }`（无 data）。
+ * 一张截图动辄几百 KB base64，历史会话里能占到负载的 85%+（实测 6.5MB / 5.56MB），
+ * 换桩后前端只在图片真的滚到可见时才拉字节（<img loading="lazy">）。
+ */
+function replaceBase64ImagesWithRefs(message: AgentMessage, entryId: string): AgentMessage {
+  const raw = (message as { content?: unknown }).content;
+  if (typeof raw === "string" || !Array.isArray(raw)) return message;
+  let replaced = 0;
+  const content: unknown[] = raw.map((block: unknown, index: number) => {
+    const image = base64ImageInfo(block);
+    if (!image) return block;
+    replaced += 1;
+    return {
+      type: "image",
+      mimeType: image.mime ?? "image/png",
+      mediaRef: `${entryId}:${index}`,
+    };
+  });
+  return replaced > 0 ? ({ ...message, content } as AgentMessage) : message;
+}
+
 // Convert a session entry on the active branch into a UI message.
 // Returns null for entries that do not map to chat history (metadata, non-message types).
 function entryToUiMessage(
   entry: SessionEntry,
-  options: { deferThinking?: boolean; deferToolResultImages?: boolean },
+  options: { deferThinking?: boolean; deferToolResultImages?: boolean; deferAllImages?: boolean },
 ): AgentMessage | null {
   // Supported message roles: user, assistant, toolResult, bashExecution.
   // bashExecution messages enter the case "message" branch (entry.type === "message").
@@ -328,9 +355,23 @@ function entryToUiMessage(
   // normalizeToolCalls is a secondary guard (returns non-assistant messages as-is).
   switch (entry.type) {
     case "message": {
-      const message = options.deferToolResultImages
-        ? omitToolResultBase64Images(normalizeToolCalls(entry.message))
-        : normalizeToolCalls(entry.message);
+      let message = normalizeToolCalls(entry.message);
+      if (options.deferToolResultImages) {
+        // 工具结果图：保持旧的「丢弃 + 文字占位」。
+        if (message.role === "toolResult") {
+          message = omitToolResultBase64Images(message);
+        } else if (options.deferAllImages) {
+          // 用户/助手侧图片：换按需引用桩（`deferAllImages`，路由把 deferMedia=1 映射过来）。
+          // 历史回放不该内联几 MB base64；滚到/展开才按需拉。
+          message = replaceBase64ImagesWithRefs(message, entry.id);
+        }
+      }
+      // 本轮「完成」时刻 = 条目落盘时刻。assistant 自带的 timestamp 是生成起点，
+      // 拿它当完成时间会把每轮耗时算成 0s（对话区时间节点 / 耗时展示用）。
+      const endTimestamp = parseEntryTimestamp(entry.timestamp);
+      if (endTimestamp !== undefined && message.endTimestamp === undefined) {
+        message = { ...message, endTimestamp } as AgentMessage;
+      }
       if (!options.deferThinking || message.role !== "assistant") return message;
       return {
         ...message,

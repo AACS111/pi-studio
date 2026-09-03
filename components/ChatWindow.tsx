@@ -291,6 +291,9 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   // top, load another page while keeping the scroll position stable.
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [msgFollowing, setMsgFollowing] = useState(true);
+  // percho 消息流默认只渲染最近 N 行（历史窗口化）；跳转/搜索前先展开全部，否则目标行未挂载。
+  const [perchoRevealAllNonce, setPerchoRevealAllNonce] = useState(0);
+  const revealAllPerchoRows = useCallback(() => setPerchoRevealAllNonce((n) => n + 1), []);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
   const handledJumpNonceRef = useRef<number | null>(null);
@@ -345,6 +348,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     };
     if (doScroll()) return;
     setVisibleCount((cur) => Math.max(cur, messages.length * 2));
+    // percho 流同样需要取消行窗口，否则早先的消息根本没挂载，querySelector 永远找不到
+    setPerchoRevealAllNonce((n) => n + 1);
     // Cross-session jumps arrive before the new session's messages load; the
     // effect re-runs when `messages` changes, and this loop also polls frames.
     let tries = 0;
@@ -717,6 +722,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 onOpenWebUrl={onOpenWebUrl}
                 following={msgFollowing}
                 onFollowingChange={setMsgFollowing}
+                revealAllNonce={perchoRevealAllNonce}
               />
             ) : (
               <>

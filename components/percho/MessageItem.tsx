@@ -17,6 +17,7 @@ export const MessageItem = memo(function MessageItem({
 	streaming,
 	metaInGroup,
 	isDark,
+	sessionId,
 	onOpenSubagent,
 	cwd,
 	onOpenFile,
@@ -36,7 +37,7 @@ export const MessageItem = memo(function MessageItem({
 	const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
 	if (message.kind === "user") {
-		return <UserMessage message={message} />;
+		return <UserMessage message={message} sessionId={sessionId} />;
 	}
 	if (message.kind === "image") {
 		const count = message.images.length;
@@ -58,7 +59,13 @@ export const MessageItem = memo(function MessageItem({
 							className="overflow-hidden rounded-xl border border-border"
 							onClick={() => setPreviewIndex(index)}
 						>
-							<img src={imageSrc(image)} alt="image" className={sizeClass} />
+							<img
+								src={imageSrc(image, sessionId)}
+								alt="image"
+								loading="lazy"
+								decoding="async"
+								className={sizeClass}
+							/>
 						</button>
 					))}
 				</div>
@@ -67,6 +74,7 @@ export const MessageItem = memo(function MessageItem({
 						images={message.images}
 						initialIndex={previewIndex}
 						onClose={() => setPreviewIndex(null)}
+						sessionId={sessionId}
 					/>
 				)}
 			</div>
@@ -91,6 +99,7 @@ export const MessageItem = memo(function MessageItem({
 				streaming={streaming}
 				metaInGroup={metaInGroup}
 				isDark={isDark}
+				sessionId={sessionId}
 				cwd={cwd}
 				onOpenFile={onOpenFile}
 				onOpenWebUrl={onOpenWebUrl}

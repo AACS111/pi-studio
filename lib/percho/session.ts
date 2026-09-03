@@ -90,6 +90,8 @@ export interface SessionUserMessage {
 	/** user 消息附带的图片 */
 	images: ImageInput[];
 	timestamp: number;
+	/** 条目落盘时刻（历史回放补齐；用户消息与 timestamp 相同） */
+	endTimestamp?: number;
 	/** 会话树中的 entry id（撤回精确定位用，匹配失败时缺省） */
 	entryId?: string;
 	/** 已展开 skill 的安全展示信息（不含正文或路径） */
@@ -106,8 +108,15 @@ export interface SessionAssistantMessage {
 	tools: SessionToolCall[];
 	images: ImageInput[];
 	timestamp: number;
+	/** 本轮回复「完成」时刻（后端用条目落盘时间补齐；timestamp 是生成起点） */
+	endTimestamp?: number;
 	/** 会话树中的 entry id（fork 精确定位用，匹配失败时缺省） */
 	entryId?: string;
+	/**
+	 * 思考正文被初始历史负载剔掉（deferThinking）时的按需拉取引用。
+	 * 用户首次展开折叠组里的「思考过程」才会去打这一枪。
+	 */
+	thinkingRef?: { entryId: string; blockIndex: number };
 	/** 已持久化的完整正文（展示净化后保留）；只供 fork fallback 匹配，绝不能展示、复制或进入可访问文本 */
 	sourceText?: string;
 	/** 停因原样透传（仅 "error" 被消费，历史回放错误卡数据源；旧会话文件无此字段 → undefined → 不产卡） */
@@ -154,6 +163,11 @@ export interface AvailableModel {
 export interface ImageInput {
 	data: string;
 	mimeType: string;
+	/**
+	 * 历史负载里的按需引用桩（`<entryId>:<contentBlockIndex>`）：data 为空时
+	 * 渲染层用 `GET /api/sessions/[sessionId]/media?ref=<mediaRef>` 拉图。
+	 */
+	mediaRef?: string;
 }
 
 /** 斜杠命令来源 */

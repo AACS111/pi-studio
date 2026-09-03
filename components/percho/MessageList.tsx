@@ -3,21 +3,43 @@
  * components/percho/MessageList.tsx —— 中央消息流：最大宽度 760px 居中 + RO 底部跟随。
  * 来源：percho packages/desktop/src/renderer/src/components/chat/MessageList.tsx
  * 适配：
- * - activeSessionId 由调用方传入（不依赖 percho sessions store）；CenterOrb 中央动画省去（后续接回）。
- * - 滚动容器外置：由 ChatWindow 传入 scrollContainerRef（消息区全宽容器）作为唯一滚动源，
- *   这样原生滚动条出现在消息区最右缘（用户要求）；本组件只负责内容 + 底部跟随/回底按钮。
- *   内容自然溢出根容器（根容器高度=视口高度），由外层滚动容器承接滚动。
+ * - activeSessionId 由调用方传入（不依赖 percho sessions store）。
+ * - 滚动容器外置：由 ChatWindow 传入 scrollContainerRef 作为唯一滚动源，原生滚动条出现在
+ *   消息区最右缘（用户要求）；本组件只负责内容 + 底部跟随/回底按钮。
+ * - 历史窗口化：首屏只渲染最近 N 行（与旧版 ChatWindow 一致），顶部哨兵可见时再往前翻页，
+ *   翻页时按「距底距离」还原滚动位置，避免视口跳动。长会话（数百条）打开不再卡主线程。
+ * - 对话区时间节点：每条用户气泡显示发送时刻，每轮末行显示「完成时刻 · 用时」，
+ *   agent 仍在跑时底部挂一条每秒跳动的「当前时刻 · 进行中」。
  */
-import { buildChatRows, deriveTurnChanges } from "@/lib/percho";
-import { type MouseEvent, useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
+import { buildChatRows, deriveTurnChanges, computeTurnTimings, mapTurnTimingsToRows } from "@/lib/percho";
+import {
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	type MouseEvent,
+	type RefObject,
+} from "react";
 import { selectTranscript, useTranscriptStore } from "@/lib/percho-store";
+import {
+	captureScrollDistance,
+	getNextVisibleCount,
+	getVisibleRenderWindow,
+	restoreScrollTop,
+} from "@/lib/chat-lazy-load";
 import { MessageItem } from "./MessageItem";
 import { MetaGroup } from "./MetaGroup";
 import { RetryNote } from "./RetryNote";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { TurnDiffChip } from "./TurnDiffChip";
+import { LiveTurnLabel, TurnEndLabel } from "./TurnTiming";
+import { useI18n } from "@/hooks/useI18n";
 
 const BOTTOM_THRESHOLD = 48;
+/** 历史窗口：每次翻页渲染的行数（一轮通常 2~4 行，40 行≈十几轮） */
+const ROW_PAGE_SIZE = 40;
 
 /** buildChatRows 的 timestamp：模块加载时固定（purity 规则禁止 render 内调 Date.now） */
 const BUILD_ROWS_NOW = Date.now();
@@ -33,6 +55,7 @@ export function MessageList({
 	following,
 	onFollowingChange,
 	fullWidth = false,
+	revealAllNonce = 0,
 }: {
 	sessionId: string;
 	isDark?: boolean;
@@ -47,13 +70,19 @@ export function MessageList({
 	/** 是否跟随底部（受控来自 ChatWindow，用于右侧常驻按钮） */
 	following: boolean;
 	onFollowingChange?: (value: boolean) => void;
+	/** 变化时展开全部历史行（内容搜索/目录跳转到未渲染的消息前先调用） */
+	revealAllNonce?: number;
 }) {
+	const { t } = useI18n();
 	const transcript = useTranscriptStore((s) => selectTranscript(s, sessionId));
 
 	const contentRef = useRef<HTMLDivElement>(null);
+	const sentinelRef = useRef<HTMLDivElement>(null);
 	const followingRef = useRef(following);
 	const lastScrollTopRef = useRef(0);
 	const lastScrollHeightRef = useRef(0);
+	const [visibleRows, setVisibleRows] = useState(ROW_PAGE_SIZE);
+	const savedScrollDistanceRef = useRef<number | null>(null);
 
 	const updateFollowing = useCallback(
 		(value: boolean) => {
@@ -67,6 +96,17 @@ export function MessageList({
 	useEffect(() => {
 		followingRef.current = following;
 	}, [following]);
+
+	// 切会话回到首屏窗口
+	useEffect(() => {
+		setVisibleRows(ROW_PAGE_SIZE);
+		savedScrollDistanceRef.current = null;
+	}, [sessionId]);
+
+	// 跳转（内容搜索 / 右侧目录）前先展开全部行，否则目标行还没挂载、滚不过去
+	useEffect(() => {
+		if (revealAllNonce > 0) setVisibleRows(Number.MAX_SAFE_INTEGER);
+	}, [revealAllNonce]);
 
 	const pinToBottom = useCallback(
 		(behavior: ScrollBehavior = "auto") => {
@@ -139,15 +179,50 @@ export function MessageList({
 		[transcript, sessionId, turnChanges, enteringTurn],
 	);
 
+	// 对话区时间节点：每轮发送/完成时刻 + 用时（纯函数，仅随 messages/rows 变化重算）
+	const rowLabels = useMemo(() => {
+		const turns = computeTurnTimings(transcript.messages);
+		return mapTurnTimingsToRows(rows, turns, transcript.agentActive);
+	}, [transcript.messages, transcript.agentActive, rows]);
+
+	// --- 历史窗口化：顶部哨兵可见 → 往前翻页，翻页后还原滚动位置 ---
+	useEffect(() => {
+		const sentinel = sentinelRef.current;
+		const container = scrollContainerRef.current;
+		if (!sentinel || !container) return;
+		const observer = new IntersectionObserver(
+			(entries) => {
+				if (!entries[0]?.isIntersecting) return;
+				savedScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
+				setVisibleRows((prev) => getNextVisibleCount(prev, ROW_PAGE_SIZE));
+			},
+			{ root: container, threshold: 0 },
+		);
+		observer.observe(sentinel);
+		return () => observer.disconnect();
+	}, [visibleRows, rows.length, scrollContainerRef]);
+
+	useLayoutEffect(() => {
+		if (savedScrollDistanceRef.current == null) return;
+		const container = scrollContainerRef.current;
+		if (container) container.scrollTop = restoreScrollTop(container.scrollHeight, savedScrollDistanceRef.current);
+		savedScrollDistanceRef.current = null;
+	}, [visibleRows, scrollContainerRef]);
+
+	const { startIndex, hasMore } = getVisibleRenderWindow(rows.length, visibleRows);
+
 	const items: React.ReactNode[] = [];
-	rows.forEach((row) => {
+	for (let rowIdx = startIndex; rowIdx < rows.length; rowIdx++) {
+		const row = rows[rowIdx];
+		const turnEnd = rowLabels.turnEndByRowIndex.get(rowIdx);
 		if (row.kind === "turnDiff") {
 			items.push(
 				<div key={row.key} className={row.running || row.afterMetaGroup ? undefined : "-mt-4"}>
 					<TurnDiffChip changes={row.changes} entering={row.entering} cwd={cwd} onOpenFile={onOpenFile} />
 				</div>,
 			);
-			return;
+			if (turnEnd) items.push(<TurnEndLabel key={`${row.key}-time`} ts={turnEnd.ts} durationMs={turnEnd.durationMs} />);
+			continue;
 		}
 		if (row.kind === "metaGroup") {
 			items.push(
@@ -157,13 +232,15 @@ export function MessageList({
 					working={row.working}
 					endImmediately={row.endImmediately}
 					subagentCount={row.subagentCount}
+					sessionId={sessionId}
 				/>,
 			);
-			return;
+			if (turnEnd) items.push(<TurnEndLabel key={`${row.key}-time`} ts={turnEnd.ts} durationMs={turnEnd.durationMs} />);
+			continue;
 		}
 		if (row.kind === "streamingSubagents") {
 			items.push(<SubagentRunCard key={row.key} runs={row.runs} onOpen={onOpenSubagent} />);
-			return;
+			continue;
 		}
 		items.push(
 			<MessageItem
@@ -180,7 +257,8 @@ export function MessageList({
 				onOpenWebUrl={onOpenWebUrl}
 			/>,
 		);
-	});
+		if (turnEnd) items.push(<TurnEndLabel key={`${row.key}-time`} ts={turnEnd.ts} durationMs={turnEnd.durationMs} />);
+	}
 
 	return (
 		<div className="relative h-full" onClickCapture={handleSummaryToggle}>
@@ -190,7 +268,13 @@ export function MessageList({
 					fullWidth ? "w-full" : "max-w-[760px] px-6"
 				}`}
 			>
+				{hasMore && (
+					<div ref={sentinelRef} className="py-3 text-center text-xs text-text-muted">
+						{t("chat.loadEarlier", { count: startIndex })}
+					</div>
+				)}
 				{items}
+				{rowLabels.openTurn && <LiveTurnLabel startTs={rowLabels.openTurn.startTs} />}
 				{transcript.retrying && <RetryNote info={transcript.retrying} />}
 			</div>
 		</div>

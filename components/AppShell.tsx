@@ -614,20 +614,30 @@ export function AppShell() {
     // one repo keep their open tabs. Restore the target project's last panel
     // (kept in the module-level store, which survives an AppShell remount),
     // falling back to an empty panel only when that project has no snapshot.
+    // 与 handleSelectSession 保持一致：跨项目/清空面板时也必须合并当前仍开着的浏览器
+    // 标签（全局面板）。此前这里直接 setFileTabs(savedPanel.fileTabs)，会把当前 web 标签
+    // 从 React 摘掉 → WebViewer 卸载 → destroyWebView → 原生视图销毁且不重建（表现为
+    // 切会话后浏览器先闪现一下随即空白）。
     const savedPanel = newProject ? panelMemoryByProject.get(newProject) : undefined;
+    const currentWebTabs = fileTabs.filter((t) => t.kind === "web");
+    const restoredTabs = savedPanel ? savedPanel.fileTabs : [];
+    const mergedTabs = [...restoredTabs];
+    for (const wt of currentWebTabs) {
+      if (!mergedTabs.some((t) => t.id === wt.id)) mergedTabs.push(wt);
+    }
     if (savedPanel) {
-      setFileTabs(savedPanel.fileTabs);
+      setFileTabs(mergedTabs);
       setActiveFileTabId(savedPanel.activeFileTabId);
       setRightPanelOpen(savedPanel.rightPanelOpen);
       setRightPanelMode(savedPanel.rightPanelMode);
       setTerminalOpen(savedPanel.terminalOpen);
     } else {
-      setFileTabs([]);
-      setActiveFileTabId(null);
+      setFileTabs(currentWebTabs);
+      setActiveFileTabId(currentWebTabs[0]?.id ?? null);
       setRightPanelOpen(false);
     }
     router.replace("/", { scroll: false });
-  }, [router, selectedSession]);
+  }, [router, selectedSession, fileTabs]);
 
   const handleSelectSession = useCallback((session: SessionInfo, isRestore = false) => {
     // 主动打开某会话 = 用户切到该会话所属项目。提前更新项目根 ref，否则随后的
@@ -648,15 +658,25 @@ export function AppShell() {
     // 恢复目标项目最近一次的面板快照（模块级 store 持久化，跨 AppShell 重挂/页面刷新
     // 都不丢）；仅当该项目从未有过快照、且确实发生了项目切换或首次挂载时才清空关面板。
     const savedPanel = newProject ? panelMemoryByProject.get(newProject) : undefined;
+    // 浏览器标签跨会话保留：切会话不应毁掉用户正在看的网页。若直接 setFileTabs(savedPanel.fileTabs)
+    // 覆盖，会把当前 web 标签从 React 摘掉 → WebViewer 卸载 → destroyWebView → 原生视图销毁且不重建
+    //（表现为切会话后浏览器空白）。因此把当前仍开着的 web 标签合并进恢复后的标签列表。
+    const currentWebTabs = fileTabs.filter((t) => t.kind === "web");
+    const restoredTabs = savedPanel ? savedPanel.fileTabs : [];
+    const mergedTabs = [...restoredTabs];
+    for (const wt of currentWebTabs) {
+      if (!mergedTabs.some((t) => t.id === wt.id)) mergedTabs.push(wt);
+    }
     if (savedPanel) {
-      setFileTabs(savedPanel.fileTabs);
+      setFileTabs(mergedTabs);
       setActiveFileTabId(savedPanel.activeFileTabId);
       setRightPanelOpen(savedPanel.rightPanelOpen);
       setRightPanelMode(savedPanel.rightPanelMode);
       setTerminalOpen(savedPanel.terminalOpen);
     } else if (previousProject !== newProject) {
-      setFileTabs([]);
-      setActiveFileTabId(null);
+      // 新项目无快照：保留浏览器标签（浏览器是全局面板），其余清空。
+      setFileTabs(currentWebTabs);
+      setActiveFileTabId(currentWebTabs[0]?.id ?? null);
       setRightPanelOpen(false);
     }
     setNewSessionCwd(null);
@@ -2201,6 +2221,7 @@ export function AppShell() {
                             tabId={tab.id}
                             initialUrl={tab.url ?? null}
                             active={isActive}
+                            sessionEpoch={sessionKey}
                             onNavigate={(url) => handleWebNavigate(tab.id, url)}
                           />
                         </div>

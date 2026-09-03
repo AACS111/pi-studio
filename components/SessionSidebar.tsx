@@ -584,21 +584,6 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     setCustomPathError(null);
     setDropdownOpen(false);
   }, []);
-  const handleDefaultCwd = useCallback(async () => {
-    try {
-      const res = await fetch("/api/default-cwd", { method: "POST" });
-      const data = await res.json() as { cwd?: string; error?: string };
-      if (data.cwd) {
-        setSelectedCwd(data.cwd);
-        setCustomPathOpen(false);
-        setCustomPathValue("");
-        setCustomPathError(null);
-        setDropdownOpen(false);
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -606,13 +591,19 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
         setProjectFilter("");
-        setCustomPathOpen(false);
-        setCustomPathError(null);
+        // DirectoryPicker portals to document.body, so any click inside it lands
+        // "outside" dropdownRef. While the picker is open let it manage its own
+        // dismissal (backdrop click / Esc / Cancel) — closing it here would kill
+        // it on the very first mousedown, before the user can pick a folder.
+        if (!customPathOpen) {
+          setCustomPathOpen(false);
+          setCustomPathError(null);
+        }
       }
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
-  }, []);
+  }, [customPathOpen]);
 
   // Clicking a session moves the effective cwd to that session's worktree.
   // Done on the click path (not via the selectedCwd prop sync) so it also
@@ -918,14 +909,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           gap: 1,
         }}
       >
-        {/* Add project — opens the source menu */}
+        {/* Add project — directly opens the custom path picker */}
         <div ref={dropdownRef} style={{ position: "relative" }}>
           <button
             type="button"
-            onClick={() => setDropdownOpen((v) => !v)}
+            onClick={() => { setDropdownOpen(false); handleCustomPathClick(); }}
             title={t("sidebar.addProject")}
-            aria-haspopup="menu"
-            aria-expanded={dropdownOpen}
             style={{
               display: "flex", alignItems: "center", gap: 9, width: "100%",
               padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
@@ -941,76 +930,60 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               <line x1="9.5" y1="11.5" x2="14.5" y2="11.5" />
             </svg>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t("sidebar.addProject")}</span>
-            <svg
-              width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-muted)"
-              strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
-              style={{ flexShrink: 0, marginLeft: "auto", transform: dropdownOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
-              aria-hidden="true"
-            >
-              <polyline points="3 2 7 5 3 8" />
-            </svg>
           </button>
 
-          <AnimatedDropdown
-            open={dropdownOpen}
-            style={{
-              position: "absolute",
-              top: "calc(100% + 4px)",
-              left: 0,
-              zIndex: 100,
-              minWidth: 180,
-              background: "var(--bg-panel)",
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              boxShadow: "0 2px 10px rgba(0,0,0,0.08)",
-              padding: 4,
-              display: "flex",
-              flexDirection: "column",
-              gap: 2,
-              overflow: "hidden",
-            }}
-          >
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); handleDefaultCwd(); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%",
-                padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
-                color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left",
-                transition: "background 0.1s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              </svg>
-              <span>{t("sidebar.useDefaultDirectory")}</span>
-            </button>
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); handleCustomPathClick(); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, width: "100%",
-                padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
-                color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left",
-                transition: "background 0.1s",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              <span>{t("sidebar.customPath")}</span>
-            </button>
-            {hiddenProjects.length > 0 && (
-              <>
-                <div style={{ height: 1, background: "var(--border)", margin: "3px 4px", opacity: 0.7 }} />
-                <div style={{ padding: "4px 10px 2px", fontSize: 10.5, color: "var(--text-muted)", letterSpacing: "0.04em" }}>
-                  {t("sidebar.hiddenProjects")}
-                </div>
+          {/* Restore hidden projects (only shown when some exist) */}
+          {hiddenProjects.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setDropdownOpen((v) => !v)}
+                title={t("sidebar.hiddenProjects")}
+                aria-haspopup="menu"
+                aria-expanded={dropdownOpen}
+                style={{
+                  display: "flex", alignItems: "center", gap: 9, width: "100%",
+                  padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
+                  color: "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: 500, textAlign: "left",
+                  transition: "background 0.12s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
+                  <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t("sidebar.hiddenProjects")}</span>
+                <svg
+                  width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-muted)"
+                  strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+                  style={{ flexShrink: 0, marginLeft: "auto", transform: dropdownOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}
+                  aria-hidden="true"
+                >
+                  <polyline points="3 2 7 5 3 8" />
+                </svg>
+              </button>
+
+              <AnimatedDropdown
+                open={dropdownOpen}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  left: 0,
+                  zIndex: 100,
+                  minWidth: 180,
+                  background: "var(--bg-panel)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  boxShadow: "0 2px 10px rgba(0,0,0,0.08)",
+                  padding: 4,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  overflow: "hidden",
+                }}
+              >
                 {hiddenProjects.map((hidden) => (
                   <button
                     key={hidden}
@@ -1038,9 +1011,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     </span>
                   </button>
                 ))}
-              </>
-            )}
-          </AnimatedDropdown>
+              </AnimatedDropdown>
+            </>
+          )}
         </div>
 
         {/* New session */}

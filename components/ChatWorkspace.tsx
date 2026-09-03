@@ -651,6 +651,25 @@ export function ChatWorkspace(props: Props) {
 
   /* ---------- render ---------- */
 
+  /**
+   * 新会话「转正」（草稿 → session:<id>）时复用草稿窗格的组件键。
+   *
+   * 默认键里带 sessionId，转正那一刻键会从 `new:<cwd>:<sk>` 变成 `focus:<sid>:<sk>`：
+   * React 重挂载 ChatWindow → ① 正在流式的 SSE 会断掉重连（重连前的空档里，本轮的
+   * agent_start / 用户消息事件直接丢失），② 又挂一层「正在加载会话…」骨架屏，③ 重
+   * 挂载后读会话文件补数据，而 pi 延迟写盘、此时文件里往往一条消息都没有。三者叠加
+   * 的结果就是「新会话发出第一条消息后对话区空白，要等本轮跑完/刷新才看到」。
+   * 记下草稿窗格当时的键并让该会话首次渲染时复用它，就能原地续用同一个实例。键仍然
+   * 唯一（每个草稿都伴随 sessionKey 递增），不影响其他会话的切换重挂载。
+   */
+  const promotedPaneKeys = useRef(new Map<string, string>());
+  /** 草稿窗格最后一次渲染时实际用的组件键（转正时 newSessionCwd 已被置空，不能当场重算）。 */
+  const draftKeyRef = useRef<string | null>(null);
+  const handleSessionCreated = useCallback((created: SessionInfo) => {
+    if (draftKeyRef.current) promotedPaneKeys.current.set(created.id, draftKeyRef.current);
+    onSessionCreated?.(created);
+  }, [onSessionCreated]);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   useEffect(() => {
@@ -687,7 +706,7 @@ export function ChatWorkspace(props: Props) {
           session={s}
           newSessionCwd={opts.isNew ? newSessionCwd : null}
           onAgentEnd={onAgentEnd}
-          onSessionCreated={onSessionCreated}
+          onSessionCreated={handleSessionCreated}
           onSessionForked={onSessionForked}
           modelsRefreshKey={modelsRefreshKey}
           chatInputRef={focusedHere ? chatInputRef : undefined}
@@ -709,15 +728,23 @@ export function ChatWorkspace(props: Props) {
 
     const tabKey = leaf.pane.tabs[leaf.pane.active] ?? null;
     if (tabKey === null) return <PaneEmpty key={leaf.id} />;
+    const draftPaneKey = `new:${newSessionCwd ?? ""}:${sessionKey ?? 0}`;
+    // 转正瞬间：布局标签还停在草稿键 "new"，但 session 已经是刚创建的会话（AppShell 已
+    // 把 newSessionCwd 置空）。沿用草稿窗格之前那个键继续渲染真实会话，不空一帧也不重挂载。
+    if (tabKey === "new" && session && draftKeyRef.current
+      && promotedPaneKeys.current.get(session.id) === draftKeyRef.current) {
+      return renderChat(session, { key: draftKeyRef.current, isNew: false });
+    }
     const isNew = tabKey === "new" || (tabKey === "primary" && !session);
     const s = resolveSession(tabKey);
     if (isNew && !s) {
       if (tabKey === primaryTabKey) return <PaneEmpty key={leaf.id} />;
-      return renderChat(null, { key: `new:${newSessionCwd ?? ""}:${sessionKey ?? 0}`, isNew: true });
+      draftKeyRef.current = draftPaneKey;
+      return renderChat(null, { key: draftPaneKey, isNew: true });
     }
     if (!s) return <PaneEmpty key={leaf.id} />;
     const focusedHere = tabKey === focusedTabKey;
-    return renderChat(s, { key: focusedHere ? `focus:${s.id}:${sessionKey ?? 0}` : `tab:${s.id}`, isNew: false });
+    return renderChat(s, { key: focusedHere ? (promotedPaneKeys.current.get(s.id) ?? `focus:${s.id}:${sessionKey ?? 0}`) : `tab:${s.id}`, isNew: false });
   };
 
   const leafNodes = useMemo(

@@ -37,12 +37,12 @@ function extractText(content: string | (TextContent | ImageContent)[]): string {
  * - Anthropic 块：{ type:"image", source:{ data, media_type } }（lib/types 声明的 shape）
  * - 扁平块：{ type:"image", data, mimeType }（SDK 实际写入历史会话的格式，live reducer 亦用此）
  */
-function extractImages(content: string | (TextContent | ImageContent)[]): { data: string; mimeType: string }[] {
+function extractImages(content: string | (TextContent | ImageContent)[]): { data: string; mimeType: string; mediaRef?: string }[] {
 	if (typeof content === "string") return [];
 	return content
 		.filter((block) => block.type === "image")
 		.map((block) => {
-			const img = block as ImageContent & { data?: unknown; mimeType?: unknown };
+			const img = block as ImageContent & { data?: unknown; mimeType?: unknown; mediaRef?: unknown };
 			const source = img.source as { data?: unknown; media_type?: unknown } | undefined;
 			const data =
 				(typeof source?.data === "string" && source.data) ||
@@ -51,9 +51,10 @@ function extractImages(content: string | (TextContent | ImageContent)[]): { data
 				(typeof source?.media_type === "string" && source.media_type) ||
 				(typeof img.mimeType === "string" ? img.mimeType : "") ||
 				"image/png";
-			return { data, mimeType };
+			const mediaRef = typeof img.mediaRef === "string" ? img.mediaRef : undefined;
+			return { data, mimeType, ...(mediaRef ? { mediaRef } : {}) };
 		})
-		.filter((img) => img.data.length > 0);
+		.filter((img) => img.data.length > 0 || Boolean(img.mediaRef));
 }
 
 /** 从 ToolResultMessage 提取 output 文本（content 的 text block 拼接） */
@@ -107,6 +108,18 @@ function extractThinking(blocks: AssistantContentBlock[]): string {
 }
 
 /**
+ * 首个「思考正文被后端剔掉」的 block 下标（`deferThinking=1` 时后端留
+ * `{ thinking: "", deferred: true }`）；没有则 -1。
+ */
+function findDeferredThinkingBlock(blocks: AssistantContentBlock[]): number {
+	for (let i = 0; i < blocks.length; i++) {
+		const block = blocks[i];
+		if (block.type === "thinking" && (block as { deferred?: boolean }).deferred) return i;
+	}
+	return -1;
+}
+
+/**
  * pi-web AgentMessage[] → percho SessionMessage[]。
  * @param messages pi-web 会话消息（历史或 live 已归并）
  * @param entryIds 可选；用于给 user/assistant 消息标注 entryId（fork/撤回精确定位）
@@ -127,6 +140,11 @@ export function agentMessagesToPerchoSession(
 		if (!msg) continue;
 		try {
 			const timestamp = typeof msg.timestamp === "number" ? msg.timestamp : Date.now();
+			// 完成时刻：后端用条目落盘时间补 endTimestamp；缺失（旧会话/实时流）时回退到 timestamp。
+			const endTimestamp =
+				typeof (msg as { endTimestamp?: number }).endTimestamp === "number"
+					? (msg as { endTimestamp?: number }).endTimestamp
+					: undefined;
 			const entryId = entryIds?.[i];
 			switch (msg.role) {
 			case "user": {
@@ -142,6 +160,7 @@ export function agentMessagesToPerchoSession(
 					tools: [],
 					images,
 					timestamp,
+					...(endTimestamp !== undefined ? { endTimestamp } : {}),
 					...(entryId ? { entryId } : {}),
 				});
 				break;
@@ -155,6 +174,8 @@ export function agentMessagesToPerchoSession(
 				const images: { data: string; mimeType: string }[] = [];
 				const thinking = extractThinking(asst.content);
 				const tools = buildToolCalls(asst.content, toolResults);
+				// deferThinking 剔掉的思考正文：记下按需拉取引用，首次展开「思考过程」才去补
+				const deferredBlock = entryId ? findDeferredThinkingBlock(asst.content) : -1;
 				out.push({
 					role: "assistant",
 					text,
@@ -162,7 +183,9 @@ export function agentMessagesToPerchoSession(
 					tools,
 					images,
 					timestamp,
+					...(endTimestamp !== undefined ? { endTimestamp } : {}),
 					...(entryId ? { entryId } : {}),
+					...(entryId && deferredBlock >= 0 ? { thinkingRef: { entryId, blockIndex: deferredBlock } } : {}),
 					...(asst.stopReason ? { stopReason: asst.stopReason } : {}),
 					...(asst.errorMessage ? { errorMessage: asst.errorMessage } : {}),
 				});

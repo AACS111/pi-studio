@@ -178,8 +178,6 @@ export const enLocale: LocalePlugin = {
     "sidebar.selectProject": "Select project…",
     "sidebar.filterProjects": "Filter projects…",
     "sidebar.noMatchingProjects": "No matching projects",
-    "sidebar.useDefaultDirectory": "Use default directory",
-    "sidebar.customPath": "Custom path…",
     "directoryPicker.selectDirectory": "Select directory",
     "directoryPicker.goToParent": "Go to parent directory",
     "directoryPicker.directoryPath": "Directory path",
@@ -946,6 +944,9 @@ export const enLocale: LocalePlugin = {
     "message.thinking": "Thinking…",
     "message.working": "Working",
     "message.worked": "Worked",
+    // 对话区时间节点（每轮发送 / 完成 / 耗时）
+    "message.took": "took {duration}",
+    "message.running": "running {elapsed}",
     "message.summaryRead": "Read {n} {unit}",
     "message.summaryEdit": "Edited {n} {unit}",
     "message.summaryExplore": "Explored {n} {unit}",

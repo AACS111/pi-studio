@@ -178,8 +178,6 @@ export const zhCNLocale: LocalePlugin = {
     "sidebar.selectProject": "选择项目…",
     "sidebar.filterProjects": "筛选项目…",
     "sidebar.noMatchingProjects": "没有匹配的项目",
-    "sidebar.useDefaultDirectory": "使用默认目录",
-    "sidebar.customPath": "自定义路径…",
     "directoryPicker.selectDirectory": "选择目录",
     "directoryPicker.goToParent": "转到上级目录",
     "directoryPicker.directoryPath": "目录路径",
@@ -944,8 +942,11 @@ export const zhCNLocale: LocalePlugin = {
     "composer.previewImage": "图片",
     // percho chat 呈现层（折叠组/压缩/子代理/错误重试）
     "message.thinking": "思考过程",
-    "message.working": "Working",
-    "message.worked": "Worked",
+    "message.working": "正在处理",
+    "message.worked": "已处理",
+    // 对话区时间节点（每轮发送 / 完成 / 耗时）
+    "message.took": "用时 {duration}",
+    "message.running": "进行中 {elapsed}",
     "message.summaryRead": "读取 {n} 个文件",
     "message.summaryEdit": "编辑 {n} 个文件",
     "message.summaryExplore": "探索 {n} 次",

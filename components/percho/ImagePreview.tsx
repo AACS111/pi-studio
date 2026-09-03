@@ -8,7 +8,14 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
 
-export function imageSrc(image: ImageInput): string {
+/**
+ * 图片 src：历史负载里图片不内联 base64（只剩 mediaRef 桩），此时拼成按需拉取接口；
+ * 没有 mediaRef（live 流式 / 旧负载）时用内联 data URL。
+ */
+export function imageSrc(image: ImageInput, sessionId?: string | null): string {
+	if (!image.data && image.mediaRef && sessionId) {
+		return `/api/sessions/${encodeURIComponent(sessionId)}/media?ref=${encodeURIComponent(image.mediaRef)}`;
+	}
 	return `data:${image.mimeType};base64,${image.data}`;
 }
 
@@ -17,11 +24,13 @@ export function ImagePreviewOverlay({
 	images,
 	initialIndex = 0,
 	onClose,
+	sessionId,
 }: {
 	image?: ImageInput;
 	images?: ImageInput[];
 	initialIndex?: number;
 	onClose: () => void;
+	sessionId?: string | null;
 }) {
 	const { t } = useI18n();
 	const list = images ?? (image ? [image] : []);
@@ -58,7 +67,7 @@ export function ImagePreviewOverlay({
 			onClick={onClose}
 		>
 			<img
-				src={imageSrc(current)}
+				src={imageSrc(current, sessionId)}
 				alt={t("message.image")}
 				className="max-h-full max-w-full rounded-lg object-contain"
 			/>

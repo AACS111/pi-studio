@@ -13,6 +13,7 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
 import { bridgePerchoEvent } from "@/lib/percho-bridge";
+import { fetchJsonShared } from "@/lib/fetch-shared";
 import { agentMessagesToPerchoUiMessages } from "@/lib/percho/adapter";
 import { useTranscriptStore } from "@/lib/percho-store";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -202,6 +203,25 @@ function createNoticeId(): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 本标签页的实时 transcript 是否比会话文件快照更靠前。
+ *
+ * pi 延迟写盘：一条 prompt 要等 agent 真正开始处理才落盘，新会话的第一条用户消息
+ * 尤其如此（ensure_session 只写了文件头，消息数还是 0）。如果这一轮还在跑（percho
+ * transcript 处于 agentActive/streaming），就从文件读回来的历史一定少了刚发出去的那
+ * 条用户消息——用它覆盖实时视图就会把用户的气泡连同流式内容一起抹掉，只能等本轮
+ * 落盘后的下一次 loadSession（或手动刷新）才重新出现。返回 true 时调用方只采纳快
+ * 照的元数据，不覆盖消息列表。
+ */
+function isTranscriptAheadOfDisk(sid: string, diskMessages: AgentMessage[]): boolean {
+  const entry = useTranscriptStore.getState().bySession[sid];
+  if (!entry) return false;
+  const busy = entry.agentActive || entry.streaming !== null || entry.phase === "streaming";
+  if (!busy) return false;
+  const liveCount = entry.messages.filter((m) => m.kind !== "system").length;
+  return liveCount > 0 && diskMessages.length <= liveCount;
 }
 
 function markOldestNoticeExiting(notices: NoticeItem[]): NoticeItem[] {
@@ -479,8 +499,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
-      if (res.status === 404) {
+      const { status, data: loaded } = await fetchJsonShared<SessionData>(
+        `/api/sessions/${encodeURIComponent(sid)}?${params}`,
+      );
+      if (status === 404) {
         if (showLoading) {
           setData(null);
           setActiveLeafId(null);
@@ -489,19 +511,26 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         }
         return null;
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json() as SessionData;
+      if (!loaded) throw new Error(`HTTP ${status}`);
+      const d = loaded;
       if (sessionIdRef.current !== sid) return null;
+      // pi 是延迟写盘的：本轮还在跑（尤其新会话刚发出第一条 prompt 时，磁盘上往往
+      // 还一条消息都没有），文件快照必然落后于本标签页已经渲染出来的实时内容。
+      // 这时照单全收会把用户刚发的那条气泡抹掉 —— 表现为「新会话发消息后对话区空白，
+      // 等一会/刷新才出来」。判定快照落后就只更新元数据，不覆盖消息与 percho transcript。
+      const staleSnapshot = isTranscriptAheadOfDisk(sid, d.context.messages);
       setData(d);
-      setActiveLeafId(d.leafId);
-      setMessages(d.context.messages);
-      setEntryIds(d.context.entryIds ?? []);
-      // percho 呈现层历史回放：把 pi-web 历史消息转成 percho UIMessage[] 喂给 transcript store，
-      // 使打开历史会话时 MessageList/TodoPanel 能显示完整历史（live 时后续由 bridgePerchoEvent 增量）。
-      try {
-        useTranscriptStore.getState().loadHistory(sid, agentMessagesToPerchoUiMessages(d.context.messages, d.context.entryIds ?? []));
-      } catch (e) {
-        console.error("percho history load failed:", e);
+      if (!staleSnapshot) {
+        setActiveLeafId(d.leafId);
+        setMessages(d.context.messages);
+        setEntryIds(d.context.entryIds ?? []);
+        // percho 呈现层历史回放：把 pi-web 历史消息转成 percho UIMessage[] 喂给 transcript store，
+        // 使打开历史会话时 MessageList/TodoPanel 能显示完整历史（live 时后续由 bridgePerchoEvent 增量）。
+        try {
+          useTranscriptStore.getState().loadHistory(sid, agentMessagesToPerchoUiMessages(d.context.messages, d.context.entryIds ?? []));
+        } catch (e) {
+          console.error("percho history load failed:", e);
+        }
       }
       setCurrentModelOverride(null);
       setError(null);
@@ -548,11 +577,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (leafId) params.set("leafId", leafId);
       const url = `/api/sessions/${encodeURIComponent(sid)}/context?${params}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = await res.json() as { context: { messages: AgentMessage[]; entryIds: string[] } };
-      setMessages(d.context.messages);
-      setEntryIds(d.context.entryIds ?? []);
+      const { status, data: payload } = await fetchJsonShared<{ context: { messages: AgentMessage[]; entryIds: string[] } }>(url);
+      if (!payload) throw new Error(`HTTP ${status}`);
+      setMessages(payload.context.messages);
+      setEntryIds(payload.context.entryIds ?? []);
     } catch (e) {
       console.error("Failed to load context:", e);
     }
@@ -1845,7 +1873,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     let cancelled = false;
     if (session) {
       sessionIdRef.current = session.id;
-      loadSession(session.id, true, true).then((agentState) => {
+      // 新会话发第一条消息后会被「转正」，标签键变化导致本组件重挂载：此时对话已经在
+      // 实时流式，再挂一层「正在加载会话…」骨架屏只会让画面先空白几秒。transcript 里
+      // 已有内容就直接静默加载（后台对齐消息与服务端状态），没有才显示骨架屏。
+      const liveEntry = useTranscriptStore.getState().bySession[session.id];
+      const hasLiveView = Boolean(liveEntry && (liveEntry.agentActive || liveEntry.messages.length > 0));
+      loadSession(session.id, !hasLiveView, true).then((agentState) => {
         if (cancelled) return;
         if (agentState?.running) {
           loadTools(session.id);

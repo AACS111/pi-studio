@@ -35,6 +35,8 @@ export type UIMessage =
 			text: string;
 			images: ImageInput[];
 			timestamp: number;
+			/** 条目落盘时刻（历史回放补齐；live 与 timestamp 相同） */
+			endTimestamp?: number;
 			/** 会话树 entry id（仅历史回放消息有；撤回精确定位，缺省时按文本+时间戳兑底） */
 			entryId?: string;
 			/** 已展开 skill 的安全展示信息（不含正文或路径） */
@@ -49,6 +51,10 @@ export type UIMessage =
 			thinking: string;
 			tools: UIToolCall[];
 			timestamp: number;
+			/** 本轮回复完成时刻（历史回放用条目落盘时间；timestamp 是生成起点） */
+			endTimestamp?: number;
+			/** 思考正文按需拉取引用（deferThinking 剔掉正文时才有） */
+			thinkingRef?: { entryId: string; blockIndex: number };
 			/** 会话树 entry id（仅历史回放消息有；fork 精确定位，缺省时 fork 按正文文本兜底） */
 			entryId?: string;
 			/** 完整持久化正文（展示净化后保留），仅供 fork fallback 匹配；绝不能渲染、复制或进入可访问文本 */

@@ -32,6 +32,8 @@ export const displayName = (name: string) => name.charAt(0).toUpperCase() + name
 export function ToolCallCard({ tool }: { tool: UIToolCall }) {
 	const summary = summarizeArgs(tool.args);
 	const [overflowing, setOverflowing] = useState(false);
+	// 工具参数/输出收起态不建 DOM（单条输出动辄几十 KB）；首次展开后保持挂载
+	const [openedOnce, setOpenedOnce] = useState(false);
 	const textRef = useRef<HTMLSpanElement>(null);
 	const rowRef = useRef<HTMLElement>(null);
 
@@ -58,7 +60,12 @@ export function ToolCallCard({ tool }: { tool: UIToolCall }) {
 		"relative overflow-hidden whitespace-nowrap font-mono text-[12px] text-ink-faint transition-colors group-hover/row:text-ink";
 
 	return (
-		<details className="group/dets drawer-details">
+		<details
+			className="group/dets drawer-details"
+			onToggle={(e) => {
+				if (e.currentTarget.open) setOpenedOnce(true);
+			}}
+		>
 			<summary
 				ref={rowRef}
 				className="group/row flex cursor-pointer items-center gap-2 py-0.5 select-none [&::-webkit-details-marker]:hidden"
@@ -83,12 +90,12 @@ export function ToolCallCard({ tool }: { tool: UIToolCall }) {
 				<ExpandArrowIcon className="shrink-0 text-ink-faint opacity-0 transition-[opacity,transform,color] group-hover/row:opacity-100 group-hover/row:text-ink-2 group-open/dets:rotate-90" />
 			</summary>
 			<div className="flex flex-col gap-1.5 py-1 pl-4">
-				{tool.args && (
+				{openedOnce && tool.args && (
 					<pre className="max-h-56 overflow-y-auto font-mono text-[12px] leading-relaxed break-all whitespace-pre-wrap text-ink-dim select-text">
 						{tool.args}
 					</pre>
 				)}
-				{tool.output && (
+				{openedOnce && tool.output && (
 					<pre className="max-h-56 overflow-y-auto font-mono text-[12px] leading-relaxed break-all whitespace-pre-wrap text-ink-2 select-text">
 						{tool.output}
 					</pre>

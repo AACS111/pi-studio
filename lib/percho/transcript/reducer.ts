@@ -64,6 +64,8 @@ function finalizeStreaming(state: SessionTranscriptState): SessionTranscriptStat
 			thinking: streaming.thinking,
 			tools: preTools,
 			timestamp: Date.now(),
+			// live 固化即完成：endTimestamp 与落盘时刻一致（历史回放里后端用条目写入时间补）
+			endTimestamp: Date.now(),
 		});
 	}
 	if (postTools.length > 0) {
@@ -74,6 +76,7 @@ function finalizeStreaming(state: SessionTranscriptState): SessionTranscriptStat
 			thinking: "",
 			tools: postTools,
 			timestamp: Date.now(),
+			endTimestamp: Date.now(),
 		});
 	}
 	return {
@@ -189,6 +192,7 @@ export function reduceEvent(state: SessionTranscriptState, event: SessionEvent):
 						text: invocation ? (invocation.args ?? "") : text,
 						images,
 						timestamp: event.message.timestamp ?? Date.now(),
+						endTimestamp: event.message.timestamp ?? Date.now(),
 						...(invocation
 							? {
 									skill: { name: invocation.name, args: invocation.args },

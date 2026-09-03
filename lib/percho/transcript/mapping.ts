@@ -51,6 +51,7 @@ export function messagesToUIMessages(messages: SessionMessage[]): UIMessage[] {
 					text,
 					images: m.images,
 					timestamp: m.timestamp,
+					...(m.endTimestamp !== undefined ? { endTimestamp: m.endTimestamp } : {}),
 					entryId: m.entryId,
 					skill: m.skill,
 					...(sourceText !== undefined ? { sourceText } : {}),
@@ -76,6 +77,8 @@ export function messagesToUIMessages(messages: SessionMessage[]): UIMessage[] {
 			thinking: m.thinking,
 			tools,
 			timestamp: m.timestamp,
+			...(m.endTimestamp !== undefined ? { endTimestamp: m.endTimestamp } : {}),
+			...(m.thinkingRef !== undefined ? { thinkingRef: m.thinkingRef } : {}),
 			entryId: m.entryId,
 			...(sourceText !== undefined ? { sourceText } : {}),
 		};

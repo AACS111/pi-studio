@@ -22,6 +22,8 @@ export async function GET(
     const context = buildSessionContext(sm.getEntries() as never, leafId, {
       deferThinking,
       deferToolResultImages,
+      // deferMedia 同时把用户/助手侧图片改为按需引用（历史回放不该内联几 MB base64）
+      deferAllImages: deferToolResultImages,
     });
 
     return NextResponse.json({ context });

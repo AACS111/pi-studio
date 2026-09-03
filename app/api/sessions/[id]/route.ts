@@ -132,7 +132,12 @@ export async function GET(
     const searchParams = new URL(req.url).searchParams;
     const deferThinking = searchParams.has("deferThinking");
     const deferToolResultImages = searchParams.has("deferMedia");
-    const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
+    const context = buildSessionContext(entries, leafId, {
+      deferThinking,
+      deferToolResultImages,
+      // deferMedia 同时把用户/助手侧图片改为按需引用（历史回放不该内联几 MB base64）
+      deferAllImages: deferToolResultImages,
+    });
 
     const header = sm.getHeader();
     let modified = header?.timestamp ?? new Date().toISOString();

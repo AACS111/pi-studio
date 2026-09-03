@@ -35,6 +35,12 @@ interface Props {
   onNavigate?: (url: string | null) => void;
   /** Focus the address bar when the tab becomes active and is still empty. */
   active?: boolean;
+  /**
+   * 会话切换信号：AppShell 每次切会话都会递增。原生 WebContentsView 可能在切会话时
+   * 被销毁（即使面板保持打开、active 未翻转），此时仅靠 active/可见性过渡无法触发自愈；
+   * 本信号变化会强制触发一次自愈（create 幂等 + 空白时按 lastUrl 重导航）。
+   */
+  sessionEpoch?: number;
 }
 
 function hostLabel(url: string | null): string {
@@ -79,7 +85,7 @@ function visibleFrameSize(el: HTMLElement): { w: number; h: number; visible: boo
  * 语义控制接口（/snapshot /execute 等）也只有该模式可用。npm run dev 纯浏览器模式下
  * 无原生视图、无控制桥——面板只显示「仅 Electron 支持」提示，不渲染 iframe/镜像。
  */
-export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
+export function WebViewer({ tabId, initialUrl, active, onNavigate, sessionEpoch }: Props) {
   const { t } = useI18n();
   const nativeApi = typeof window !== "undefined" ? window.piElectron?.webview : undefined;
   const nativeMode = Boolean(nativeApi);
@@ -93,6 +99,18 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
   const [consoleTitle, setConsoleTitle] = useState<string | null>(null);
   const [consoleOnline, setConsoleOnline] = useState(false);
   const frameAreaRef = useRef<HTMLDivElement | null>(null);
+
+  // 记录该标签“当前应停留”的 URL（导航成功 / 地址栏跳转 / initialUrl 都会更新）。
+  // 用于自愈：原生 WebContentsView 可能在标签仍挂载（保活）时被外部销毁（如切会话时
+  // 面板重建把视图关掉），React 地址栏还显示旧 URL，但内容已空白。此时重建视图并导航。
+  const lastUrlRef = useRef<string | null>(null);
+  // 可见性自愈：面板从收起→可见（切会话 / 开合右侧面板）时，原生 WebContentsView
+  // 可能已在不可见期间被外部销毁（bridge browser not started），而 React 仍认为标签
+  // 挂载（地址栏还显示旧 URL、状态“实时”）。visibleTick 每次面板转可见都递增，
+  // 触发一次自愈重导航——覆盖“active 未翻转但视图已被销毁”的切会话场景。
+  const [visibilityTick, setVisibilityTick] = useState(0);
+  const healRunningRef = useRef(false);
+  const setLastUrl = (u: string | null) => { if (u) lastUrlRef.current = u; };
 
   // ---- 同步原生 WebContentsView 的可见性 / 位置 / 尺寸（ResizeObserver） ----
   // 原生视图是 DOM 外的覆盖层，不随面板 CSS 自动收窄/变宽，必须按镜像区域的
@@ -108,26 +126,88 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
     }
     const el = frameAreaRef.current;
     if (!el) return;
+    let lastSent = { x: -1, y: -1, width: -1, height: -1, visible: false };
     const sync = () => {
       const vs = visibleFrameSize(el);
       if (!vs.visible) {
-        nativeApi.setVisible(tabId, false);
+        if (lastSent.visible) nativeApi.setVisible(tabId, false);
+        lastSent = { ...lastSent, visible: false };
         return;
       }
-      nativeApi.setVisible(tabId, true);
-      nativeApi.setBounds(tabId, {
+      const b = {
         x: Math.round(el.getBoundingClientRect().left),
         y: Math.round(el.getBoundingClientRect().top),
         width: vs.w,
         height: vs.h,
-      });
+      };
+      // 面板从收起→可见（或标签重新激活）：即使 active 未翻转，原生视图也可能在
+      // 不可见期间被销毁（如切会话）。递增 visibleTick 触发一次自愈（重新导航）。
+      if (!lastSent.visible) {
+        setVisibilityTick((t) => t + 1);
+      }
+      // 去重：面板开合动画期间 ResizeObserver 会高频触发，仅当 bounds 真变化
+      // 或从不可见变为可见时才发 IPC，避免每帧 setBounds 刷屏（也会强制重绘）。
+      if (
+        !lastSent.visible ||
+        b.x !== lastSent.x || b.y !== lastSent.y ||
+        b.width !== lastSent.width || b.height !== lastSent.height
+      ) {
+        nativeApi.setVisible(tabId, true);
+        nativeApi.setBounds(tabId, b);
+        lastSent = { ...b, visible: true };
+      } else {
+        nativeApi.setVisible(tabId, true);
+      }
     };
     sync();
     const observeTarget = el.closest(".right-panel-container") || el;
+    // ResizeObserver 只在尺寸变化时触发；面板开合（right-panel-closed ↔ 去掉）
+    // 可能只改 class 不改尺寸，导致收起后恢复时视图停在不可见状态。另加一个
+    // MutationObserver 监听容器 class，确保开合都会重新 sync。
     const ro = new ResizeObserver(sync);
     ro.observe(observeTarget);
-    return () => ro.disconnect();
-  }, [active, nativeApi, nativeReady, tabId]);
+    let mo: MutationObserver | null = null;
+    try {
+      mo = new MutationObserver(sync);
+      mo.observe(observeTarget, { attributes: true, attributeFilter: ["class"] });
+    } catch { /* MutationObserver 不可用时退化为仅 ResizeObserver */ }
+    return () => {
+      ro.disconnect();
+      mo?.disconnect();
+    };
+    // sessionEpoch 变化时重跑一次 sync：切会话后自愈重建的视图是全新实例，需要重新下发
+    // bounds，否则会停在默认尺寸（0×0 / 未定位）而不可见。visibilityTick 不入 deps——sync
+    // 自身会递增它，若入 deps 会形成“bump→effect 重跑→sync 再 bump”死循环；面板开合由
+    // 下方的 ResizeObserver/MutationObserver 触发 sync，无需依赖它。
+  }, [active, nativeApi, nativeReady, tabId, sessionEpoch]);
+
+  // ---- 自愈：原生 WebContentsView 被销毁但标签仍挂载时，重建并导航 ----
+  // “僵尸标签”现象：React 地址栏还显示 URL、状态“实时”，但原生视图已不存在（bridge
+  // browser not started、CDP 只剩主窗口 target）。触发点不仅是 active 翻转，还包括面板
+  // 从收起→可见（切会话/开合右侧面板）——此时 active 可能未翻转但视图已被销毁。
+  // create 幂等（已存在则复用），getInfo 若为空白则用 lastUrlRef 重导航。
+  const runHeal = useCallback(async () => {
+    if (!nativeApi) return;
+    if (healRunningRef.current) return; // 避免并发重导航
+    const url = lastUrlRef.current ?? initialUrl ?? null;
+    if (!url) return; // 全新空标签：等用户输入，不导航
+    healRunningRef.current = true;
+    try {
+      await nativeApi.create(tabId); // 幂等：视图缺失则新建
+      const info = await nativeApi.getInfo(tabId);
+      const cur = info?.url ?? "";
+      const blank = !cur || cur === "about:blank" || cur.startsWith("chrome://") || cur.startsWith("edge://");
+      if (blank && url) {
+        await nativeApi.navigate(tabId, url);
+      }
+    } catch { /* 面板尚未就绪，等下次自愈触发 */ }
+    finally { healRunningRef.current = false; }
+  }, [nativeApi, tabId, initialUrl]);
+
+  useEffect(() => {
+    if (!active || !nativeApi) return;
+    void runHeal();
+  }, [active, visibilityTick, sessionEpoch, nativeApi, runHeal]);
 
   // ---- Electron 原生模式：WebContentsView 生命周期 + 状态同步 ----
   useEffect(() => {
@@ -140,10 +220,10 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
     void nativeApi.create(tabId).then(() => {
       if (disposed) return;
       setNativeReady(true);
-    }).catch(() => {
+    }).catch((err) => {
       if (disposed) return;
       setNativeReady(false);
-      setError(t("browser.consoleNotRunning"));
+      setError(`${t("browser.consoleNotRunning")} [${String(err?.message ?? err).slice(0, 160)}]`);
     });
     return () => {
       disposed = true;
@@ -164,6 +244,7 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
       setConsoleOnline(true);
       setConsoleUrl(info.url);
       setConsoleTitle(info.title);
+      setLastUrl(info.url);
       if (info.url && info.url !== inputValue && document.activeElement !== inputRef.current) {
         setInputValue(info.url);
       }
@@ -197,6 +278,7 @@ export function WebViewer({ tabId, initialUrl, active, onNavigate }: Props) {
         setConsoleOnline(true);
         setConsoleUrl(info.url ?? url);
         setConsoleTitle(info.title ?? null);
+        setLastUrl(info.url ?? url);
         onNavigate?.(url);
         return true;
       }

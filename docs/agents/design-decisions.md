@@ -102,6 +102,9 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 - 打包后数据目录移到 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写）。
 - **dev 模式必须用独立 userData**：两者都 `app.setName("Pi Studio")`，userData 按 app 名惰性解析；若不重定向，dev 版会落到与 exe 版相同的 `%APPDATA%/Pi Studio`，导致单实例锁冲突（exe 在跑时 `dev:electron` 的 `requestSingleInstanceLock()` 返回 false → `app.quit()` 假死，窗口永远不出现）且数据目录互相污染。修复：`SERVER_MODE==="dev"` 时 `app.setPath("userData", ...)` 重定向到 `%APPDATA%/Pi Studio Dev`，**顺序必须是先 setName 再 setPath**（首次访问 `getPath` 会缓存路径，setName 会改写它）。
 - 右侧浏览器 = WebContentsView 池，每网页标签一个，仅一个可见；`bridge.cjs` 起 HTTP 桥暴露语义控制接口；CDP 端口 9222（`PI_WEB_CDP_PORT` 改/关，dev 脚本默认 9223 避开 exe）。
+- **绝不在 `did-start-loading` 销毁浏览器视图**：曾为清理「主窗口 reload 后残留的幽灵视图」而在该事件无差别销毁全部 WebContentsView，但 dev（Turbopack）下**切会话 / 会话数据加载 / RSC 导航 / 子 frame 加载都会触发 `did-start-loading`**，会把用户正在看的页面杀掉（现象：切会话回来后先正常渲染、会话数据重载完就空白，手动切标签反而能恢复）。正解：只在 `did-start-navigation` 判定为**主帧跳文档导航**（真正的整页硬重载，新旧 Electron 签名兼容见 `parseNavDetails`）时把现有视图标记为孤儿，`ORPHAN_GRACE_MS`（5s）宽限期内被 `create`/`setVisible`/`setBounds`/`navigate` 任一 IPC 认领（`claimWebView`）即清除标记，超时无人认领才销毁；软导航完全不碰视图。
+- **渲染层另有一道自愈**：`components/WebViewer.tsx` 在 `active` / `visibilityTick`（面板收起→可见）/ `sessionEpoch`（会话 key 变化）任一信号变化时跑 `runHeal()`：幂等 `create(tabId)` + `getInfo(tabId)`，若视图 URL 为空白（`about:blank`/空/`chrome://`/`edge://`）则用 `lastUrlRef` 重导航。注意 `visibilityTick` **不能进 bounds-sync effect 的 deps**（会形成 bump→重跑→再 bump 死循环）。
+- **切会话 / 切项目都要保住 web 标签**：`AppShell.handleSelectSession` 与 `handleCwdChange` 从 panelMemory 恢复右侧标签时必须把 `currentWebTabs` **合并**进去，不能整体 `setFileTabs(savedPanel.fileTabs)` 覆盖，否则右侧网页标签会被丢。新建的 `<WebViewer>` 统一传 `sessionEpoch={sessionKey}`。
 - 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
 
 ## 浏览器控制桥（Semantic Browser V2）

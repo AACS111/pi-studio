@@ -64,11 +64,64 @@ let browserDownloadsDir = null;
 
 // 原生右侧浏览器：每个网页标签一个 WebContentsView，只有一个可见。
 const webViews = new Map();
+// Tabs whose WebContentsView is currently shown (not hidden). Used to detect the
+// hidden → shown transition so we can force a repaint (see setWebViewVisible).
+const shownWebViews = new Set();
 const pendingWebViewState = new Map();
 let activeWebViewTabId = null;
 let lastWebViewBounds = null;
 let downloadHandlerRegistered = false;
 const recentBrowserDownloads = [];
+
+// ---- 主窗口硬重载的幽灵视图清理（修复“切会话后浏览器空白”）----
+// 旧方案：did-start-loading 时无差别销毁全部 webview。但 dev（Turbopack）下
+// 切会话/会话数据加载/RSC 导航/子 frame 加载都会触发 did-start-loading，把用户正在看
+// 的浏览器视图杀掉——这正是“先正常渲染、会话数据重载后空白”的真凶。
+// 新方案：只在主帧跨文档导航（真正的整页硬重载）时把现有视图标记为“孤儿”，
+// 宽限期内被认领（create/visible/bounds/navigate）即清除标记；超时无人认领才销毁。
+// 软导航（pushState / 子 frame / 同文档）完全不碰视图。
+const orphanedSince = new Map(); // tabId -> 标记为孤儿的时间戳
+const ORPHAN_GRACE_MS = 5000;
+let orphanSweepTimer = null;
+
+function claimWebView(tabId) {
+  orphanedSince.delete(tabId);
+}
+
+function sweepOrphanedWebViews() {
+  const deadline = Date.now() - ORPHAN_GRACE_MS;
+  for (const [tabId, since] of [...orphanedSince]) {
+    if (since <= deadline) {
+      orphanedSince.delete(tabId);
+      destroyWebView(tabId); // 真硬重载后新渲染层没认领 → 清理幽灵视图（原设计意图）
+    }
+  }
+  if (orphanedSince.size === 0 && orphanSweepTimer) {
+    clearInterval(orphanSweepTimer);
+    orphanSweepTimer = null;
+  }
+}
+
+function markOrphansAndScheduleSweep() {
+  const now = Date.now();
+  for (const tabId of webViews.keys()) orphanedSince.set(tabId, now);
+  if (orphanedSince.size === 0 || orphanSweepTimer) return;
+  orphanSweepTimer = setInterval(sweepOrphanedWebViews, 1000);
+}
+
+// Electron 导航事件新旧签名兼容：新版参数里带 isSameDocument/isMainFrame 的对象，
+// 旧版为位置参数 (event, url, isInPlace, isMainFrame, ...)。
+function parseNavDetails(args) {
+  for (const a of args) {
+    if (a && typeof a === "object" && typeof a.isSameDocument === "boolean") {
+      return { isSameDocument: a.isSameDocument, isMainFrame: a.isMainFrame !== false };
+    }
+  }
+  if (args.length >= 4 && typeof args[2] === "boolean") {
+    return { isSameDocument: args[2], isMainFrame: args[3] !== false };
+  }
+  return null;
+}
 
 app.setName("Pi Studio");
 
@@ -363,7 +416,16 @@ function getRecentBrowserDownloads() {
 
 function createWebView(tabId) {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
-  if (webViews.has(tabId)) return webViews.get(tabId);
+  claimWebView(tabId); // 渲染层认领：硬重载后的孤儿清扫不再碰它
+  const existing = webViews.get(tabId);
+  if (existing && !existing.webContents.isDestroyed()) return existing;
+  // 缓存里若有该 tab 但其 webContents 已销毁（崩溃/被 close 且未走 destroyWebView），
+  // 先清掉再重建，避免拿到死视图导致后续 getInfo/navigate 全部失败（表现为空白）。
+  if (existing) {
+    try { mainWindow.contentView.removeChildView(existing); } catch { /* best-effort */ }
+    webViews.delete(tabId);
+    if (activeWebViewTabId === tabId) activeWebViewTabId = null;
+  }
   const view = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
@@ -427,6 +489,7 @@ function destroyWebView(tabId) {
 }
 
 function setWebViewVisible(tabId, visible) {
+  claimWebView(tabId); // 渲染层认领（可见性同步即证明该视图仍被管理）
   const view = webViews.get(tabId);
   if (!view) {
     const pending = pendingWebViewState.get(tabId) || {};
@@ -464,17 +527,29 @@ function setWebViewVisible(tabId, visible) {
       }
     }
   }
-  if (visible && lastWebViewBounds) {
-    try {
-      view.setBounds(lastWebViewBounds);
-    } catch {
-      /* best-effort */
+  if (visible) {
+    const wasShown = shownWebViews.has(tabId);
+    shownWebViews.add(tabId);
+    if (lastWebViewBounds) {
+      try {
+        view.setBounds(lastWebViewBounds);
+      } catch {
+        /* best-effort */
+      }
     }
+    // 隐藏(→setVisible(false))再显示后，Chromium 可能不再重绘，视图停留在旧帧/空白
+    //（内容仍在，仅 paint 停住）。重新显示时强制 invalidate 一次，确保恢复绘制。
+    if (!wasShown) {
+      try { view.webContents.invalidate(); } catch { /* best-effort */ }
+    }
+  } else {
+    shownWebViews.delete(tabId);
   }
 }
 
 function setWebViewBounds(tabId, bounds) {
   if (!bounds || typeof bounds.x !== "number" || typeof bounds.y !== "number") return;
+  claimWebView(tabId); // 渲染层认领
   lastWebViewBounds = {
     x: Math.round(bounds.x),
     y: Math.round(bounds.y),
@@ -493,6 +568,13 @@ function setWebViewBounds(tabId, bounds) {
   } catch {
     /* best-effort */
   }
+  // 视图隐藏→显示后、显示期间 bounds 又变化时，Chromium 可能把内容层停在不重绘的
+  // 状态（只画底色/白底）。setBounds 之后对当前显示的视图强制 invalidate 一次，
+  // 确保新 bounds 下内容重新合成（修复切会话后浏览器空白，配合 setWebViewVisible
+  // 里的隐藏→显示 invalidate 互补）。
+  if (shownWebViews.has(tabId)) {
+    try { view.webContents.invalidate(); } catch { /* best-effort */ }
+  }
 }
 
 function registerWebViewIpc() {
@@ -510,11 +592,23 @@ function registerWebViewIpc() {
   });
   ipcMain.handle("pi-webview-navigate", async (_event, tabId, rawUrl) => {
     const id = String(tabId);
+    claimWebView(id); // 渲染层认领（视图已存在时不会走 createWebView，需显式认领）
     const view = webViews.get(id) || createWebView(id);
     if (!view) throw new Error("webview not created");
     const target = new URL(String(rawUrl || ""));
     if (!["http:", "https:"].includes(target.protocol)) throw new Error("Only http(s) URLs are supported");
-    await view.webContents.loadURL(target.href);
+    try {
+      await view.webContents.loadURL(target.href);
+    } catch (e) {
+      // ERR_ABORTED (-3) happens when a navigation is superseded by another one
+      // (double-click, redirect, or a quick tab switch) — it is benign, not a
+      // load failure, so swallow it instead of logging a scary throw.
+      if (e && typeof e === "object" && e.errno === -3 && e.code === "ERR_ABORTED") {
+        // fall through: the view has typically already navigated
+      } else {
+        throw e;
+      }
+    }
     return {
       url: view.webContents.getURL() || null,
       title: view.webContents.getTitle() || null,
@@ -592,14 +686,18 @@ function createWindow(url) {
     shell.openExternal(url);
     return { action: "deny" };
   });
-  // 无原生菜单后，重新注册几个常用快捷键（开发者工具/刷新/全屏）。
-  // 修复（中危）：主窗口 reload 时主进程持有的 WebContentsView（右侧浏览器 tabs）
-  // 不会随 renderer 重建而销毁，新 AppShell 初始化后又会创建新视图 —— 旧视图作为
-  // 幽灵叠加在页面上（destroyWebView 不触发）。在主窗口自身开始重载时销毁全部
-  // 浏览器视图，由重载后的 AppShell 按需重建。
-  mainWindow.webContents.on("did-start-loading", () => {
-    for (const tabId of [...webViews.keys()]) destroyWebView(tabId);
+  // 主窗口整页硬重载时，旧 WebContentsView 不会随 renderer 销毁，会作为幽灵叠加在页面上。
+  // 注意：不能监听 did-start-loading 来做清理——dev（Turbopack）下切会话 / RSC 导航 /
+  // 子 frame 加载同样触发该事件，会把用户正在看的浏览器视图杀掉（曾表现为
+  // “切会话后会先正常渲染、数据重载完就空白”）。只有主帧跨文档导航（真正的整页
+  // 硬重载）才标记孤儿，由宽限期清扫处理（见文件顶部）。
+  mainWindow.webContents.on("did-start-navigation", (...args) => {
+    const info = parseNavDetails(args);
+    if (info && info.isMainFrame && !info.isSameDocument) {
+      markOrphansAndScheduleSweep();
+    }
   });
+  // 无原生菜单后，重新注册几个常用快捷键（开发者工具/刷新/全屏）。
   mainWindow.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
     const ctrl = input.control || input.meta;

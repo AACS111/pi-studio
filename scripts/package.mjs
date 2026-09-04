@@ -13,6 +13,10 @@ const nextBin = resolve(root, "node_modules", "next", "dist", "bin", "next");
 const electronBuilderBin = resolve(root, "node_modules", "electron-builder", "cli.js");
 const env = {
   ...process.env,
+  // 打包必须用 webpack（Turbopack 与 --webpack 不可同时开；若外部设置了 TURBOPACK=1
+  // 会导致 next build 报 "Multiple bundler flags set"，这里强制清掉）。
+  TURBOPACK: "",
+  NODE_ENV: "production",
   PI_WEB_DIST_DIR: ".next-pkg",
   // GitHub 在你的网络环境不可达时，打包工具默认会卡在下载上；这里默认走国内镜像。
   ELECTRON_BUILDER_BINARIES_MIRROR:

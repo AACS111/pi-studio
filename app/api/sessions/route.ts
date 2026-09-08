@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listAllSessions } from "@/lib/session-reader";
 import { getRunningRpcSessionIds, getPendingSessionInfos } from "@/lib/rpc-manager";
 import { resolveProject } from "@/lib/worktree";
+import { listRegisteredProjects } from "@/lib/registered-projects";
 
 export async function GET() {
   try {
@@ -22,6 +23,8 @@ export async function GET() {
     return NextResponse.json({
       sessions: [...pending, ...sessions],
       runningSessionIds: getRunningRpcSessionIds(),
+      // 「添加项目」持久登记的目录（可能还没有任何会话），侧栏取并集实现「添加即显示」
+      registeredProjects: listRegisteredProjects(),
     });
   } catch (error) {
     return NextResponse.json(

@@ -20,6 +20,12 @@ asar: false
 # 所有原生依赖均为预编译产物（sharp、pi-tui native 等），无需 node-gyp 重编译
 npmRebuild: false
 
+# ⚠️ 打包完成后补回被收集器压平丢弃的嵌套 node_modules（minimatch@10/chalk/glob/
+# semver/marked 等，见 scripts/after-pack.cjs 头注释）。不补会导致 pi 系列包在
+# 运行时解析到错误版本，打包 exe 大批 API（/api/sessions、/api/cwd/validate…）
+# 模块加载即炸 → 全部裸 500。
+afterPack: scripts/after-pack.cjs
+
 electronVersion: 43.3.0
 
 files:

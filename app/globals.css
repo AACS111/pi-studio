@@ -33,7 +33,7 @@
 :root {
   /* Neutral surfaces — deliberately NOT accent-tinted: the dynamic background
      and accent-colored icons carry the theme color, the base stays clean. */
-  --bg: #F5F5F5;
+  --bg: #FFFFFF;
   --bg-panel: #ECECEC;
   --bg-hover: #E2E2E2;
   --bg-selected: #DCDCDC;
@@ -47,7 +47,7 @@
   --accent-contrast: #ffffff;
   --accent-soft: rgba(59, 130, 246, 0.10);
   --user-bg: #ECECEC;
-  --assistant-bg: #F5F5F5;
+  --assistant-bg: #FFFFFF;
   --tool-bg: #ECECEC;
   --bg-subtle: rgba(46, 52, 49, 0.04);
   --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.12);

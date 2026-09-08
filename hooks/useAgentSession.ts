@@ -539,7 +539,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
 
       messagesLoaded = true;
-      if (showLoading) setLoading(false);
+      // 无条件清骨架屏：loading 在非草稿会话挂载时初始即为 true，而本函数过去只在
+      // showLoading 时 setLoading(false)。切走再切回同一会话时 bySession 已缓存该会话
+      // 消息 → mount effect 判 hasLiveView=true → showLoading=false → loading 永不清。
+      // 表现为「第一次打开 3 秒正常，切换走再切回永久卡在『正在加载会话…』」。
+      // 只要成功拿到数据就必须清掉，与 showLoading 无关。
+      setLoading(false);
       if (!includeState) return null;
 
       try {
@@ -568,7 +573,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setError(String(e));
       return null;
     } finally {
-      if (showLoading && !messagesLoaded) setLoading(false);
+      // 兜底：只要没成功载入消息就清掉骨架屏（不论 showLoading），
+      // 出错/404 也不至于把 UI 永久卡在「正在加载会话…」。
+      if (!messagesLoaded) setLoading(false);
     }
   }, []);
 

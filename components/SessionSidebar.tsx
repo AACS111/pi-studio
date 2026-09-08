@@ -204,6 +204,29 @@ function getRecentProjects(sessions: SessionInfo[]): string[] {
     .map(([root]) => root);
 }
 
+function normalizeProjectPath(p: string): string {
+  return p.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
+ * 项目列表 = 会话派生 ∪ 「添加项目」登记表（/api/projects/registered）。
+ * 去重用统一分隔符 + 大小写不敏感比较（与 /api/projects/delete 的路径比较规则一致），
+ * 防止同一目录因斜杠方向/大小写差异出现两行；会话派生的拼写优先（它来自 pi 实际使用的 cwd）。
+ */
+function unionProjects(sessionProjects: string[], registered: string[]): string[] {
+  if (registered.length === 0) return sessionProjects;
+  const seen = new Set(sessionProjects.map(normalizeProjectPath));
+  const out = [...sessionProjects];
+  for (const p of registered) {
+    const key = normalizeProjectPath(p);
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
 const DROPDOWN_ANIMATION_MS = 140;
 
 function AnimatedDropdown({ open, children, style }: { open: boolean; children: ReactNode; style: CSSProperties }) {
@@ -322,6 +345,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [unreadSessionIds, setUnreadSessionIds] = useState<Set<string>>(() => loadUnreadSessionIds());
   const [pinnedSessionIds, setPinnedSessionIds] = useState<Set<string>>(() => loadPinnedSessionIds());
   const [hiddenProjectRoots, setHiddenProjectRoots] = useState<Set<string>>(() => loadHiddenProjectRoots());
+  // 「添加项目」持久登记的服务端列表（lib/registered-projects.ts）——
+  // 会话派生之外的项目来源，实现「添加即显示、重启仍在」。响应到达后与本地乐观状态收敛。
+  const [registeredProjects, setRegisteredProjects] = useState<string[]>([]);
   // 项目列表显示名：优先用户别名，否则取路径最后一级文件夹名；hover 行内铅笔可编辑。
   const [projectAliases, setProjectAliases] = useState<Record<string, string>>(() => loadProjectAliases());
   const [renamingProject, setRenamingProject] = useState<string | null>(null);
@@ -343,8 +369,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (showLoading) setLoading(true);
       const res = await fetch("/api/sessions");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as { sessions: SessionInfo[]; runningSessionIds?: string[] };
+      const data = await res.json() as { sessions: SessionInfo[]; runningSessionIds?: string[]; registeredProjects?: string[] };
       setAllSessions(data.sessions);
+      setRegisteredProjects(data.registeredProjects ?? []);
       // Treat the fetched running set as an initial fallback only. Once the
       // lightweight poll is live, a slow session-list fetch cannot overwrite it.
       if (!runningPollAuthoritativeRef.current) {
@@ -531,7 +558,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
 
   // Auto-select cwd and restore session from URL on first load
   useEffect(() => {
-    if (allSessions.length === 0 || skipInitialProjectSelection) return;
+    if ((allSessions.length === 0 && registeredProjects.length === 0) || skipInitialProjectSelection) return;
 
     if (selectedCwd === null) {
       // If restoring a session, set cwd to match that session
@@ -546,10 +573,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         // Session not found — notify parent so it can show the placeholder
         onInitialRestoreDone?.();
       }
-      const projects = getRecentProjects(allSessions).filter((p) => !hiddenProjectRoots.has(p));
+      const projects = unionProjects(getRecentProjects(allSessions), registeredProjects)
+        .filter((p) => !hiddenProjectRoots.has(p));
       if (projects.length > 0) setSelectedCwd(projects[0]);
     }
-  }, [allSessions, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, hiddenProjectRoots]);
+  }, [allSessions, registeredProjects, selectedCwd, initialSessionId, skipInitialProjectSelection, onSelectSession, onInitialRestoreDone, hiddenProjectRoots]);
 
   const commitCustomPath = useCallback(async (candidate?: string) => {
     const path = (candidate ?? customPathValue).trim();
@@ -568,7 +596,21 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         setCustomPathError(data.error ?? `HTTP ${res.status}`);
         return;
       }
-      setSelectedCwd(data.cwd ?? path);
+      const cwd = data.cwd ?? path;
+      setSelectedCwd(cwd);
+      // 添加即显示：本地立即上列表，并持久登记到数据目录（失败不影响本次选择）
+      setRegisteredProjects((prev) => (prev.includes(cwd) ? prev : [cwd, ...prev]));
+      void fetch("/api/projects/registered", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd }),
+      })
+        .then((r) => r.json().catch(() => null))
+        .then((registered) => {
+          const projects = (registered as { projects?: unknown } | null)?.projects;
+          if (Array.isArray(projects)) setRegisteredProjects(projects as string[]);
+        })
+        .catch(() => { /* ignore */ });
       setCustomPathOpen(false);
       setCustomPathValue("");
       setDropdownOpen(false);
@@ -716,7 +758,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           setSelectedCwd(nextProject ?? null);
         }
       } else {
-        // 仅从列表隐藏（会话数据保留；下拉菜单可恢复）
+        // 仅从列表隐藏（会话数据保留；下拉菜单可恢复）。
+        // 若是「添加项目」持久登记的项目，同步删除登记——否则在本地存储不可靠的
+        // 环境（如打包 exe 的随机端口 origin）里它会原地复活。
+        if (registeredProjects.includes(project)) {
+          setRegisteredProjects((prev) => prev.filter((p) => p !== project));
+          void fetch("/api/projects/registered", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cwd: project }),
+          })
+            .then((r) => r.json().catch(() => null))
+            .then((registered) => {
+              const projects = (registered as { projects?: unknown } | null)?.projects;
+              if (Array.isArray(projects)) setRegisteredProjects(projects as string[]);
+            })
+            .catch(() => { /* ignore */ });
+        }
         setHiddenProjectRoots((prev) => {
           if (prev.has(project)) return prev;
           const next = new Set(prev);
@@ -737,7 +795,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     } finally {
       setRemoveBusy(false);
     }
-  }, [removeProjectTarget, removeBusy, removeClearData, selectedSessionId, onSessionDeleted, selectedCwd, projectRootFor, allSessions, hiddenProjectRoots, loadSessions]);
+  }, [removeProjectTarget, removeBusy, removeClearData, selectedSessionId, onSessionDeleted, selectedCwd, projectRootFor, allSessions, registeredProjects, hiddenProjectRoots, loadSessions]);
 
   // 恢复显示被隐藏的项目
   const restoreProject = useCallback((project: string) => {
@@ -778,7 +836,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     return allSessions.filter((s) => (s.projectRoot ?? s.cwd) === projectRoot).length;
   }, [allSessions]);
 
-  const allKnownProjects = getRecentProjects(allSessions);
+  const allKnownProjects = unionProjects(getRecentProjects(allSessions), registeredProjects);
   const recentProjects = allKnownProjects.filter((p) => !hiddenProjectRoots.has(p));
   const hiddenProjects = allKnownProjects.filter((p) => hiddenProjectRoots.has(p));
   const showProjectFilter = recentProjects.length > 8;

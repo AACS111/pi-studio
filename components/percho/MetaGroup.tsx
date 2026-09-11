@@ -85,11 +85,12 @@ function ThinkingRow({
 	);
 }
 
-/** 圆点样式：done = 实心 ink-dim，error = 琥珀红，running = 空心呼吸（globals.css meta-dot-running） */
+/** 进度刻度：done = 细实心刻度，error = 琥珀红，running = accent 实心呼吸（globals.css meta-dot-running）。
+ *  原先 4px 圆点串在多工具时读起来像噪点，改成 3×8 的短刻度更像进度指示。 */
 function dotClass(state: MetaDot["state"]): string {
-	const base = "h-1 w-1 shrink-0 rounded-full";
+	const base = "h-[3px] w-2 shrink-0 rounded-full transition-colors";
 	if (state === "running") return `${base} meta-dot-running`;
-	return state === "error" ? `${base} bg-red-500` : `${base} bg-ink-dim`;
+	return state === "error" ? `${base} bg-red-500/80` : `${base} bg-ink-faint`;
 }
 
 function metaGroupPropsEqual(
@@ -185,7 +186,7 @@ export const MetaGroup = memo(function MetaGroup({
 						)}
 					</div>
 					{dots.length > 0 && (
-						<div className="mb-0.5 flex flex-wrap gap-1 py-0.5 group-open/outer:hidden">
+						<div className="mb-1 flex flex-wrap items-center gap-[3px] group-open/outer:hidden">
 							{dots.map((dot) => (
 								<span key={dot.key} className={dotClass(dot.state)} />
 							))}

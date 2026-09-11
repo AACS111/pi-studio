@@ -16,7 +16,9 @@ import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem, SessionInfo } from "./types";
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
-import { readCompactionSettings, writeCompactionSettings, hasExplicitCompaction, recommendedCompactionForWindow, type CompactionSettings } from "./compaction-settings";
+import { createPlanTools, type AskUserRequest, type PlanToolBridge } from "./plan-tool";
+import { PLAN_MODE_CUSTOM_TOOL_NAMES } from "./plan-mode";
+import { readCompactionSettings, writeCompactionSettings, recommendedCompactionForWindow, COMPACTION_TRIGGER_RATIO_DEFAULT, type CompactionSettings } from "./compaction-settings";
 
 // ============================================================================
 // Types
@@ -98,6 +100,8 @@ export interface RpcSessionStartOptions {
    *  团队角色默认屏蔽 memory_xxx / scratchpad 等个人记忆工具——
    *  防止角色读历史会话日志后被带偏，把本次任务当成历史里的某个「自动检查/待办」。 */
   denyToolNames?: string[];
+  /** 是否注入计划/决策类工具（ask_user）。团队受控会话传 false，避免干扰 team_* 协议。默认 true。 */
+  planTools?: boolean;
 }
 
 // 完整颜色表来自 lib/pi-compat-check.ts（单一来源，冒烟测试共用）。
@@ -145,6 +149,17 @@ function withExtensionTools(session: AgentSessionLike, toolNames: string[], deny
     .filter((name) => !codingToolNames.has(name) && !deny.has(name));
 
   return [...new Set([...toolNames.filter((n) => !deny.has(n)), ...extensionToolNames])];
+}
+
+/**
+ * 计划配套工具（update_plan / ask_user）的默认排除列表：
+ * 只有在 toolNames 里**显式点名**时才启用（即计划模式下发的那次 set_tools）。
+ * 不排除的话，withExtensionTools 会把它们当普通扩展工具自动纳入激活集，
+ * 普通会话就会冒出计划面板 / 决策选项。
+ */
+function planToolExclusions(toolNames: string[] | undefined): string[] {
+  const requested = toolNames ?? [];
+  return PLAN_MODE_CUSTOM_TOOL_NAMES.filter((name) => !requested.includes(name));
 }
 
 // ============================================================================
@@ -676,8 +691,29 @@ export class AgentSessionWrapper {
       case "set_tools": {
         const toolNames = command.toolNames as string[];
         this.setForceEmptySystemPrompt(toolNames.length === 0);
-        this.inner.setActiveToolsByName(withExtensionTools(this.inner, toolNames));
+        this.inner.setActiveToolsByName(
+          withExtensionTools(this.inner, toolNames, planToolExclusions(toolNames)),
+        );
         this.applyForcedEmptySystemPrompt();
+        return null;
+      }
+
+      // 计划模式等场景：注入隐藏上下文消息（display:false）。deliverAs:"nextTurn"
+      // 让消息在下一轮 prompt 请求里随用户消息一起发给模型，但不落盘、不发 UI 事件、
+      // 用完即弃——多次调用不会累积，也不会在消息流里显示成卡片。
+      case "inject_context": {
+        const customType = command.customType as string | undefined;
+        const content = command.content as string | undefined;
+        if (!customType || !content) {
+          throw new Error("inject_context requires customType and content");
+        }
+        if (typeof this.inner.sendCustomMessage !== "function") {
+          throw new Error("Custom context messages are not supported by this session");
+        }
+        await this.inner.sendCustomMessage(
+          { customType, content, display: false },
+          { triggerTurn: false, deliverAs: "nextTurn" },
+        );
         return null;
       }
 
@@ -935,6 +971,32 @@ export class AgentSessionWrapper {
           finish(undefined as T);
         });
     });
+  }
+
+  /**
+   * 供自定义工具（ask_user）调用：弹一个选择/输入对话框并等待用户响应。
+   * 复用 extension_ui_request/response 通道（前端 ExtensionDialog）。
+   * 返回用户选择的文案；undefined = 取消 / 超时 / 界面不可用。
+   */
+  requestUserChoice(request: AskUserRequest): Promise<string | undefined> {
+    if (request.method === "input") {
+      return this.requestExtensionUi<string | undefined>(
+        {
+          method: "input",
+          title: request.title,
+          ...(request.placeholder ? { placeholder: request.placeholder } : {}),
+        },
+        undefined,
+        (response) => ("value" in response ? response.value : undefined),
+        request.timeout,
+      );
+    }
+    return this.requestExtensionUi<string | undefined>(
+      { method: "select", title: request.title, options: request.options ?? [] },
+      undefined,
+      (response) => ("value" in response ? response.value : undefined),
+      request.timeout,
+    );
   }
 
   private requestExtensionUi<T>(
@@ -1319,6 +1381,8 @@ export async function startRpcSession(
   options: RpcSessionStartOptions = {},
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
   const { toolNames, initialModel, thinkingLevel, customTools, systemPrompt, compaction, denyToolNames } = options;
+  const includePlanTools = options.planTools !== false;
+  const planToolBridge: PlanToolBridge = {};
   const registry = getRegistry();
   const locks = getLocks();
 
@@ -1389,7 +1453,10 @@ export async function startRpcSession(
         ...(thinkingLevel ? { thinkingLevel } : {}),
       });
     // 调用方自定义工具（团队受控工具等）
-    const mergedCustomTools = customTools ?? [];
+    const mergedCustomTools = [
+      ...(customTools ?? []),
+      ...(includePlanTools ? createPlanTools(planToolBridge) : []),
+    ];
     const { session: inner } = await createAgentSessionFromServices({
       services,
       sessionManager,
@@ -1420,7 +1487,18 @@ export async function startRpcSession(
     // requested builtin coding tools PLUS all extension/package tools, so installed
     // extensions stay usable in Pi Studio just like in the `pi` CLI.
     if (toolNames && toolNames.length > 0) {
-      inner.setActiveToolsByName(withExtensionTools(inner, toolNames, denyToolNames));
+      inner.setActiveToolsByName(withExtensionTools(
+        inner,
+        toolNames,
+        [...(denyToolNames ?? []), ...planToolExclusions(toolNames)],
+      ));
+    } else if (toolNames === undefined) {
+      // 未指定工具集（如直接打开历史会话）：SDK 会自动纳入所有扩展/自定义工具，
+      // 这里把计划配套工具剔除——普通会话不该带 update_plan / ask_user。
+      // 计划模式的会话随后会由客户端 set_tools 把它们重新启用。
+      const active = inner.getActiveToolNames();
+      const filtered = active.filter((name) => !PLAN_MODE_CUSTOM_TOOL_NAMES.includes(name));
+      if (filtered.length !== active.length) inner.setActiveToolsByName(filtered);
     }
 
     // 团队角色：覆盖默认系统提示词（角色 systemPrompt + 共享上下文已在其中）
@@ -1436,20 +1514,26 @@ export async function startRpcSession(
       const merged = writeCompactionSettings(compaction);
       inner.setAutoCompactionEnabled(merged.enabled);
     } else {
-      // 仅当 settings.json 从未显式配置过 compaction 时，按当前模型窗口写入推荐阈值。
-      // （默认 16384/20000 对 131072 窗口触发点约 87.5% 偏晚；推荐值触发点≈85%窗口）
-      if (!hasExplicitCompaction()) {
-        const model = inner.model;
-        const window = model?.contextWindow ?? 0;
-        if (window > 0) {
-          const recommended = recommendedCompactionForWindow(window);
-          writeCompactionSettings(recommended);
-        }
+      // 按当前模型窗口重算触发阈值（默认 25% 触发点）：
+      //   1M 窗口若用固定 reserve，要涨到 ~98 万才压缩，长会话永远触发不到。
+      // 用户手调过 reserveTokens 也会被这套策略接管，想回到旧的 85% 行为把比例调到 85%。
+      const ratio = globalSettings.triggerRatio ?? COMPACTION_TRIGGER_RATIO_DEFAULT;
+      const window = inner.model?.contextWindow ?? 0;
+      if (window > 0) {
+        const recommended = recommendedCompactionForWindow(window, ratio);
+        const unchanged = recommended.reserveTokens === globalSettings.reserveTokens
+          && recommended.keepRecentTokens === globalSettings.keepRecentTokens
+          && globalSettings.triggerRatio === ratio;
+        if (!unchanged) writeCompactionSettings(recommended);
       }
       inner.setAutoCompactionEnabled(globalSettings.enabled);
     }
 
     const wrapper = new AgentSessionWrapper(inner);
+    if (includePlanTools) {
+      // 工具 execute 里通过 bridge 回调到 wrapper 的扩展 UI 通道（弹前端 ExtensionDialog）
+      planToolBridge.ask = (request: AskUserRequest) => wrapper.requestUserChoice(request);
+    }
     // When all tools are disabled, clear the system prompt entirely.
     // pi's buildSystemPrompt always produces a non-empty prompt even with no tools;
     // keep this forced after extension resource discovery and reloads as well.

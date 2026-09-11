@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 
 export function ProjectTrustDialog({
   cwd,
@@ -15,6 +16,7 @@ export function ProjectTrustDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  useNativeOverlayGuard();
   const { t } = useI18n();
 
   return (
@@ -42,9 +44,9 @@ export function ProjectTrustDialog({
           width: 440,
           maxWidth: "100%",
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-sm)",
           background: "var(--bg-panel)",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.24)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -77,7 +79,7 @@ export function ProjectTrustDialog({
                 marginTop: 10,
                 padding: "8px 10px",
                 border: "1px solid var(--border)",
-                borderRadius: 5,
+                borderRadius: "var(--radius-xs)",
                 background: "var(--bg)",
                 color: "var(--text)",
                 fontFamily: "var(--font-mono)",
@@ -111,7 +113,7 @@ export function ProjectTrustDialog({
               height: 32,
               padding: "0 12px",
               border: "1px solid var(--border)",
-              borderRadius: 5,
+              borderRadius: "var(--radius-xs)",
               background: "transparent",
               color: "var(--text-muted)",
               cursor: busy ? "not-allowed" : "pointer",
@@ -128,7 +130,7 @@ export function ProjectTrustDialog({
               height: 32,
               padding: "0 12px",
               border: "1px solid var(--accent)",
-              borderRadius: 5,
+              borderRadius: "var(--radius-xs)",
               background: "var(--accent)",
               color: "white",
               cursor: busy ? "wait" : "pointer",

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 import type {
   SkillInfo as Skill,
   SkillInstallScope,
@@ -82,7 +83,7 @@ function Toggle({
           height: 16,
           borderRadius: "50%",
           background: "var(--bg)",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+          boxShadow: "var(--shadow-sm)",
           transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
         }}
       />
@@ -259,7 +260,7 @@ function SkillDetail({
                 style={{
                   padding: "4px 9px",
                   border: "1px solid var(--border)",
-                  borderRadius: 5,
+                  borderRadius: "var(--radius-xs)",
                   background: "none",
                   color: "var(--text-muted)",
                   cursor: checkingUpdate || updating ? "not-allowed" : "pointer",
@@ -311,7 +312,7 @@ function SkillDetail({
                 style={{
                   padding: "4px 10px",
                   border: "none",
-                  borderRadius: 5,
+                  borderRadius: "var(--radius-xs)",
                   background: "var(--accent)",
                   color: "#fff",
                   cursor: updating || checkingUpdate ? "not-allowed" : "pointer",
@@ -561,7 +562,7 @@ function AddSkillPanel({
             padding: "5px 14px",
             fontSize: 12,
             fontWeight: 500,
-            borderRadius: 5,
+            borderRadius: "var(--radius-xs)",
             border: "1px solid var(--border)",
             cursor:
               isInstalled || isInstalling || installing !== null
@@ -622,7 +623,7 @@ function AddSkillPanel({
               fontSize: 13,
               background: "var(--bg-panel)",
               border: "1px solid var(--border)",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               color: "var(--text)",
               outline: "none",
             }}
@@ -633,7 +634,7 @@ function AddSkillPanel({
             style={{
               padding: "7px 16px",
               fontSize: 13,
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               border: "none",
               background: "var(--accent)",
               color: "#fff",
@@ -651,7 +652,7 @@ function AddSkillPanel({
           <div
             style={{
               display: "flex",
-              borderRadius: 5,
+              borderRadius: "var(--radius-xs)",
               border: "1px solid var(--border)",
               overflow: "hidden",
               fontSize: 12,
@@ -780,6 +781,7 @@ export function SkillsConfig({
   cwd: string;
   onClose: () => void;
 }) {
+  useNativeOverlayGuard();
   const isMobile = useIsMobile();
   const { t } = useI18n();
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -987,10 +989,10 @@ export function SkillsConfig({
           maxHeight: "calc(100dvh - 16px)",
           background: "var(--bg)",
           border: "1px solid var(--border)",
-          borderRadius: 10,
+          borderRadius: "var(--radius-md)",
           display: "flex",
           flexDirection: "column",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -1156,7 +1158,7 @@ export function SkillsConfig({
                           alignItems: "center",
                           gap: 7,
                           padding: "8px 8px",
-                          borderRadius: 5,
+                          borderRadius: "var(--radius-xs)",
                           cursor: "pointer",
                           background: isSelected
                             ? "var(--bg-selected)"
@@ -1302,7 +1304,7 @@ export function SkillsConfig({
                   alignItems: "center",
                   gap: 6,
                   padding: "7px 8px",
-                  borderRadius: 5,
+                  borderRadius: "var(--radius-xs)",
                   cursor: "pointer",
                   background: addMode ? "var(--bg-selected)" : "none",
                   color: addMode ? "var(--accent)" : "var(--text-dim)",
@@ -1416,7 +1418,7 @@ export function SkillsConfig({
                   padding: "6px 12px",
                   background: "none",
                   border: "1px solid var(--border)",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   color: "var(--text-muted)",
                   cursor:
                     checkingAll || updatingSkill !== null
@@ -1452,7 +1454,7 @@ export function SkillsConfig({
               padding: "6px 14px",
               background: "none",
               border: "1px solid var(--border)",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               color: "var(--text-muted)",
               cursor: "pointer",
               fontSize: 13,

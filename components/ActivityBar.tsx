@@ -28,13 +28,13 @@ const TOOLTIP_STYLE: CSSProperties = {
   zIndex: 400,
   pointerEvents: "none",
   whiteSpace: "nowrap",
-  background: "#242824",
-  color: "#ffffff",
+  background: "var(--text)",
+  color: "var(--bg)",
   fontSize: 12,
   fontWeight: 450,
   padding: "6px 9px",
-  borderRadius: 7,
-  boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+  borderRadius: "var(--radius-sm)",
+  boxShadow: "var(--shadow-md)",
 };
 
 const TOOLTIP_ARROW_STYLE: CSSProperties = {
@@ -44,7 +44,7 @@ const TOOLTIP_ARROW_STYLE: CSSProperties = {
   transform: "translateY(-50%) rotate(45deg)",
   width: 8,
   height: 8,
-  background: "#242824",
+  background: "var(--text)",
   borderRadius: 1.5,
 };
 
@@ -169,7 +169,7 @@ function RailButton({
         margin: "1px auto",
         background: active ? "var(--accent-soft)" : "transparent",
         border: "none",
-        borderRadius: 10,
+        borderRadius: "var(--radius-md)",
         color: active ? "var(--accent-hover)" : (tint ?? "var(--text-muted)"),
         cursor: "pointer",
         transition: "background 0.12s, color 0.12s",
@@ -243,21 +243,16 @@ export function ActivityBar({ active, onSelect, onSearch, onToggleSidebar, sideb
 
   return (
     <div
+      className="glass-card"
       style={{
         width: RAIL_WIDTH,
         flexShrink: 0,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        paddingTop: "env(safe-area-inset-top)",
-        paddingBottom: "env(safe-area-inset-bottom)",
-        /* 与右侧玻璃工作区同材质（内联写法避开打包 -webkit- 折叠坑）：
-           不透明底色会让玻璃侧栏在最左断崖式截断，整条左边缘一起透才能读成一块玻璃 */
-        background:
-          "linear-gradient(168deg, color-mix(in srgb, var(--accent) 7%, transparent) 0%, color-mix(in srgb, var(--accent) 2%, transparent) 36%, transparent 64%), color-mix(in srgb, var(--bg) 55%, transparent)",
-        backdropFilter: "blur(26px) saturate(1.45)",
-        WebkitBackdropFilter: "blur(26px) saturate(1.45)",
-        borderRight: "1px solid color-mix(in srgb, var(--border) 45%, transparent)",
+        /* 悬浮玻璃卡：与右侧会话栏各成一张卡，中间缝隙透出壁纸/星图。
+           材质/模糊由 .glass-card 统一提供（内联 backdropFilter 会引入
+           containing block 副作用，容器上不再写）。 */
         zIndex: 210,
       }}
     >

@@ -242,7 +242,7 @@ export function ChangedFilesCard({ files, cwd, onOpenFile }: Props) {
   return (
     <div
       style={{
-        borderRadius: 7,
+        borderRadius: "var(--radius-sm)",
         overflow: "hidden",
         fontSize: 12,
         border: "1px solid var(--border)",

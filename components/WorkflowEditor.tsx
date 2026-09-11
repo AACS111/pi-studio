@@ -146,7 +146,7 @@ function AgentNode({ data }: NodeProps) {
         border: `1.5px solid ${a.isEntry ? "var(--accent)" : "var(--border)"}`,
         background: a.isEntry ? "rgba(0,120,255,0.10)" : "var(--bg, #fff)",
         display: "flex", flexDirection: "column", justifyContent: "center", gap: 2,
-        boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+        boxShadow: "var(--shadow-md)",
       }}
     >
       <Handle type="target" position={Position.Left} style={{ background: "var(--text-dim)" }} />
@@ -430,7 +430,7 @@ function CanvasInner({
           height: typeof height === "string" ? undefined : (height ?? 360),
           position: "relative",
           border: "1px solid var(--hairline)",
-          borderRadius: 10,
+          borderRadius: "var(--radius-md)",
           overflow: "hidden",
         }}
       >
@@ -441,7 +441,7 @@ function CanvasInner({
               position: "absolute", left: 4, top: 4, zIndex: 10, width: 76,
               background: "var(--bg)", border: "1px solid var(--hairline)", borderRadius: 8,
               padding: 4, display: "flex", flexDirection: "column", gap: 3,
-              boxShadow: "0 3px 10px rgba(0,0,0,0.08)", fontSize: 10,
+              boxShadow: "var(--shadow-md)", fontSize: 10,
             }}
           >
             <span style={{ fontSize: 8, color: "var(--text-dim)", fontWeight: 600, letterSpacing: "0.03em", paddingLeft: 2, marginBottom: 1 }}>＋ 节点</span>
@@ -538,8 +538,8 @@ function EdgeEditPanel({
     <div
       style={{
         position: "absolute", top: 8, right: 8, zIndex: 20, width: 240,
-        background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10,
-        padding: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.18)", display: "flex", flexDirection: "column", gap: 8,
+        background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)",
+        padding: 10, boxShadow: "var(--shadow-lg)", display: "flex", flexDirection: "column", gap: 8,
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

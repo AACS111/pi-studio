@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 import type { SessionInfo } from "@/lib/types";
 import { buildEntriesFromFiles, filterFileEntries } from "@/lib/file-fuzzy";
 import { getFileName, joinFilePath } from "@/lib/file-paths";
@@ -52,6 +53,7 @@ interface ContentMatchRow {
 
 export function CommandPalette(props: Props) {
   const { open, mode, cwd, onClose, onOpenFile, onSelectSession, onSelectContentMatch } = props;
+  useNativeOverlayGuard(open);
   const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [files, setFiles] = useState<string[]>([]);
@@ -352,8 +354,8 @@ export function CommandPalette(props: Props) {
           zIndex: 701,
           background: "var(--bg-panel)",
           border: "1px solid var(--border)",
-          borderRadius: 12,
-          boxShadow: "0 18px 48px rgba(0,0,0,0.22)",
+          borderRadius: "var(--radius-lg)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -427,7 +429,7 @@ export function CommandPalette(props: Props) {
                   padding: "7px 10px",
                   background: isActive ? "var(--bg-selected)" : "transparent",
                   border: "none",
-                  borderRadius: 8,
+                  borderRadius: "var(--radius-sm)",
                   color: "var(--text)",
                   cursor: "pointer",
                   textAlign: "left",

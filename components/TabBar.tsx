@@ -33,13 +33,17 @@ interface Props {
 export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
   const { t } = useI18n();
   const [hoveredClose, setHoveredClose] = useState<string | null>(null);
+  const [hoveredTab, setHoveredTab] = useState<string | null>(null);
 
   return (
     <div
       style={{
         display: "flex",
         alignItems: "flex-end",
-        background: "var(--bg-panel)",
+        /* 玻璃卡内部：不能用自己的不透明底色（会在卡里拉出一块白板），
+           透出卡片本身的玻璃底；选中页签用 --bg 提亮以示区分。 */
+        background: "transparent",
+        boxShadow: "inset 0 -1px 0 var(--hairline)",
         overflowX: "auto",
         flexShrink: 0,
         height: 36,
@@ -60,6 +64,8 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               e.stopPropagation();
               onCloseTab(tab.id);
             }}
+            onMouseEnter={() => setHoveredTab(tab.id)}
+            onMouseLeave={() => setHoveredTab((id) => (id === tab.id ? null : id))}
             style={{
               display: "flex",
               alignItems: "center",
@@ -68,10 +74,11 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: Props) {
               paddingLeft: 12,
               paddingRight: 6,
               borderRight: "1px solid var(--hairline)",
-              background: isActive ? "var(--bg)" : "var(--bg-panel)",
+              /* 悬停反馈与会话列表同一套：--bg-hover 提亮 + 文字提色 */
+              background: isActive ? "var(--glass-bg)" : hoveredTab === tab.id ? "var(--bg-hover)" : "transparent",
               cursor: "pointer",
               fontSize: 12,
-              color: isActive ? "var(--text)" : "var(--text-muted)",
+              color: isActive || hoveredTab === tab.id ? "var(--text)" : "var(--text-muted)",
               whiteSpace: "nowrap",
               maxWidth: 180,
               minWidth: 80,

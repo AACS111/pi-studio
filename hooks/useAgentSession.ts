@@ -12,11 +12,69 @@ import type {
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
+import {
+  buildPlanExecutionMessage,
+  buildPlanStepMessage,
+  derivePlanStages,
+  planModeInstruction,
+  planModeOffInstruction,
+  PLAN_MODE_CONTEXT_CUSTOM_TYPE,
+  PLAN_MODE_CUSTOM_TOOL_NAMES,
+  PLAN_MODE_OFF_CUSTOM_TYPE,
+  PLAN_MODE_TOOL_NAMES,
+  type PlanStage,
+} from "@/lib/plan-mode";
 import { bridgePerchoEvent } from "@/lib/percho-bridge";
 import { fetchJsonShared } from "@/lib/fetch-shared";
 import { agentMessagesToPerchoUiMessages } from "@/lib/percho/adapter";
 import { useTranscriptStore } from "@/lib/percho-store";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+
+const PLAN_MODE_STORAGE_PREFIX = "pi-web-plan-mode:";
+const PLAN_MODE_TOOLS_STORAGE_PREFIX = "pi-web-plan-mode-tools:";
+
+function readPlanMode(sid: string): boolean {
+  try {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(PLAN_MODE_STORAGE_PREFIX + sid) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writePlanMode(sid: string | null, enabled: boolean): void {
+  if (!sid) return;
+  try {
+    window.localStorage.setItem(PLAN_MODE_STORAGE_PREFIX + sid, enabled ? "1" : "0");
+  } catch {
+    // localStorage 不可用（隐私模式等）不影响功能，只是不跨刷新保持
+  }
+}
+
+/** 计划模式开启前的工具集：必须跨刷新持久化，否则刷新后会把只读集当成「原工具」恢复 */
+function readPlanTools(sid: string): string[] | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(PLAN_MODE_TOOLS_STORAGE_PREFIX + sid);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((name): name is string => typeof name === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePlanTools(sid: string, tools: string[] | null): void {
+  try {
+    if (tools) {
+      window.localStorage.setItem(PLAN_MODE_TOOLS_STORAGE_PREFIX + sid, JSON.stringify(tools));
+    } else {
+      window.localStorage.removeItem(PLAN_MODE_TOOLS_STORAGE_PREFIX + sid);
+    }
+  } catch {
+    // 同上：持久化失败不影响本次会话内的行为
+  }
+}
 
 export interface SessionData {
   sessionId: string;
@@ -399,6 +457,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
   const [toolPreset, setToolPreset] = useState<"none" | "default" | "full">("default");
+  /** 计划模式：只读调研 → 出计划 → 用户勾选阶段 → 执行（client 驱动，见 lib/plan-mode） */
+  const [planMode, setPlanMode] = useState(false);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -447,6 +507,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const newSessionPromotedRef = useRef(false);
   const newSessionModelOverrideRef = useRef<SelectedModel | null>(null);
   const thinkingLevelOverrideRef = useRef<Exclude<ThinkingLevelOption, "auto"> | null>(null);
+  /** 计划模式开启前激活的工具名（以便关闭时原样恢复）；null = 当前未开启 */
+  const toolsBeforePlanRef = useRef<string[] | null>(null);
+  /** 已经对哪个 session 按当前模式应用过工具集（幂等防重复；模式切换时重置） */
+  const appliedToolModeSidRef = useRef<string | null>(null);
+  /** 计划模式开关的同步镜像（供事件/异步续体读取） */
+  const planModeRef = useRef(false);
+  /** 工具预设镜像（计划模式恢复工具集时的兵底） */
+  const toolPresetRef = useRef<"none" | "default" | "full">(toolPreset);
   const promptRunIdRef = useRef(0);
   const optimisticUserMessageKeyRef = useRef<string | null>(null);
 
@@ -598,7 +666,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" });
       if (tools) {
         const { getPresetFromTools } = await import("@/lib/tool-presets");
-        setToolPresetState(getPresetFromTools(tools));
+        const preset = getPresetFromTools(tools);
+        toolPresetRef.current = preset;
+        // 计划模式中各工具已被换成只读集，不能用它覆盖预设显示
+        if (!planModeRef.current) setToolPresetState(preset);
       }
     } catch (e) {
       console.error("Failed to load tools:", e);
@@ -1332,6 +1403,85 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // 返回值：true/undefined = 消息已被接受（输入框可以清空）；false = 消息没有
   // 发送出去（视觉代理识别失败、连接失败、agent 忙等），调用方应把内容恢复
   // 回输入框，而不是把用户的消息吞掉。
+  /** 注入隐藏上下文（计划模式指令）。失败不抛错：老版本 SDK 不支持也不能阻断正常对话。 */
+  const injectPlanContext = useCallback(async (sid: string, customType: string, content: string) => {
+    try {
+      await sendAgentCommand(sid, { type: "inject_context", customType, content });
+    } catch (e) {
+      console.error("Failed to inject plan context:", e);
+    }
+  }, []);
+
+  /**
+   * 按当前模式下发激活工具集（幂等）。
+   *
+   * 普通会话 = 用户选的预设（getToolNamesForPreset）——**不含 update_plan / ask_user**，
+   * 所以普通会话不会出现计划面板，也不会弹决策选项；
+   * 计划模式 = 只读工具集 + 计划配套工具（模型才能提交计划、遇到岔路口提问）。
+   *
+   * 进入计划模式时先快照当前激活工具名，供关闭时原样恢复；持久化到 localStorage，
+   * 否则刷新后会把已经切换过的只读集当成「原工具」恢复。
+   * 注意：每次发送前都会重新执行 set_tools——服务器 wrapper 空闲 10 分钟后
+   * 会被回收重建，若只应用一次，工具限制会静默失效。
+   */
+  const applyToolMode = useCallback(async (sid: string, planActive = planModeRef.current) => {
+    try {
+      if (planActive && appliedToolModeSidRef.current !== sid) {
+        const stored = readPlanTools(sid);
+        if (stored !== null) {
+          toolsBeforePlanRef.current = stored;
+        } else {
+          const tools = await sendAgentCommand<ToolEntry[]>(sid, { type: "get_tools" });
+          const active = (tools ?? []).filter((tool) => tool.active).map((tool) => tool.name);
+          toolsBeforePlanRef.current = active;
+          writePlanTools(sid, active);
+        }
+        appliedToolModeSidRef.current = sid;
+      }
+      await sendAgentCommand(sid, {
+        type: "set_tools",
+        toolNames: planActive
+          ? [...PLAN_MODE_TOOL_NAMES, ...PLAN_MODE_CUSTOM_TOOL_NAMES]
+          : getToolNamesForPreset(toolPresetRef.current),
+      });
+    } catch (e) {
+      console.error("Failed to apply tool mode:", e);
+    }
+  }, []);
+
+  /** 关闭计划模式：恢复开启前的工具集，并注入一条「已恢复」上下文 */
+  const restorePlanModeTools = useCallback(async (sid: string) => {
+    const before = toolsBeforePlanRef.current ?? readPlanTools(sid);
+    const restore = before && before.length > 0 ? before : getToolNamesForPreset(toolPresetRef.current);
+    toolsBeforePlanRef.current = null;
+    appliedToolModeSidRef.current = null;
+    writePlanTools(sid, null);
+    try {
+      // 关闭计划模式时同时撤掉计划配套工具（普通会话不该有 update_plan / ask_user）。
+      // 显式传入的名字最优先，所以必须过滤掉，不能只靠预设。
+      const toolNames = [...new Set((restore as string[]).filter((name: string) => !PLAN_MODE_CUSTOM_TOOL_NAMES.includes(name)))];
+      await sendAgentCommand(sid, { type: "set_tools", toolNames });
+      await injectPlanContext(sid, PLAN_MODE_OFF_CUSTOM_TYPE, planModeOffInstruction());
+    } catch (e) {
+      console.error("Failed to restore tools after plan mode:", e);
+    }
+  }, [injectPlanContext]);
+
+  const handlePlanModeChange = useCallback(async (enabled: boolean) => {
+    setPlanMode(enabled);
+    planModeRef.current = enabled;
+    // 模式切换必须重新下发工具集：幂等键按 session 缓存，不重置会让切换变成空操作
+    appliedToolModeSidRef.current = null;
+    const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
+    if (!sid) {
+      // 草稿会话：等真正建出会话后，由 handleSend 在首次发送时应用
+      return;
+    }
+    writePlanMode(sid, enabled);
+    if (enabled) await applyToolMode(sid, true);
+    else await restorePlanModeTools(sid);
+  }, [applyToolMode, restorePlanModeTools]);
+
   const handleSend = useCallback(async (message: string, images?: AttachedImage[]): Promise<boolean> => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return false;
@@ -1404,6 +1554,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           }
           await ensureEventsConnected(sid);
           promptRequestStarted = true;
+          if (!isSlashCommandPrompt) {
+            if (planModeRef.current) writePlanMode(sid, true);
+            // 每次发送前按当前模式重下发工具集（wrapper 可能已被回收重建）
+            await applyToolMode(sid);
+            if (planModeRef.current) {
+              await injectPlanContext(sid, PLAN_MODE_CONTEXT_CUSTOM_TYPE, planModeInstruction());
+            }
+          }
           await sendAgentCommand(sid, {
             type: "prompt",
             message: effectiveMessage,
@@ -1415,6 +1573,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         sentSessionId = session.id;
         await ensureEventsConnected(session.id);
         promptRequestStarted = true;
+        if (!isSlashCommandPrompt) {
+          if (planModeRef.current) writePlanMode(session.id, true);
+          // 普通会话也在这里显式重下发工具集：历史消息里可能残留 update_plan/ask_user，
+          // 不重下发的话刷新后模型仍会摆计划面板。
+          await applyToolMode(session.id);
+          if (planModeRef.current) {
+            await injectPlanContext(session.id, PLAN_MODE_CONTEXT_CUSTOM_TYPE, planModeInstruction());
+          }
+        }
         await sendAgentCommand(session.id, {
           type: "prompt",
           message: effectiveMessage,
@@ -1461,7 +1628,42 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // prompt 尚未发出（或明确被拒）：告诉调用方消息没发送成功，应恢复输入框。
       return false;
     }
-  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, proxyImagesIfNeeded, opts.chatInputRef]);
+  }, [isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, waitForPromptSettlement, addNotice, cancelEventStreamGrace, closeEvents, proxyImagesIfNeeded, opts.chatInputRef, applyToolMode, injectPlanContext]);
+
+  /** 当前会话的计划阶段（从历史消息推导，含 [DONE:n] 进度） */
+  const planStages = useMemo(() => derivePlanStages(messages), [messages]);
+  const planStagesRef = useRef<PlanStage[]>(planStages);
+  useEffect(() => {
+    planStagesRef.current = planStages;
+  }, [planStages]);
+
+  /** 计划模式关闭（若还开着）并发送执行指令。返回是否成功发出。 */
+  const sendPlanRun = useCallback(async (message: string) => {
+    if (planModeRef.current) {
+      const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
+      setPlanMode(false);
+      planModeRef.current = false;
+      if (sid) {
+        writePlanMode(sid, false);
+        await restorePlanModeTools(sid);
+      }
+    }
+    await handleSend(message);
+  }, [handleSend, restorePlanModeTools]);
+
+  /** 一次性执行：把勾选的全部阶段按序发送 */
+  const handleExecutePlan = useCallback(async (steps: number[]) => {
+    const selected = planStagesRef.current.filter((stage) => steps.includes(stage.step) && !stage.done);
+    if (selected.length === 0) return;
+    await sendPlanRun(buildPlanExecutionMessage(selected));
+  }, [sendPlanRun]);
+
+  /** 逐步执行：只发一个阶段，完成后 Agent 停下等用户确认下一步 */
+  const handleExecutePlanStep = useCallback(async (step: number) => {
+    const stage = planStagesRef.current.find((item) => item.step === step && !item.done);
+    if (!stage) return;
+    await sendPlanRun(buildPlanStepMessage(stage));
+  }, [sendPlanRun]);
 
   const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
     if (agentRunningRef.current || bashRunningRef.current) return;
@@ -1834,14 +2036,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const handleToolPresetChange = useCallback(async (preset: "none" | "default" | "full") => {
     const toolNames = getToolNamesForPreset(preset);
     setToolPresetState(preset);
+    toolPresetRef.current = preset;
+    // 计划模式中不真正切换工具（保持只读），只更新关闭时的恢复目标
+    if (planModeRef.current) {
+      toolsBeforePlanRef.current = toolNames;
+      const planSid = sessionIdRef.current;
+      if (planSid) writePlanTools(planSid, toolNames);
+      return;
+    }
+    appliedToolModeSidRef.current = null;
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {
-      await sendAgentCommand(sid, { type: "set_tools", toolNames });
+      await applyToolMode(sid, false);
     } catch (e) {
       console.error("Failed to set tools:", e);
     }
-  }, [setToolPresetState]);
+  }, [applyToolMode, setToolPresetState]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     ignoreProgrammaticScrollUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_IGNORE_MS;
@@ -1880,6 +2091,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     let cancelled = false;
     if (session) {
       sessionIdRef.current = session.id;
+      // 刷新/重挂载后按持久化的模式重下发工具集：计划模式恢复只读集，
+      // 普通会话则显式剔除 update_plan / ask_user（历史里可能还残留着它们）。
+      const restoredPlanMode = readPlanMode(session.id);
+      if (restoredPlanMode) {
+        planModeRef.current = true;
+        setPlanMode(true);
+      }
+      appliedToolModeSidRef.current = null;
+      void applyToolMode(session.id, restoredPlanMode);
       // 新会话发第一条消息后会被「转正」，标签键变化导致本组件重挂载：此时对话已经在
       // 实时流式，再挂一层「正在加载会话…」骨架屏只会让画面先空白几秒。transcript 里
       // 已有内容就直接静默加载（后台对齐消息与服务端状态），没有才显示骨架屏。
@@ -2014,6 +2234,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // State
     data, loading, error, activeLeafId, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, newSessionModel, toolPreset, thinkingLevel,
+    planMode, planStages,
     visionProxyStatus,
     visionModels, visionModelSelected, handleVisionModelChange,
     retryInfo, contextUsage, systemPrompt, forkingEntryId,
@@ -2032,6 +2253,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     handleRecallQueue,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages,
+    handlePlanModeChange, handleExecutePlan, handleExecutePlanStep,
     dispatch, setAgentRunning, setForkingEntryId,
     bashRunning, pendingBash,
     // Subscriptions

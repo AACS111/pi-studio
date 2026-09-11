@@ -48,8 +48,8 @@ export const viewport: Viewport = {
   viewportFit: "cover",
   interactiveWidget: "resizes-content",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#F6F6F3" },
-    { media: "(prefers-color-scheme: dark)", color: "#151917" },
+    { media: "(prefers-color-scheme: light)", color: "#F7F8FA" },
+    { media: "(prefers-color-scheme: dark)", color: "#0D0F12" },
   ],
 };
 
@@ -64,7 +64,7 @@ export default function RootLayout({
         <meta name="google" content="notranslate" />
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("pi-theme");if(t==="dark")document.documentElement.classList.add("dark")}catch(e){}})();`,
+            __html: `(function(){try{var t=localStorage.getItem("pi-theme");if(t==="dark")document.documentElement.classList.add("dark")}catch(e){}try{(function () {var p = window.piElectron;if (p && p.isElectron) {document.documentElement.classList.add("desktop-glass");}}).call(window)}catch(e){}})();`,
           }}
         />
       </head>

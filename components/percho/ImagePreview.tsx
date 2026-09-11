@@ -7,6 +7,7 @@ import type { ImageInput } from "@/lib/percho";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 
 /**
  * 图片 src：历史负载里图片不内联 base64（只剩 mediaRef 桩），此时拼成按需拉取接口；
@@ -35,6 +36,9 @@ export function ImagePreviewOverlay({
 	const { t } = useI18n();
 	const list = images ?? (image ? [image] : []);
 	const count = list.length;
+	// 原生右侧浏览器（WebContentsView）永远盖在 HTML 之上：图片预览遮罩打开期间隐藏它，
+	// 否则浏览器会压住预览图右侧（z-index 再高也没用）。count=0 不渲染时不触发。
+	useNativeOverlayGuard(count > 0);
 	const [index, setIndex] = useState(() => Math.min(initialIndex, count - 1));
 	const onCloseRef = useRef(onClose);
 	onCloseRef.current = onClose;
@@ -60,10 +64,12 @@ export function ImagePreviewOverlay({
 	const current = list[index];
 	if (!current) return null;
 
+	// z-index 必须高于全应用 chrome：左侧栏 z=200、右侧面板 z=260、各类弹窗 z=1000/1100。
+	// 用 z-50 时遮罩盖不住左侧栏（侧栏玻璃背景会把深色遮罩模糊成一块灰糊）。
 	return createPortal(
 		<button
 			type="button"
-			className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+			className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-8"
 			onClick={onClose}
 		>
 			<img

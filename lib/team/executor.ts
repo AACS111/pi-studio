@@ -368,6 +368,8 @@ export class PiAgentExecutor implements AgentExecutorLike {
       ...(effectiveThinkingLevel ? { thinkingLevel: effectiveThinkingLevel } : {}),
       customTools: tools,
       denyToolNames: TEAM_DENY_TOOLS,
+      // 团队走 team_* 受控协议，不注入 ask_user 等计划/决策工具，避免角色绕开交接/任务协议
+      planTools: false,
       // 团队角色会话上下文随 run 递增：显式启用压缩并按角色模型窗口给推荐阈值
       compaction: { enabled: true },
       // 注意：不在这里传 systemPrompt——传了会被 rpc-manager 整体覆盖掉 pi 默认提示词

@@ -5,6 +5,17 @@ import { useI18n } from "@/hooks/useI18n";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor, normalizeHex, DEFAULT_ACCENT } from "@/hooks/useAccentColor";
 import { useGlowBackground, GLOW_STYLE_IDS, GLOW_INTENSITY_MIN, GLOW_INTENSITY_MAX } from "@/hooks/useGlowBackground";
+import {
+  useGlassOpacity,
+  GLASS_OPACITY_MIN,
+  GLASS_OPACITY_MAX,
+  GLASS_OPACITY_STEP,
+} from "@/hooks/useGlassOpacity";
+import {
+  CONTEXT_DIET_DEFAULTS,
+  CONTEXT_DIET_RANGES,
+  type ContextDietSettings,
+} from "@/lib/context-diet-shared";
 import { BranchNavigator } from "./BranchNavigator";
 import { AgentLibraryPanel } from "./AgentLibraryPanel";
 import type { SessionTreeNode } from "@/lib/types";
@@ -50,13 +61,24 @@ interface Row {
   trailing?: ReactNode;
 }
 
+/** 压缩触发点可选项（占模型窗口比例）。与服务端 COMPACTION_TRIGGER_RATIO_OPTIONS 对应；
+ *  不直接 import 服务端模块（lib/compaction-settings.ts 依赖 node:fs）。 */
+const COMPACTION_RATIO_OPTIONS: number[] = [0.25, 0.4, 0.6, 0.85];
+
 /** Second-column panel shown when the Settings activity is selected.
  *  Hosts the app/session settings formerly in the sidebar footer popover. */
 export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branchActiveLeafId, onBranchLeafChange, onOpenModels, onOpenSkills, onOpenPlugins, onOpenUploads, onViewHistory, onAutoName }: Props) {
   const { t, locale, setLocale, supportedLocales } = useI18n();
   const { isDark, toggleTheme } = useTheme();
   const { accent, setAccentColor, resetAccentColor, presets } = useAccentColor({ apply: false });
-  const { enabled: glowEnabled, setGlowEnabled, style: glowStyle, setGlowStyle, intensity: glowIntensity, setGlowIntensity } = useGlowBackground();
+  const { enabled: glowEnabled, setGlowEnabled, style: glowStyle, setGlowStyle, intensity: glowIntensity, setGlowIntensity, resetGlowIntensity } = useGlowBackground();
+  const {
+    foreground: glassForeground,
+    background: glassBackground,
+    setForeground: setGlassForeground,
+    setBackground: setGlassBackground,
+    resetGlassOpacity,
+  } = useGlassOpacity();
   const [customColor, setCustomColor] = useState(accent);
   const [version, setVersion] = useState(false);
   const [showSystem, setShowSystem] = useState(false);
@@ -66,6 +88,82 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
   const [checkingUpdates, setCheckingUpdates] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<UpdateMessage | null>(null);
+  // 上下文自动压缩触发点（占模型窗口比例）；null = 尚未读取到
+  const [compactionRatio, setCompactionRatio] = useState<number | null>(null);
+  // 上下文精简（context-diet 补丁）设置；null = 尚未读取到
+  const [contextDiet, setContextDiet] = useState<ContextDietSettings | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings/compaction")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { triggerRatio?: number } | null) => {
+        if (!cancelled && typeof data?.triggerRatio === "number") setCompactionRatio(data.triggerRatio);
+      })
+      .catch(() => { /* 读不到就置空，行内显示 loading */ });
+    fetch("/api/settings/context-diet")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { data?: ContextDietSettings } | null) => {
+        if (!cancelled && data?.data && typeof data.data.enabled === "boolean") {
+          contextDietRef.current = data.data;
+          setContextDiet(data.data);
+        }
+      })
+      .catch(() => { /* 读不到就置空，行内显示 loading */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * 上下文精简的数值参数用「滑块 + 可编辑数字」：拖动/输入时先改本地 state（即时反馈），
+   * 停手 350ms 再写一次 settings.json（补丁每 5s 重读，下一轮请求生效）。
+   */
+  const contextDietRef = useRef<ContextDietSettings | null>(null);
+  const contextDietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveContextDiet = useCallback(async () => {
+    const payload = contextDietRef.current;
+    if (!payload) return;
+    try {
+      const res = await fetch("/api/settings/context-diet", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = (await res.json()) as { data?: ContextDietSettings };
+      if (data?.data) {
+        contextDietRef.current = data.data;
+        setContextDiet(data.data);
+      }
+    } catch { /* 网络失败保留 UI 值，下次进入面板会重新读取 */ }
+  }, []);
+
+  const updateContextDiet = useCallback((patch: Partial<ContextDietSettings>) => {
+    const current = contextDietRef.current;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    contextDietRef.current = next;
+    setContextDiet(next);
+    if (contextDietTimer.current) clearTimeout(contextDietTimer.current);
+    contextDietTimer.current = setTimeout(() => { void saveContextDiet(); }, 350);
+  }, [saveContextDiet]);
+
+  useEffect(() => () => {
+    if (contextDietTimer.current) clearTimeout(contextDietTimer.current);
+  }, []);
+
+  const cycleCompactionRatio = useCallback(async () => {
+    const options = COMPACTION_RATIO_OPTIONS;
+    const idx = compactionRatio === null ? -1 : options.indexOf(compactionRatio);
+    const next = options[(idx + 1) % options.length];
+    setCompactionRatio(next);
+    try {
+      await fetch("/api/settings/compaction", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ triggerRatio: next }),
+      });
+    } catch { /* 网络失败保留 UI 值，下次进入面板会重新读取 */ }
+  }, [compactionRatio]);
   const appVersion = process.env.NEXT_PUBLIC_APP_VERSION ?? "0.0.0";
   const piVersion = process.env.NEXT_PUBLIC_PI_VERSION ?? "0.0.0";
   // Dragging the color picker fires onChange continuously; debounce the actual
@@ -153,11 +251,77 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
       disabled: !hasSession,
     },
     {
+      label: t("settings.compaction"),
+      desc: compactionRatio === null
+        ? t("settings.compactionLoading")
+        : t("settings.compactionDesc", { percent: String(Math.round(compactionRatio * 100)) }),
+      icon: <IconCompress />,
+      onClick: () => { void cycleCompactionRatio(); },
+      disabled: compactionRatio === null,
+      trailing: (
+        <span
+          role="button"
+          aria-label={t("settings.compaction")}
+          tabIndex={0}
+          onClick={(e) => { e.stopPropagation(); void cycleCompactionRatio(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              void cycleCompactionRatio();
+            }
+          }}
+          style={{
+            fontSize: 11.5,
+            fontVariantNumeric: "tabular-nums",
+            padding: "2px 9px",
+            borderRadius: "var(--radius-pill)",
+            border: "1px solid var(--border)",
+            background: "var(--bg-selected)",
+            color: "var(--text)",
+            cursor: "pointer",
+            flexShrink: 0,
+          }}
+        >
+          {compactionRatio === null ? "…" : `${Math.round(compactionRatio * 100)}%`}
+        </span>
+      ),
+    },
+    {
       label: t("system.label"),
       icon: <IconDoc />,
       onClick: () => setShowSystem((v) => !v),
       disabled: !hasSession,
     },
+  ];
+
+  const contextDietRows: Row[] = [
+    {
+      label: t("settings.contextDiet"),
+      desc: t("settings.contextDietDesc"),
+      icon: <IconCompress />,
+      onClick: () => updateContextDiet({ enabled: !(contextDiet?.enabled ?? CONTEXT_DIET_DEFAULTS.enabled) }),
+      disabled: contextDiet === null,
+      trailing: (
+        <Switch
+          checked={contextDiet?.enabled ?? CONTEXT_DIET_DEFAULTS.enabled}
+          onChange={() => updateContextDiet({ enabled: !(contextDiet?.enabled ?? CONTEXT_DIET_DEFAULTS.enabled) })}
+          ariaLabel={t("settings.contextDiet")}
+        />
+      ),
+    },
+  ];
+
+  /** 上下文精简的数值参数：滑块 + 可直接输入的数字框 */
+  const dietSliders: Array<{
+    key: "keepRecentToolResults" | "foldMinChars" | "keepRecentImages";
+    label: string;
+    desc: string;
+    icon: ReactNode;
+  }> = [
+    { key: "keepRecentToolResults", label: t("settings.dietKeepResults"), desc: t("settings.dietKeepResultsDesc"), icon: <IconCompress /> },
+    { key: "foldMinChars", label: t("settings.dietFoldMinChars"), desc: t("settings.dietFoldMinCharsDesc"), icon: <IconCompress /> },
+    { key: "keepRecentImages", label: t("settings.dietKeepImages"), desc: t("settings.dietKeepImagesDesc"), icon: <IconUpload /> },
   ];
 
   const resourceRows: Row[] = [
@@ -238,7 +402,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         padding: "9px 10px",
         background: "transparent",
         border: "none",
-        borderRadius: 8,
+        borderRadius: "var(--radius-sm)",
         color: row.disabled ? "var(--text-dim)" : "var(--text)",
         cursor: row.disabled ? "not-allowed" : "pointer",
         textAlign: "left",
@@ -263,6 +427,140 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
     </button>
   );
 
+  /**
+   * 数值参数行：左边标签+说明，下面一行是「滑块 + 可输入数字框」。
+   * 不用 <button> 包住 —— 里面是真实表单控件，嵌套在 button 里是非法 HTML。
+   */
+  const renderDietSlider = (item: (typeof dietSliders)[number]) => {
+    const range = CONTEXT_DIET_RANGES[item.key];
+    const value = contextDiet ? contextDiet[item.key] : null;
+    const disabled = contextDiet === null;
+    return (
+      <div key={item.key} style={{ padding: "8px 10px 10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: "var(--text-muted)", flexShrink: 0, display: "inline-flex", opacity: disabled ? 0.55 : 1 }}>
+            {item.icon}
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: disabled ? "var(--text-dim)" : "var(--text)" }}>
+              {item.label}
+            </span>
+            <span style={{ display: "block", fontSize: 11, color: "var(--text-dim)", marginTop: 1 }}>{item.desc}</span>
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 26 }}>
+          <input
+            type="range"
+            min={range.min}
+            max={range.max}
+            step={range.step}
+            value={value ?? range.min}
+            disabled={disabled}
+            aria-label={item.label}
+            onChange={(e) => updateContextDiet({ [item.key]: Number(e.target.value) } as Partial<ContextDietSettings>)}
+            style={{ flex: 1, minWidth: 0, accentColor: "var(--accent)" }}
+          />
+          <input
+            type="number"
+            min={range.min}
+            max={range.max}
+            step={range.step}
+            value={value === null ? "" : String(value)}
+            disabled={disabled}
+            aria-label={`${item.label}（数值）`}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") return;
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return;
+              updateContextDiet({ [item.key]: n } as Partial<ContextDietSettings>);
+            }}
+            onBlur={(e) => {
+              // 失焦时把越界/空值碰回合法区间，避免留下非法设置
+              const n = Number(e.target.value);
+              const clamped = Number.isFinite(n) ? Math.min(range.max, Math.max(range.min, Math.round(n))) : range.min;
+              updateContextDiet({ [item.key]: clamped } as Partial<ContextDietSettings>);
+            }}
+            style={{
+              width: 62,
+              flexShrink: 0,
+              height: 24,
+              padding: "0 6px",
+              fontSize: 11.5,
+              fontVariantNumeric: "tabular-nums",
+              textAlign: "right",
+              background: "var(--bg-selected)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius-xs)",
+              color: disabled ? "var(--text-dim)" : "var(--text)",
+            }}
+          />
+        </div>
+      </div>
+    );
+  };
+
+  /** 0~100% 滑杆一行（标签 + 说明 + 滑杆 + 可输入的数字框），即时生效、不需确认。 */
+  const glassSliderRow = (
+    label: string,
+    desc: string,
+    value: number,
+    onChange: (next: number) => void,
+  ) => (
+    <div style={{ padding: "8px 10px 10px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", fontSize: 12.5, fontWeight: 500, color: "var(--text)" }}>{label}</span>
+          <span style={{ display: "block", fontSize: 11, color: "var(--text-dim)", marginTop: 1 }}>{desc}</span>
+        </span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+        <input
+          type="range"
+          min={GLASS_OPACITY_MIN}
+          max={GLASS_OPACITY_MAX}
+          step={GLASS_OPACITY_STEP}
+          value={value}
+          aria-label={label}
+          onChange={(e) => onChange(Number(e.target.value))}
+          style={{ flex: 1, minWidth: 0, accentColor: "var(--accent)" }}
+        />
+        <input
+          type="number"
+          min={GLASS_OPACITY_MIN}
+          max={GLASS_OPACITY_MAX}
+          step={GLASS_OPACITY_STEP}
+          value={String(value)}
+          aria-label={`${label}（百分比）`}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") return;
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return;
+            onChange(n);
+          }}
+          onBlur={(e) => {
+            const n = Number(e.target.value);
+            onChange(Number.isFinite(n) ? n : GLASS_OPACITY_MAX);
+          }}
+          style={{
+            width: 62,
+            flexShrink: 0,
+            height: 24,
+            padding: "0 6px",
+            fontSize: 11.5,
+            fontVariantNumeric: "tabular-nums",
+            textAlign: "right",
+            background: "var(--bg-selected)",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--radius-xs)",
+            color: "var(--text)",
+          }}
+        />
+      </div>
+    </div>
+  );
+
   const sectionTitle = (label: string) => (
     <div style={{ padding: "10px 10px 3px", fontSize: 11, fontWeight: 600, color: "var(--text-dim)", letterSpacing: "0.03em", textTransform: "uppercase" }}>
       {label}
@@ -276,7 +574,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
     padding: "0 10px",
     background: "var(--bg-hover)",
     border: "1px solid var(--border)",
-    borderRadius: 6,
+    borderRadius: "var(--radius-xs)",
     color: "var(--text)",
     cursor: "pointer",
     fontSize: 11.5,
@@ -298,6 +596,8 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
         <>
         {sectionTitle(t("settings.session"))}
         {sessionRows.map(renderRow)}
+        {contextDietRows.map(renderRow)}
+        {contextDiet === null || contextDiet.enabled ? dietSliders.map(renderDietSlider) : null}
         {showSystem && hasSession && systemPrompt && (
           <div style={{ padding: "6px 10px", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", maxHeight: 160, overflowY: "auto" }}>
             {systemPrompt}
@@ -323,7 +623,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
             alignItems: "center",
             gap: 12,
             padding: "8px 10px",
-            borderRadius: 8,
+            borderRadius: "var(--radius-sm)",
           }}
         >
           <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -344,7 +644,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
                 style={{
                   height: 26,
                   padding: "0 10px",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   background: selected ? "var(--accent-soft)" : "var(--bg-hover)",
                   border: selected ? "1px solid var(--accent)" : "1px solid var(--border)",
                   color: selected ? "var(--accent-hover)" : "var(--text)",
@@ -366,7 +666,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
             alignItems: "center",
             gap: 12,
             padding: "8px 10px",
-            borderRadius: 8,
+            borderRadius: "var(--radius-sm)",
           }}
         >
           <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -404,6 +704,19 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
             {Math.round(glowIntensity * 100)}%
           </span>
         </div>
+        {/* 桌面玻璃透明度：前景（玻璃卡）/ 背景（统一底板）两条滑杆 */}
+        {glassSliderRow(
+          t("settings.glassForeground"),
+          t("settings.glassForegroundDesc"),
+          glassForeground,
+          setGlassForeground,
+        )}
+        {glassSliderRow(
+          t("settings.glassBackground"),
+          t("settings.glassBackgroundDesc"),
+          glassBackground,
+          setGlassBackground,
+        )}
         </>
         )}
 
@@ -414,7 +727,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
             alignItems: "center",
             gap: 12,
             padding: "8px 10px",
-            borderRadius: 8,
+            borderRadius: "var(--radius-sm)",
           }}
         >
           <span
@@ -437,15 +750,21 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
           </span>
           <button
             type="button"
-            onClick={resetAccentColor}
-            title={t("settings.resetAccent")}
+            onClick={() => {
+              // 主题重置：主题色 + 玻璃透明度 + 背景底板 + 光晕强度一起回到默认值
+              resetAccentColor();
+              resetGlassOpacity();
+              resetGlowIntensity();
+            }}
+            title={t("settings.resetAppearance")}
+            aria-label={t("settings.resetAppearance")}
             style={{
               flexShrink: 0,
               height: 24,
               padding: "0 9px",
               background: "var(--bg-hover)",
               border: "1px solid var(--border)",
-              borderRadius: 5,
+              borderRadius: "var(--radius-xs)",
               color: "var(--text-muted)",
               cursor: "pointer",
               fontSize: 11,
@@ -461,7 +780,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
               position: "relative",
               width: 30,
               height: 30,
-              borderRadius: 8,
+              borderRadius: "var(--radius-sm)",
               overflow: "hidden",
               cursor: "pointer",
               border: "1px solid var(--border)",
@@ -514,7 +833,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
                 style={{
                   width: 26,
                   height: 26,
-                  borderRadius: 7,
+                  borderRadius: "var(--radius-sm)",
                   padding: 0,
                   background: preset.value,
                   border: selected ? "2px solid var(--text)" : "1px solid var(--border)",
@@ -546,7 +865,7 @@ export function SettingsPanel({ cwd, hasSession, systemPrompt, branchTree, branc
               padding: "8px 10px",
               background: locale === plugin.id ? "var(--bg-selected)" : "transparent",
               border: "none",
-              borderRadius: 8,
+              borderRadius: "var(--radius-sm)",
               color: "var(--text)",
               cursor: "pointer",
               textAlign: "left",
@@ -689,7 +1008,7 @@ function Switch({ checked, onChange, ariaLabel }: { checked: boolean; onChange: 
       style={{
         width: 30,
         height: 17,
-        borderRadius: 9,
+        borderRadius: "var(--radius-md)",
         background: checked ? "var(--accent)" : "var(--bg-selected)",
         border: "1px solid var(--border)",
         position: "relative",
@@ -708,7 +1027,7 @@ function Switch({ checked, onChange, ariaLabel }: { checked: boolean; onChange: 
           height: 12,
           borderRadius: "50%",
           background: "#fff",
-          boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+          boxShadow: "var(--shadow-sm)",
           transition: "left 0.15s",
         }}
       />
@@ -732,6 +1051,14 @@ function IconBolt() {
     </svg>
   );
 }
+function IconCompress() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 9h16M4 15h16M9 4l3 5 3-5M9 20l3-5 3 5" />
+    </svg>
+  );
+}
+
 function IconGrid() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

@@ -32,46 +32,103 @@
 
 :root {
   /* Neutral surfaces — deliberately NOT accent-tinted: the dynamic background
-     and accent-colored icons carry the theme color, the base stays clean. */
-  --bg: #FFFFFF;
-  --bg-panel: #ECECEC;
-  --bg-hover: #E2E2E2;
-  --bg-selected: #DCDCDC;
-  --border: #B8B8B8;
-  --hairline: rgba(46, 52, 49, 0.10);
-  --text: #2E3431;
-  --text-muted: #7A857C;
-  --text-dim: #B9B9B9;
-  --accent: #3B82F6;
-  --accent-hover: #0b5fe9;
+     and accent-colored icons carry the theme color, the base stays clean.
+     单一冷灰色相（slate）：canvas 极浅灰 → panel 纯白 → elevated 纯白，
+     中间不再出现 #ECECEC/#B8B8B8 那种「重灰 + 硬边」，避免白底旁显脏。 */
+  --bg: #F7F8FA;
+  --bg-panel: #FFFFFF;
+  --bg-elevated: #FFFFFF;
+  --bg-sunken: #F1F3F6;
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-selected: rgba(15, 23, 42, 0.075);
+  --border: rgba(15, 23, 42, 0.10);
+  --hairline: rgba(15, 23, 42, 0.07);
+  --text: #111827;
+  /* 备注/提示层：桌面玻璃下文字坐在「石板灰纱 + 半透明白卡」上，实测比纯白底暗一档。
+     2026-09 五轮压深（对比度按玻璃卡实测底 ~#cbd2db 计）：
+     dim 3.88 → 5.36 → 6.75 → 8.0 → 9.3，muted 4.79 → 6.16 → 8.48 → 9.9 → 11.0；白底/PWA 下只会更清楚，
+     层级仍是 muted 深于 dim，且两档差保持一档（dim 这轮明显向 muted 收拢，照顾时间戳/工具名等最小字）。*/
+  --text-muted: #161C28;
+  --text-dim: #242B3B;
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
   --accent-contrast: #ffffff;
-  --accent-soft: rgba(59, 130, 246, 0.10);
-  --user-bg: #ECECEC;
+  --accent-soft: rgba(37, 99, 235, 0.09);
+  --user-bg: rgba(37, 99, 235, 0.06);
   --assistant-bg: #FFFFFF;
-  --tool-bg: #ECECEC;
-  --bg-subtle: rgba(46, 52, 49, 0.04);
-  --shadow-pop: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --tool-bg: rgba(15, 23, 42, 0.035);
+  --bg-subtle: rgba(15, 23, 42, 0.04);
+  --shadow-pop: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06);
+
+  /* ── Radius scale ── 统一 6/8/10/14/18，替代散落的 5/7/9 魔法数字 */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-pill: 999px;
+
+  /* ── Elevation ── 冷灰阴影（不用纯黑，避免发脏） */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.09), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-lg: var(--shadow-pop);
+
+  /* ── Glass ── 桌面玻璃卡片（顶部/左侧/右侧/聊天区共用同一配方）。
+     窗口是 Electron transparent 窗口：浅色下 html 根背景透明，卡片之间的缝隙
+     直接透出桌面壁纸，卡片本身靠 backdrop-filter 模糊壁纸成磨砂玻璃；
+     深色下根背景是深空底色，卡片模糊的是下面的 GlowBackground 星图。 */
+  --glass-tint: color-mix(in srgb, var(--accent) 5%, transparent);
+  /* 不透明度由「设置 → 桌面玻璃」两条滑块驱动（useGlassOpacity 写入 :root 行内样式，
+     行内优先级高于这里，所以直接改滑杆即时生效、不需要重渲染）。 */
+  --glass-foreground-opacity: 0.52;
+  --glass-background-opacity: 0.28;
+  --glass-bg: color-mix(in srgb, var(--bg-panel) calc(var(--glass-foreground-opacity) * 100%), transparent);
+  --glass-blur: blur(24px) saturate(1.35);
+  /* 卡片背景 = 顶部淡 accent 染 + 半透明面板色（内联写法避开打包 -webkit- 折叠坑） */
+  --glass-card-surface: linear-gradient(180deg, var(--glass-tint) 0%, transparent 46%), var(--glass-bg);
+  --glass-card-shadow: 0 18px 46px rgba(15, 23, 42, 0.13), 0 2px 10px rgba(15, 23, 42, 0.07);
+  /* 卡片几何：窗口四周留 --glass-card-edge 露出壁纸，卡片间留 --glass-card-gap */
+  --glass-card-edge: 12px;
+  --glass-card-gap: 10px;
+  --glass-card-radius: 16px;
+
+  /* ── 内容承载面 ── 聊天列本身就是一张玻璃卡，正文可读性由消息气泡自身的
+     底色（--bg-panel / --user-bg 等）保证，不再需要额外的色纱变量。 */
 }
 
 html.dark {
-  --bg: #1C1C1E;
-  --bg-panel: #222224;
-  --bg-hover: #28282A;
-  --bg-selected: #2D2D2F;
-  --border: #3A3A3C;
-  --hairline: rgba(255, 255, 255, 0.10);
-  --text: #D0D4D9;
-  --text-muted: #8A8F97;
-  --text-dim: #585D65;
-  --accent: #3B82F6;
-  --accent-hover: #6ca1f8;
-  --accent-contrast: #10233f;
-  --accent-soft: rgba(59, 130, 246, 0.12);
-  --user-bg: rgba(59, 130, 246, 0.10);
-  --assistant-bg: #1C1C1E;
-  --tool-bg: #222224;
-  --bg-subtle: rgba(255, 255, 255, 0.05);
-  --shadow-pop: 0 4px 16px rgba(255, 255, 255, 0.14);
+  --bg: #0D0F12;
+  --bg-panel: #15181D;
+  --bg-elevated: #1B1F25;
+  --bg-sunken: #0A0B0E;
+  --bg-hover: rgba(255, 255, 255, 0.055);
+  --bg-selected: rgba(255, 255, 255, 0.085);
+  --border: rgba(255, 255, 255, 0.11);
+  --hairline: rgba(255, 255, 255, 0.075);
+  --text: #E6E8EB;
+  /* 深色是反方向：压深=提亮（底 #15181D 计，muted 13.65→15.5→16.2、dim 9.46→11.1→13.0） */
+  --text-muted: #ECF3FB;
+  --text-dim: #D6DFEB;
+  --accent: #60A5FA;
+  --accent-hover: #93C5FD;
+  --accent-contrast: #0B1220;
+  --accent-soft: rgba(96, 165, 250, 0.14);
+  --user-bg: rgba(96, 165, 250, 0.12);
+  --assistant-bg: #0D0F12;
+  --tool-bg: rgba(255, 255, 255, 0.04);
+  --bg-subtle: rgba(255, 255, 255, 0.045);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.35);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.50), 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+/* 深色下玻璃基底用 elevated 面板色，避免 #15181D 之外再叠一层灰 */
+html.dark {
+  --glass-bg: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  --glass-card-shadow: 0 20px 52px rgba(0, 0, 0, 0.46), 0 2px 10px rgba(0, 0, 0, 0.34);
 }
 
 /* percho chat 移植：todo 面板呼吸灯 / 对勾描边 / 极细滚动条 */
@@ -159,16 +216,68 @@ html, body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', sans-serif;
   font-size: 14px;
   overscroll-behavior: none;
 }
 
+/* 底色只能住在 html（根背景 = canvas 最底层）：body 若有背景会变成
+   「块级后代背景」，直接盖住 z-index:-1 的动态背景层。 */
+html {
+  background: var(--bg);
+}
 body {
   display: flex;
   flex-direction: column;
+  background: transparent;
+}
+
+/* ── 桌面玻璃（Electron 透明窗口）───────────────────────────────────────
+   由 layout.tsx 在 Electron 客户端挂上的 html.desktop-glass。
+
+   浅色下「看得到桌面」不等于把壁纸原样透出来：壁纸对比强/色彩花时，文字读不清，
+   每张卡还会像孤零零浮在花丛上。所以分三层：
+     ① html 根背景透明（真透桌面）；
+     ② ::before（z-index:-3）**中和底板**——一层略深的石板灰纱把壁纸对比压平，
+        文字有稳定基底，卡片也不再各自悬浮；
+     ③ ::after（z-index:-2）主题色晕，叠在星图/水波画布（-1）下面；
+   再往上才是各张玻璃卡。整窗因此读成一块连成一体的磨砂桌面，壁纸只以模糊光影参与。
+
+   深色：根背景保留深空底色（不透桌面，保证正文对比度），走同一套水波光影。
+   浏览器模式同样生效：缝隙里透出的是页面底色。 */
+html.desktop-glass:not(.dark) {
+  background: transparent;
+}
+
+/* 深色根背景不透桌面 */
+html.desktop-glass.dark {
+  background: var(--bg);
+}
+
+/* ① 中和底板：一层**略深的石板灰纱**（用户要求：浅色下也压一层稍深的透明白板）
+   ——把壁纸对比压平、色彩去饱和，文字才有稳定基底；同时让所有玻璃卡读成
+   同一块桌面上的分区，而不是各自悬浮的孤岛。不用 backdrop blur（会与卡片
+   自己的 backdrop-filter 叠加成“双层模糊”，糊成一片没细节）。 */
+html.desktop-glass:not(.dark)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  pointer-events: none;
+  background: color-mix(in srgb, #5b6579 calc(var(--glass-background-opacity) * 100%), transparent);
+}
+
+/* ② 主题色晕：排在水波画布（-1）下面 */
+html.desktop-glass:not(.dark)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 16% 8%, rgba(91, 145, 255, 0.1), transparent 46%),
+    radial-gradient(ellipse at 88% 88%, rgba(255, 153, 112, 0.08), transparent 44%);
 }
 
 ::-webkit-scrollbar {
@@ -732,6 +841,56 @@ pre, code {
 }
 
 /* Electron custom title bar drag region (titleBarStyle: hidden) */
+/* ── 桌面玻璃布局骨架 ─────────────────────────────────────────────────
+   整页 = 纵向 flex（顶栏 + 内容行），四周 padding 让桌面壁纸/星空透出，
+   子级统一留 --glass-card-gap 的间隙。窄屏（手机/窄窗口）退化回平铺：
+   edge/gap 归零，侧栏/右栏走各自的全屏抽屉逻辑。 */
+.app-shell-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: var(--app-viewport-height, 100dvh);
+  overflow: hidden;
+  padding: calc(var(--glass-card-edge) + env(safe-area-inset-top)) calc(var(--glass-card-edge) + env(safe-area-inset-right))
+    calc(var(--glass-card-edge) + env(safe-area-inset-bottom)) calc(var(--glass-card-edge) + env(safe-area-inset-left));
+  gap: var(--glass-card-gap);
+}
+.app-shell-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+  gap: var(--glass-card-gap);
+}
+@media (max-width: 640px) {
+  :root {
+    --glass-card-edge: 0px;
+    --glass-card-gap: 0px;
+  }
+}
+
+/* ── 悬浮玻璃卡（顶栏 / 左侧栏 / 聊天区 / 右栏共用）─────────────────────
+   背景与 backdrop 模糊放在 ::before（z-index:-1，paints 在卡内容之下、卡父级背景之上）
+   而不是卡元素自身：backdrop-filter 会让该元素成为 fixed 后代的 containing block，
+   卡内有大量 position:fixed 的浮层（文件栏菜单、搜索下拉、Portal 之外的面板），
+   放在卡上会全体错位。::before 没后代，无此副作用。 */
+.glass-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--glass-card-radius);
+  box-shadow: var(--glass-card-shadow);
+}
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: calc(var(--glass-card-radius) - 1px);
+  background: var(--glass-card-surface);
+  backdrop-filter: var(--glass-blur);
+  pointer-events: none;
+}
+
 .app-region-drag {
   -webkit-app-region: drag;
   user-select: none;
@@ -948,7 +1107,7 @@ span.linenumber {
 .team-live-dot {
   display: inline-block;
   margin-right: 2px;
-  color: #3b82f6;
+  color: var(--accent);
   animation: pulse 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1020,6 +1179,10 @@ span.linenumber {
   cursor: col-resize;
   touch-action: none;
   outline: none;
+  /* 玻璃单卡片下方是透出的壁纸，拖动条不能比卡片边缘高（否则会在缝隙中间
+     拉出一根悬空竖条）。 */
+  align-self: center;
+  height: 100%;
 }
 .panel-resize-handle::after {
   content: "";
@@ -1058,7 +1221,12 @@ span.linenumber {
   .sidebar-container.sidebar-closed {
     width: 0;
     min-width: 0;
-    border-right: none !important;
+    /* 收起时不能留卡边框/玻璃底：宽度归零后 border + ::before 会变成 2px 竖条 */
+    border: none !important;
+    box-shadow: none;
+  }
+  .sidebar-container.sidebar-closed::before {
+    display: none;
   }
   /* keep inner content at fixed width so it doesn't reflow during animation */
   .sidebar-container > * {
@@ -1085,7 +1253,12 @@ span.linenumber {
   .right-panel-container.right-panel-closed {
     width: 0;
     min-width: 0;
-    border-left: none !important;
+    /* 同上：收起态不能留卡边框/玻璃底 */
+    border: none !important;
+    box-shadow: none;
+  }
+  .right-panel-container.right-panel-closed::before {
+    display: none;
   }
   /* keep inner content at fixed width so it doesn't reflow during animation */
   .right-panel-container > * {
@@ -1100,9 +1273,9 @@ span.linenumber {
      Restore via the panel's restore button, Esc, or the top-right toggle. */
   .right-panel-container.right-panel-maximized {
     position: fixed;
-    inset: 0;
+    inset: var(--glass-card-edge);
     z-index: 260;
-    width: 100%;
+    width: auto;
     min-width: 0;
     transition: none;
   }
@@ -1174,7 +1347,13 @@ span.linenumber {
     bottom: 0;
     width: 280px;
     max-width: 85vw;
+    /* 抽屉是 position:fixed（不受 .app-shell-root 的 padding 影响），
+       这里补上玻璃卡的四周留白 + 浏海安全区 */
     height: var(--app-viewport-height, 100dvh);
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    /* 抽屉是贴左满高的 sheet：左侧方角（与屏幕边齐），右侧保留玻璃卡圆角 */
+    border-radius: 0 var(--glass-card-radius) var(--glass-card-radius) 0;
     transition: transform 0.25s ease, box-shadow 0.25s ease;
   }
   .sidebar-container.sidebar-open {
@@ -1190,6 +1369,9 @@ span.linenumber {
     position: fixed;
     inset: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left);
     height: var(--app-viewport-height, 100dvh);
+    /* 同侧栏抽屉：固定定位层自己处理安全区 */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
     z-index: 250;
     overflow: hidden;
     transition: transform 0.2s ease;
@@ -1237,19 +1419,19 @@ span.linenumber {
    ============================================================ */
 :root {
   --shimmer-highlight: rgba(219, 234, 254, 0.9);
-  --markdown-quote-border: #B0BECC;
-  --markdown-quote-text: #8B98A5;
-  --markdown-link-decoration: #3B82F6;
-  --markdown-link-hover: #0b5fe9;
-  --markdown-table-border: #D9E2F2;
+  --markdown-quote-border: color-mix(in srgb, var(--text-dim) 55%, transparent);
+  --markdown-quote-text: var(--text-muted);
+  --markdown-link-decoration: var(--accent);
+  --markdown-link-hover: var(--accent-hover);
+  --markdown-table-border: var(--hairline);
 }
 html.dark {
-  --shimmer-highlight: rgba(108, 161, 248, 0.7);
-  --markdown-quote-border: #3A3E44;
-  --markdown-quote-text: #8A8F97;
-  --markdown-link-decoration: #6ca1f8;
-  --markdown-link-hover: #93c5fd;
-  --markdown-table-border: #3A3E44;
+  --shimmer-highlight: rgba(96, 165, 250, 0.7);
+  --markdown-quote-border: color-mix(in srgb, var(--text-dim) 55%, transparent);
+  --markdown-quote-text: var(--text-muted);
+  --markdown-link-decoration: var(--accent);
+  --markdown-link-hover: var(--accent-hover);
+  --markdown-table-border: var(--hairline);
 }
 
 /* 对话消息流专用滚动条：Notion 风格 —— 极细、半透明、hover 变亮 */
@@ -1282,7 +1464,6 @@ html.dark {
 .toc-card {
   background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
   backdrop-filter: blur(20px) saturate(1.35);
-  -webkit-backdrop-filter: blur(20px) saturate(1.35);
   border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
   box-shadow:
     0 12px 40px -8px rgba(0, 0, 0, 0.28),
@@ -1417,7 +1598,6 @@ html.dark {
     ),
     color-mix(in srgb, var(--bg-panel) 60%, transparent) !important;
   backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
   border: 1px solid color-mix(in srgb, var(--border) 30%, transparent) !important;
   border-radius: 10px;
   box-shadow:
@@ -1490,7 +1670,6 @@ html.dark {
 .markdown-body .inline-code {
   background: color-mix(in srgb, var(--bg-panel) 55%, transparent);
   backdrop-filter: blur(8px) saturate(1.2);
-  -webkit-backdrop-filter: blur(8px) saturate(1.2);
   border: 1px solid color-mix(in srgb, var(--border) 22%, transparent);
   box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--text);
@@ -1512,7 +1691,6 @@ html.dark {
     ),
     color-mix(in srgb, var(--bg-panel) 66%, transparent);
   backdrop-filter: blur(22px) saturate(1.6);
-  -webkit-backdrop-filter: blur(22px) saturate(1.6);
   border: 1px solid color-mix(in srgb, var(--border) 26%, color-mix(in srgb, var(--accent) 32%, transparent));
 }
 /* 顶部玻璃反光高光涂层（glass sheen）：光泽随主题色（accent），铺在内容之下 */
@@ -1540,7 +1718,6 @@ html.dark {
     ),
     color-mix(in srgb, var(--bg-panel) 66%, transparent);
   backdrop-filter: blur(18px) saturate(1.5);
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
   border: 1px solid color-mix(in srgb, var(--border) 28%, transparent);
   box-shadow:
     inset 0 1px 0 0 color-mix(in srgb, var(--accent) 38%, transparent),
@@ -1564,7 +1741,6 @@ html.dark {
     ),
     color-mix(in srgb, var(--bg-panel) 72%, transparent);
   backdrop-filter: blur(22px) saturate(1.55);
-  -webkit-backdrop-filter: blur(22px) saturate(1.55);
   border: 1px solid color-mix(in srgb, var(--border) 45%, color-mix(in srgb, var(--accent) 22%, transparent));
   border-radius: 20px;
   box-shadow:
@@ -1642,7 +1818,7 @@ html.dark {
 
 /* 工作中折叠组圆点行：运行中工具 = 空心呼吸点 */
 .meta-dot-running {
-  border: 1px solid var(--text-muted);
+  background: var(--accent);
   animation: meta-dot-breathe 1.6s ease-in-out infinite;
 }
 @keyframes meta-dot-breathe {
@@ -1681,7 +1857,6 @@ html.dark .retry-note { color: #fbbf24; }
   color: var(--text);
   background: color-mix(in srgb, var(--bg-panel) 52%, transparent);
   backdrop-filter: blur(10px) saturate(1.3);
-  -webkit-backdrop-filter: blur(10px) saturate(1.3);
   border-radius: 8px;
 }
 .turn-diff-head::-webkit-details-marker { display: none; }
@@ -1725,7 +1900,6 @@ html.dark .retry-note { color: #fbbf24; }
 .turn-diff-file:hover {
   background: color-mix(in srgb, var(--bg-panel) 64%, transparent);
   backdrop-filter: blur(12px) saturate(1.3);
-  -webkit-backdrop-filter: blur(12px) saturate(1.3);
   border-color: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 .turn-diff-path {

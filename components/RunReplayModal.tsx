@@ -217,10 +217,10 @@ export function RunReplayModal({ sessionId, runId, onClose, onOpenFile }: Props)
   const statusChip = (status: string) => ({
     fontSize: 10,
     padding: "1px 8px",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     fontWeight: 600,
     color: "#fff",
-    background: status === "completed" ? "#2ec27e" : status === "cancelled" ? "#9898a0" : status === "running" ? "#3b82f6" : status === "pending" ? "#8a8a95" : "#e5484d",
+    background: status === "completed" ? "#2ec27e" : status === "cancelled" ? "#9898a0" : status === "running" ? "var(--accent)" : status === "pending" ? "#8a8a95" : "#e5484d",
   });
 
   const cwd = team?.cwd;
@@ -251,7 +251,7 @@ export function RunReplayModal({ sessionId, runId, onClose, onOpenFile }: Props)
               {run.stats.durationMs > 0 && <span>{fmtDuration(run.stats.durationMs)}</span>}
               <span>{fmtTime(run.createdAt)}</span>
             </span>
-            <button onClick={() => void load()} title={t("team.replay.refresh")} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 7, cursor: "pointer", fontSize: 12, padding: "2px 8px", color: "var(--text-muted)" }}>🔄</button>
+            <button onClick={() => void load()} title={t("team.replay.refresh")} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontSize: 12, padding: "2px 8px", color: "var(--text-muted)" }}>🔄</button>
           </>
         ) : (
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{loading ? "…" : t("team.replay.noEvents")}</span>
@@ -306,7 +306,7 @@ export function RunReplayModal({ sessionId, runId, onClose, onOpenFile }: Props)
               onClick={() => { setPlaying(false); setCursor(0); }}
               disabled={items.length === 0}
               title={t("team.replay.restart")}
-              style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 7, cursor: "pointer", fontSize: 12, padding: "4px 10px", color: "var(--text-muted)" }}
+              style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", cursor: "pointer", fontSize: 12, padding: "4px 10px", color: "var(--text-muted)" }}
             >
               ⏮ {t("team.replay.restart")}
             </button>
@@ -314,7 +314,7 @@ export function RunReplayModal({ sessionId, runId, onClose, onOpenFile }: Props)
               value={speed}
               onChange={(e) => setSpeed(Number(e.target.value))}
               title={t("team.replay.speed")}
-              style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7, fontSize: 11.5, padding: "4px 6px", cursor: "pointer" }}
+              style={{ background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", fontSize: 11.5, padding: "4px 6px", cursor: "pointer" }}
             >
               {[1, 2, 4, 8].map((s) => (
                 <option key={s} value={s}>{s}×</option>
@@ -415,7 +415,7 @@ function ReplayRow({ item, agentInfo, cwd, onOpenFile, thinkingLabel }: {
           <div style={{ fontSize: 12, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
             <span style={{ fontWeight: 600 }}>{emoji} {name}</span>
             <span style={{
-              fontSize: 10, padding: "1px 7px", borderRadius: 8, fontWeight: 600,
+              fontSize: 10, padding: "1px 7px", borderRadius: "var(--radius-sm)", fontWeight: 600,
               color: ok ? "#2ec27e" : item.status === "cancelled" ? "#9898a0" : "#e5484d",
               border: `1px solid ${ok ? "rgba(46,194,125,0.4)" : item.status === "cancelled" ? "rgba(152,152,160,0.4)" : "rgba(229,72,77,0.4)"}`,
             }}>{item.status}</span>
@@ -448,7 +448,7 @@ function ReplayRow({ item, agentInfo, cwd, onOpenFile, thinkingLabel }: {
           {isUser ? <span>👤</span> : <span>{emoji}</span>}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 2, color: isUser ? "var(--accent)" : "var(--text)" }}>{isUser ? "用户" : item.role || name}</div>
-            <div className="markdown-team-message" style={{ fontSize: 12.5, lineHeight: 1.55, border: "1px solid var(--border)", borderRadius: 9, padding: "7px 10px", background: isUser ? "color-mix(in srgb, var(--accent) 7%, transparent)" : "var(--bg-soft, rgba(0,0,0,0.02))" }}>
+            <div className="markdown-team-message" style={{ fontSize: 12.5, lineHeight: 1.55, border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "7px 10px", background: isUser ? "color-mix(in srgb, var(--accent) 7%, transparent)" : "var(--bg-soft, rgba(0,0,0,0.02))" }}>
               <MarkdownBody cwd={cwd}>{item.content.length > 4000 ? `${item.content.slice(0, 4000)}…` : item.content}</MarkdownBody>
             </div>
           </div>
@@ -498,7 +498,7 @@ function ReplayRow({ item, agentInfo, cwd, onOpenFile, thinkingLabel }: {
       );
     case "run_end":
       return (
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 4, padding: "8px 10px", borderRadius: 9, background: "var(--bg-soft, rgba(0,0,0,0.03))", border: "1px dashed var(--border)" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 4, padding: "8px 10px", borderRadius: "var(--radius-md)", background: "var(--bg-soft, rgba(0,0,0,0.03))", border: "1px dashed var(--border)" }}>
           {time}
           <span>{item.status === "completed" ? "🏁" : item.status === "cancelled" ? "⏹️" : "💀"}</span>
           <div style={{ fontSize: 12, fontWeight: 600 }}>
@@ -603,8 +603,8 @@ function DagView({ projections, team, onOpenFile, cwd, noTasksLabel, agentLabel,
               title={`${task.title}${task.description ? `\n${task.description}` : ""}`}
               style={{
                 position: "absolute", left: p.x, top: p.y, width: CARD_W, height: CARD_H,
-                background: "var(--bg)", border: `1.5px solid ${color}`, borderRadius: 10,
-                boxShadow: "0 2px 8px rgba(15,23,42,0.08)", padding: "8px 10px", boxSizing: "border-box",
+                background: "var(--bg)", border: `1.5px solid ${color}`, borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-md)", padding: "8px 10px", boxSizing: "border-box",
                 display: "flex", flexDirection: "column", gap: 4, overflow: "hidden",
                 opacity: task.status === "cancelled" ? 0.55 : 1,
               }}

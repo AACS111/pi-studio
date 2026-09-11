@@ -290,7 +290,7 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
             margin: "0 2px",
             background: open ? "var(--bg-selected)" : "none",
             border: "none",
-            borderRadius: 6,
+            borderRadius: "var(--radius-xs)",
             cursor: "pointer",
             color: open ? "var(--text)" : "var(--text-muted)",
             fontSize: 12,
@@ -342,7 +342,7 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
   }
 
   return (
-    <div style={{ borderBottom: "1px solid var(--border)", background: "var(--bg)", flexShrink: 0, position: "relative" }}>
+    <div style={{ borderBottom: "1px solid var(--hairline)", background: "none", flexShrink: 0, position: "relative" }}>
       {/* Header toggle */}
       <button
         onClick={() => setOpenInternal((v) => !v)}
@@ -372,9 +372,9 @@ export function BranchNavigator({ tree, activeLeafId, onLeafChange, inline, cont
           top: "100%",
           left: 0,
           right: 0,
-          background: "var(--bg)",
+          background: "var(--bg-elevated)",
           borderBottom: "1px solid var(--border)",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+          boxShadow: "var(--shadow-md)",
           zIndex: 100,
         }}>
           {hasContent && firstNode ? (

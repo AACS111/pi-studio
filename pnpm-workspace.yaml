@@ -10,4 +10,5 @@ allowBuilds:
   unrs-resolver: true
 
 patchedDependencies:
+  '@earendil-works/pi-ai': patches/@earendil-works__pi-ai.patch
   '@univerjs-pro/uexcli@0.4.1': patches/@univerjs-pro__uexcli@0.4.1.patch

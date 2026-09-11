@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 
 type Dir = "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
 
@@ -48,6 +49,8 @@ export function DraggableResizableModal({
   height?: number | string;
   zIndex?: number;
 }) {
+  // 原生右侧浏览器（WebContentsView）永远盖在 HTML 之上，弹窗打开期间需隐藏它。
+  useNativeOverlayGuard();
   // 位置与尺寸（px 数值；初始即按视口居中，避免首帧小尺寸/闪烁）
   const [rect, setRect] = useState<{ x: number; y: number; w: number; h: number }>(() => {
     // SSR 安全：给一个合理默认值（客户端 mount 后 useEffect 会立即用真实视口居中校准）
@@ -154,9 +157,9 @@ export function DraggableResizableModal({
           width: rect.w,
           height: rect.h,
           maxWidth: "96vw", maxHeight: "92vh",
-          background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12,
+          background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)",
           display: "flex", flexDirection: "column", padding: 12, boxSizing: "border-box",
-          boxShadow: "0 18px 60px rgba(0,0,0,0.35)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -179,7 +182,7 @@ export function DraggableResizableModal({
             title="关闭"
             aria-label="关闭"
             style={{
-              background: "transparent", color: "var(--text-muted)", border: "none", borderRadius: 8,
+              background: "transparent", color: "var(--text-muted)", border: "none", borderRadius: "var(--radius-sm)",
               width: 30, height: 30, fontSize: 16, cursor: "pointer", flexShrink: 0, lineHeight: 1,
             }}
           >

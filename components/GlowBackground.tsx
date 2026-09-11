@@ -13,15 +13,16 @@
  *
  * 关键点：
  *  - 颜色全部用 CSS 变量派生（var(--accent)/var(--text-dim)），亮暗自动适配。
- *  - position:fixed; inset:0; zIndex:1; pointerEvents:none —— 浮在内容面板之上、
- *    不拦截任何指针事件。
+ *  - position:fixed; inset:0; zIndex:-1; pointerEvents:none —— 位于根背景之上、所有
+ *    内容之下（内容层靠半透明玻璃承载面自行决定透出多少）。
  *  - 用户通过设置开关显式开启，故始终带动画 + 鼠标响应（用户明确选择优先于系统
  *    prefers-reduced-motion）。
  *  - 性能：~30fps、视口自适应、隐藏标签页 rAF 自动暂停。
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "@/hooks/useTheme";
 import { useGlowBackground, type GlowStyle } from "@/hooks/useGlowBackground";
+import { useGlassOpacity } from "@/hooks/useGlassOpacity";
 
 /* ── 类型 ─────────────────────────────────────────────────────────────── */
 
@@ -41,11 +42,12 @@ const FPS_CAP = 30;
 const BASE_COUNT = 60;      // 基础粒子数（视口自适应）
 const STAR_BASE = 90;       // 星空基础星数
 
-/* ── 光斑基础透明度（intensity 会额外乘上去） ─────────────────────────── */
+/* ── 光斑基础透明度（intensity 会额外乘上去） ───────────────────────────
+   浅色分支调亮：毛玻璃承载面会再压一道，原先 0.38~0.45 几乎读不出光晕。 */
 const BLOB_BASE = [
-  { dark: 0.5, light: 0.42 },
-  { dark: 0.55, light: 0.45 },
-  { dark: 0.45, light: 0.38 },
+  { dark: 0.5, light: 0.6 },
+  { dark: 0.55, light: 0.64 },
+  { dark: 0.45, light: 0.55 },
 ];
 
 /* ── 颜色辅助 ─────────────────────────────────────────────────────────── */
@@ -157,7 +159,7 @@ function drawParticles(
       const dx = p.x - q.x, dy = p.y - q.y;
       const dist = dx * dx + dy * dy;
       if (dist > LINK_DIST * LINK_DIST) continue;
-      const alpha = (1 - dist / (LINK_DIST * LINK_DIST)) * 0.28 * intensity;
+      const alpha = (1 - dist / (LINK_DIST * LINK_DIST)) * (dark ? 0.28 : 0.4) * intensity;
       ctx.strokeStyle = dark ? rgba(accent, alpha * 0.9) : rgba(dim, alpha);
       ctx.lineWidth = 0.7;
       ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
@@ -165,7 +167,7 @@ function drawParticles(
   }
   // 粒子 + 移动 + 鼠标扰动
   for (const p of particles) {
-    ctx.fillStyle = dark ? rgba(accent, 0.75 * intensity) : rgba(dim, 0.55 * intensity);
+    ctx.fillStyle = dark ? rgba(accent, 0.75 * intensity) : rgba(dim, 0.78 * intensity);
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
     p.x += p.vx; p.y += p.vy;
     if (mouseX > -9999) {
@@ -315,6 +317,69 @@ function drawWaves(
   }
 }
 
+/**
+ * 桌面玻璃专用「水波底板」：铺满整窗，把所有玻璃卡连成一块磨砂桌面。
+ *
+ * 与 drawWaves 的区别：
+ *  - 无独立不透明底色（桌面从底层透上来），只画低对比的大尺度光影；
+ *  - 两层缓动光带（一条亮、一条略深）+ 焦点光晕 + 可选的细密涟漪，形成
+ *    「水波推过桌面」的连续性：卡片不再是各自悬着的孤岛，而是同一块板上的分区。
+ *  - 亮度整体压得很低（浅色下需保证壁纸再亮、文字也不糊）。
+ */
+function drawDesktopWater(
+  ctx: CanvasRenderingContext2D, w: number, h: number,
+  dark: boolean, accent: Rgb, intensity: number, t: number,
+) {
+  const tintAlpha = (dark ? 0.17 : 0.16) * Math.min(intensity, 1.2);
+  // ① 斜向水波光带：三条浅色光带缓慢漂移（大尺度，能穿过卡片的 24px 模糊）
+  for (let li = 0; li < 3; li++) {
+    const baseY = h * (0.2 + li * 0.3);
+    const amp = 34 + li * 18;
+    const speed = 0.18 - li * 0.04;
+    const phase = li * 2.1;
+    const grad = ctx.createLinearGradient(0, baseY - h * 0.45, w, baseY + h * 0.45);
+    const c = lighten(accent, 0.3 + li * 0.18);
+    grad.addColorStop(0, rgba(c, 0));
+    grad.addColorStop(0.5, rgba(c, tintAlpha * (li === 0 ? 1 : 0.66)));
+    grad.addColorStop(1, rgba(c, 0));
+    ctx.beginPath();
+    ctx.moveTo(-40, h + 40);
+    for (let x = -40; x <= w + 40; x += 12) {
+      const y = baseY + Math.sin(x * 0.0042 + t * speed + phase) * amp;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(w + 40, h + 40);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+  // ② 焦点光晕：把视线中心托起来（位置随水波缓慢漂移）
+  const fx = w * 0.5 + Math.sin(t * 0.05) * w * 0.06;
+  const fy = h * 0.42 + Math.cos(t * 0.04) * h * 0.05;
+  const glow = ctx.createRadialGradient(fx, fy, 0, fx, fy, Math.max(w, h) * 0.62);
+  glow.addColorStop(0, rgba(lighten(accent, 0.5), tintAlpha * (dark ? 1.5 : 1.3)));
+  glow.addColorStop(1, rgba(accent, 0));
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, w, h);
+  // ③ 细密涟漪：水面层次（间距放得比卡片模糊半径大，才不会被模糊抹平）
+  const rippleAlpha = (dark ? 0.07 : 0.075) * Math.min(intensity, 1.2);
+  const ripple = lighten(accent, 0.62);
+  const ripple2 = lighten(accent, 0.3);
+  for (let r = 0; r < 3; r++) {
+    const spacing = 120 + r * 46;
+    const offset = (t * (9 + r * 5)) % spacing;
+    ctx.lineWidth = 1.6;
+    for (let y = -spacing + offset; y < h + spacing; y += spacing) {
+      ctx.beginPath();
+      for (let x = -20; x <= w + 20; x += 16) {
+        ctx.lineTo(x, y + Math.sin(x * 0.0075 + t * 0.7 + r) * 9);
+      }
+      ctx.strokeStyle = rgba(r % 2 === 0 ? ripple : ripple2, rippleAlpha);
+      ctx.stroke();
+    }
+  }
+}
+
 function drawNebula(
   ctx: CanvasRenderingContext2D, w: number, h: number, nebula: NebulaBlob[],
   accent: Rgb, intensity: number,
@@ -338,7 +403,21 @@ export function GlowBackground() {
   const { isDark } = useTheme();
   const { enabled, style, intensity } = useGlowBackground();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // 浅色 + 桌面玻璃主题：不画星空（浅色星点在桌面壁纸前会糊成一团灰），
+  // 整层隐藏，让窗口直接透出真实桌面。深色保持不变。
+  const [desktopPeek, setDesktopPeek] = useState(false);
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setDesktopPeek(root.classList.contains("desktop-glass"));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
 
+  // 桌面玻璃透明度（设置 → 桌面玻璃两条滑块）需要在应用启动时就生效，
+  // 不能只在设置面板打开时才应用，所以在这里挂一次。
+  useGlassOpacity();
   // refs so intensity/theme change doesn't recreate the canvas effect state
   const intensityRef = useRef(intensity);
   intensityRef.current = intensity;
@@ -346,6 +425,8 @@ export function GlowBackground() {
   isDarkRef.current = isDark;
   const styleRef = useRef<GlowStyle>(style);
   styleRef.current = style;
+  const desktopPeekRef = useRef(false);
+  desktopPeekRef.current = desktopPeek;
 
   useEffect(() => {
     if (!enabled) return;
@@ -443,6 +524,13 @@ export function GlowBackground() {
 
       ctx.clearRect(0, 0, width, height);
 
+      // 桌面玻璃模式（Electron 浅色）：不画星空，改画铺满整窗的水波底板，
+      // 让各张玻璃卡共用同一块桌面（否则每张卡都像孤零零悬浮）。
+      if (desktopPeekRef.current && !dark) {
+        drawDesktopWater(ctx, width, height, dark, accent, intens, t);
+        return;
+      }
+
       if (s === "particles") {
         drawParticles(ctx, width, height, particles, mouse.x, mouse.y, dark, accent, dim, intens);
       } else if (s === "planets") {
@@ -486,11 +574,13 @@ export function GlowBackground() {
   }, [enabled]);
 
   if (!enabled) return null;
-
   const blobOpacity = (idx: number) => {
     const base = isDark ? BLOB_BASE[idx].dark : BLOB_BASE[idx].light;
     return clamp(base * intensity, 0, 0.9);
   };
+
+  // 浅色桌面：星图光斑不画（壁纸前会糊成灰雾），只留 canvas 里的水波底板。
+  const desktopPeekActive = desktopPeek && !isDark;
 
   return (
     <>
@@ -526,7 +616,9 @@ export function GlowBackground() {
       style={{
         position: "fixed",
         inset: 0,
-        zIndex: 1,
+        /* 负 z-index：真正落到根背景之上、所有内容之下。
+           之前用 1 会绘制在普通流内容之上（内容全浮在星空里，读起来脏）。 */
+        zIndex: -1,
         pointerEvents: "none",
         overflow: "hidden",
       }}
@@ -539,7 +631,7 @@ export function GlowBackground() {
           left: "8%",
           width: "480px",
           height: "480px",
-          opacity: blobOpacity(0),
+          opacity: desktopPeekActive ? 0 : blobOpacity(0),
           background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 62%, transparent) 0%, transparent 72%)",
           filter: "blur(48px)",
           borderRadius: "50%",
@@ -554,7 +646,7 @@ export function GlowBackground() {
           translate: "-50% 0",
           width: "700px",
           height: "400px",
-          opacity: blobOpacity(1),
+          opacity: desktopPeekActive ? 0 : blobOpacity(1),
           background: "radial-gradient(ellipse, color-mix(in srgb, var(--accent) 58%, transparent) 0%, color-mix(in srgb, var(--accent) 34%, transparent) 42%, transparent 74%)",
           filter: "blur(58px)",
         }}
@@ -567,7 +659,7 @@ export function GlowBackground() {
           right: "8%",
           width: "400px",
           height: "400px",
-          opacity: blobOpacity(2),
+          opacity: desktopPeekActive ? 0 : blobOpacity(2),
           background: "radial-gradient(circle, color-mix(in srgb, var(--accent) 58%, transparent) 0%, color-mix(in srgb, var(--accent) 30%, transparent) 32%, transparent 72%)",
           filter: "blur(42px)",
           borderRadius: "50%",

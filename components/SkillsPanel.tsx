@@ -447,7 +447,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
           gap: 10,
           padding: "8px 9px",
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-sm)",
           background: "var(--bg-panel)",
         }}
       >
@@ -474,7 +474,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
           style={{
             flexShrink: 0, height: 24, padding: "0 10px",
             background: isInstalled ? "rgba(34,197,94,0.1)" : "var(--accent)",
-            border: "none", borderRadius: 5,
+            border: "none", borderRadius: "var(--radius-xs)",
             color: isInstalled ? "#16a34a" : "#fff",
             cursor: isInstalled || isInstalling ? "default" : "pointer",
             fontSize: 11, fontWeight: 600,
@@ -502,7 +502,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
               width: 26, height: 26, padding: 0,
-              background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 6,
+              background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: "var(--radius-xs)",
               color: "var(--text-muted)", cursor: "pointer",
             }}
           >
@@ -516,7 +516,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
 
       {/* Tabs */}
       <div style={{ padding: "0 12px 8px", flexShrink: 0 }}>
-        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 7, overflow: "hidden", height: 30 }}>
+        <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden", height: 30 }}>
           {(["skills", "plugins"] as Tab[]).map((id) => {
             const active = tab === id;
             const count = id === "skills" ? skills.length : packages.length;
@@ -558,7 +558,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                   style={{
                     flex: 1, minWidth: 0, boxSizing: "border-box",
                     fontSize: 12, fontFamily: "inherit", padding: "6px 9px",
-                    border: "1px solid var(--border)", borderRadius: 6,
+                    border: "1px solid var(--border)", borderRadius: "var(--radius-xs)",
                     outline: "none", background: "var(--bg)", color: "var(--text)",
                   }}
                 />
@@ -568,7 +568,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                   disabled={searching || !searchQuery.trim()}
                   style={{
                     flexShrink: 0, height: 29, padding: "0 10px",
-                    background: "var(--accent)", border: "none", borderRadius: 6,
+                    background: "var(--accent)", border: "none", borderRadius: "var(--radius-xs)",
                     color: "#fff", cursor: searching || !searchQuery.trim() ? "default" : "pointer",
                     fontSize: 11, fontWeight: 600, opacity: searching || !searchQuery.trim() ? 0.5 : 1,
                   }}
@@ -612,7 +612,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
 
             {/* scope tabs */}
             <div style={{ padding: "0 4px 8px", flexShrink: 0 }}>
-              <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 7, overflow: "hidden", height: 28 }}>
+              <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", overflow: "hidden", height: 28 }}>
                 {(["global", "project"] as const).map((scope) => {
                   const active = skillScope === scope;
                   const disabled = scope === "project" && !projectResourcesLoaded;
@@ -657,7 +657,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
               const isToggling = toggling.has(s.filePath);
               const expanded = expandedSkill.has(s.filePath);
               return (
-                <div key={s.filePath || s.name} style={{ padding: "8px 6px", borderRadius: 8, borderBottom: "1px solid var(--hairline)" }}>
+                <div key={s.filePath || s.name} style={{ padding: "8px 6px", borderRadius: "var(--radius-sm)", borderBottom: "1px solid var(--hairline)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={enabled ? "var(--accent)" : "var(--text-dim)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
                       <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
@@ -677,7 +677,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                       disabled={isToggling}
                       title={enabled ? t("i18n.hiddenFromPrompt") : t("i18n.visibleInPrompt")}
                       style={{
-                        flexShrink: 0, width: 36, height: 20, borderRadius: 10,
+                        flexShrink: 0, width: 36, height: 20, borderRadius: "var(--radius-md)",
                         border: "none", padding: 0, cursor: isToggling ? "wait" : "pointer",
                         background: enabled ? "var(--accent)" : "var(--border)",
                         position: "relative", transition: "background 0.18s", opacity: isToggling ? 0.6 : 1,
@@ -686,7 +686,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                       <span style={{
                         position: "absolute", top: 2, left: enabled ? 18 : 2,
                         width: 16, height: 16, borderRadius: "50%",
-                        background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+                        background: "var(--bg-elevated)", boxShadow: "var(--shadow-sm)",
                         transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
                       }} />
                     </button>
@@ -718,7 +718,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
             {pluginsError && <div style={{ padding: "12px 10px", color: "#f87171", fontSize: 12 }}>{pluginsError}</div>}
 
             {!projectResourcesLoaded && (
-              <div style={{ padding: "8px 10px", margin: "4px 0", fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+              <div style={{ padding: "8px 10px", margin: "4px 0", fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: "var(--radius-xs)", background: "var(--bg-panel)" }}>
                 {t("trust.pluginsNotLoaded")}
               </div>
             )}
@@ -750,7 +750,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                     style={{
                       flex: 1, minWidth: 0, boxSizing: "border-box",
                       fontSize: 12, fontFamily: "inherit", padding: "6px 9px",
-                      border: "1px solid var(--border)", borderRadius: 6,
+                      border: "1px solid var(--border)", borderRadius: "var(--radius-xs)",
                       outline: "none", background: "var(--bg)", color: "var(--text)",
                     }}
                   />
@@ -760,7 +760,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                     disabled={catalogLoading}
                     style={{
                       flexShrink: 0, height: 29, padding: "0 10px",
-                      background: "var(--accent)", border: "none", borderRadius: 6,
+                      background: "var(--accent)", border: "none", borderRadius: "var(--radius-xs)",
                       color: "#fff", cursor: catalogLoading ? "default" : "pointer",
                       fontSize: 11, fontWeight: 600, opacity: catalogLoading ? 0.5 : 1,
                     }}
@@ -787,7 +787,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                         const installed = isCatalogInstalled(pkg);
                         const installing = installingCatalog === source;
                         return (
-                          <div key={pkg.name} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 9px", background: "var(--bg-panel)" }}>
+                          <div key={pkg.name} style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "8px 9px", background: "var(--bg-panel)" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                               <span
                                 title={pkg.name}
@@ -802,7 +802,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                                 style={{
                                   flexShrink: 0, height: 24, padding: "0 10px",
                                   background: installed ? "rgba(34,197,94,0.1)" : "var(--accent)",
-                                  border: "none", borderRadius: 5,
+                                  border: "none", borderRadius: "var(--radius-xs)",
                                   color: installed ? "#16a34a" : "#fff",
                                   cursor: installed || installing || installingCatalog !== null ? "default" : "pointer",
                                   fontSize: 11, fontWeight: 600,
@@ -887,7 +887,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                         style={{
                           flex: 1, minWidth: 0, boxSizing: "border-box",
                           fontSize: 11, fontFamily: "var(--font-mono)", padding: "6px 9px",
-                          border: "1px solid var(--border)", borderRadius: 6,
+                          border: "1px solid var(--border)", borderRadius: "var(--radius-xs)",
                           outline: "none", background: "var(--bg)", color: "var(--text)",
                         }}
                       />
@@ -897,7 +897,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                         disabled={!installSource.trim() || busyKey?.startsWith("install:")}
                         style={{
                           flexShrink: 0, height: 29, padding: "0 10px",
-                          background: "var(--accent)", border: "none", borderRadius: 6,
+                          background: "var(--accent)", border: "none", borderRadius: "var(--radius-xs)",
                           color: "#fff", cursor: installSource.trim() ? "pointer" : "default",
                           fontSize: 11, fontWeight: 600, opacity: installSource.trim() ? 1 : 0.5,
                         }}
@@ -923,7 +923,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                       const busy = busyKey?.endsWith(key) ?? false;
                       const enabled = !pkg.disabled;
                       return (
-                        <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 8px", borderRadius: 6, borderBottom: "1px solid var(--hairline)" }}>
+                        <div key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 8px", borderRadius: "var(--radius-xs)", borderBottom: "1px solid var(--hairline)" }}>
                           <span style={{ flexShrink: 0, width: 7, height: 7, borderRadius: "50%", background: statusColor(pkg.status) }} />
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
@@ -950,7 +950,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                             disabled={busy}
                             title={pkg.disabled ? t("i18n.enablePackage") : t("i18n.disablePackage")}
                             style={{
-                              flexShrink: 0, width: 36, height: 20, borderRadius: 10,
+                              flexShrink: 0, width: 36, height: 20, borderRadius: "var(--radius-md)",
                               border: "none", padding: 0, cursor: busy ? "wait" : "pointer",
                               background: enabled ? "var(--accent)" : "var(--border)",
                               position: "relative", transition: "background 0.18s", opacity: busy ? 0.6 : 1,
@@ -959,7 +959,7 @@ export function SkillsPanel({ cwd, onPluginsChanged }: Props) {
                             <span style={{
                               position: "absolute", top: 2, left: enabled ? 18 : 2,
                               width: 16, height: 16, borderRadius: "50%",
-                              background: "var(--bg)", boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+                              background: "var(--bg-elevated)", boxShadow: "var(--shadow-sm)",
                               transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
                             }} />
                           </button>

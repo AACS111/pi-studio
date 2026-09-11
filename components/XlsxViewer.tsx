@@ -1566,12 +1566,12 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
               zIndex: 10,
               background: "var(--bg-panel)",
               border: "1px solid var(--border)",
-              borderRadius: 10,
+              borderRadius: "var(--radius-md)",
               padding: "2px 10px",
               fontSize: 11,
               color: "var(--text-muted)",
               pointerEvents: "none",
-              boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+              boxShadow: "var(--shadow-sm)",
             }}
           >
             {t("files.univerSyncing")}
@@ -1603,10 +1603,10 @@ export function XlsxViewer({ filePath, sourceSessionId, binaryUrl, refreshKey = 
                   gap: 10,
                   width: 320,
                   padding: 18,
-                  borderRadius: 10,
+                  borderRadius: "var(--radius-md)",
                   border: "1px solid var(--border)",
                   background: "var(--bg)",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
+                  boxShadow: "var(--shadow-lg)",
                 }}
               >
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>

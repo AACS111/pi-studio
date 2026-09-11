@@ -1,0 +1,165 @@
+diff --git a/dist/api/openai-completions.js b/dist/api/openai-completions.js
+index c5a9f5d..11584ff 100644
+--- a/dist/api/openai-completions.js
++++ b/dist/api/openai-completions.js
+@@ -1,4 +1,7 @@
+ import OpenAI from "openai";
++import { readFileSync } from "node:fs";
++import { homedir } from "node:os";
++import { join } from "node:path";
+ import { calculateCost, clampThinkingLevel } from "../models.js";
+ import { formatProviderError, normalizeProviderError } from "../utils/error-body.js";
+ import { AssistantMessageEventStream } from "../utils/event-stream.js";
+@@ -804,8 +807,110 @@ function addCacheControlToTextContent(message, cacheControl) {
+     }
+     return false;
+ }
++/**
++ * [pi-studio context-diet] Decide what can be trimmed from the replayed history:
++ * - lastAssistantIndex: only this assistant message replays its thinking blocks
++ *   (provider-verified: DeepSeek accepts history without reasoning_content).
++ * - fold: index -> one-line placeholder for stale, large tool results.
++ * - dropImages: index -> stale tool results whose base64 screenshots are omitted
++ *   (keeps the last N image results so the model can still see recent ones).
++ * Disable with PI_CONTEXT_DIET=0; tune with PI_KEEP_RECENT_TOOL_RESULTS /
++ * PI_FOLD_TOOL_RESULT_MIN_CHARS / PI_KEEP_RECENT_TOOL_IMAGES, or in the
++ * pi-studio settings panel (settings.json -> contextDiet section, re-read every 5s).
++ */
++const CONTEXT_DIET_DEFAULTS = { enabled: true, keepRecentToolResults: 8, foldMinChars: 2000, keepRecentImages: 3 };
++let contextDietFileCache = { at: 0, value: null };
++/**
++ * [pi-studio] contextDiet section of settings.json, re-read at most every 5s so the
++ * settings panel can retune a running server without a restart. Process env wins.
++ */
++function readContextDietFileSettings() {
++    if (contextDietFileCache.value && Date.now() - contextDietFileCache.at < 5000)
++        return contextDietFileCache.value;
++    const value = { ...CONTEXT_DIET_DEFAULTS };
++    try {
++        const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
++        const raw = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
++        const section = raw?.contextDiet ?? {};
++        if (typeof section.enabled === "boolean")
++            value.enabled = section.enabled;
++        if (Number.isFinite(section.keepRecentToolResults))
++            value.keepRecentToolResults = Math.max(0, Math.floor(section.keepRecentToolResults));
++        if (Number.isFinite(section.foldMinChars))
++            value.foldMinChars = Math.max(200, Math.floor(section.foldMinChars));
++        if (Number.isFinite(section.keepRecentImages))
++            value.keepRecentImages = Math.max(0, Math.floor(section.keepRecentImages));
++    }
++    catch {
++        // settings.json 缺失/损坏 → 用内置默认值，不能让精简逻辑挡住请求
++    }
++    contextDietFileCache = { at: Date.now(), value };
++    return value;
++}
++function planContextDiet(messages, keepRecentToolResults, foldMinChars, keepRecentImages) {
++    let lastAssistantIndex = -1;
++    for (let i = 0; i < messages.length; i++) {
++        if (messages[i].role === "assistant")
++            lastAssistantIndex = i;
++    }
++    const keep = new Set();
++    for (let i = messages.length - 1; i >= 0 && keep.size < keepRecentToolResults; i--) {
++        if (messages[i].role === "toolResult")
++            keep.add(i);
++    }
++    const fold = new Map();
++    for (let i = 0; i < messages.length; i++) {
++        const msg = messages[i];
++        if (msg.role !== "toolResult" || keep.has(i))
++            continue;
++        const text = (msg.content ?? [])
++            .filter((block) => block.type === "text")
++            .map((block) => block.text ?? "")
++            .join("\n");
++        if (text.length < foldMinChars)
++            continue;
++        const kb = (text.length / 1024).toFixed(1);
++        const lines = text.split("\n").length;
++        fold.set(i, `[folded: ${msg.toolName ?? "tool"} output was ${kb} KB / ${lines} lines - re-run the command if the full output is needed again]`);
++    }
++    const dropImages = new Set();
++    const keepImageIndices = new Set();
++    let keptImages = 0;
++    for (let i = messages.length - 1; i >= 0; i--) {
++        const msg = messages[i];
++        if (msg.role !== "toolResult")
++            continue;
++        const imageCount = (msg.content ?? []).filter((block) => block.type === "image").length;
++        if (imageCount === 0)
++            continue;
++        if (keptImages < keepRecentImages) {
++            keptImages += 1;
++            keepImageIndices.add(i);
++        }
++        else {
++            dropImages.add(i);
++        }
++    }
++    return { lastAssistantIndex, fold, dropImages };
++}
+ export function convertMessages(model, context, compat, options) {
+     const params = [];
++    // [pi-studio] settings.json(contextDiet) < 进程 env 覆盖 < 内置默认值
++    const dietFile = readContextDietFileSettings();
++    const dietEnv = (key) => {
++        const raw = process.env[key];
++        return raw === undefined || raw === "" ? undefined : raw;
++    };
++    const dietEnabledRaw = dietEnv("PI_CONTEXT_DIET");
++    const dietEnabled = dietEnabledRaw !== undefined
++        ? !["0", "false", "off"].includes(dietEnabledRaw.toLowerCase())
++        : dietFile.enabled;
++    const dietKeepToolResultsRaw = Number.parseInt(dietEnv("PI_KEEP_RECENT_TOOL_RESULTS") ?? String(dietFile.keepRecentToolResults), 10);
++    const dietKeepToolResults = Number.isNaN(dietKeepToolResultsRaw) ? CONTEXT_DIET_DEFAULTS.keepRecentToolResults : dietKeepToolResultsRaw;
++    const dietFoldMinCharsRaw = Number.parseInt(dietEnv("PI_FOLD_TOOL_RESULT_MIN_CHARS") ?? String(dietFile.foldMinChars), 10);
++    const dietFoldMinChars = Number.isNaN(dietFoldMinCharsRaw) ? CONTEXT_DIET_DEFAULTS.foldMinChars : dietFoldMinCharsRaw;
++    const dietKeepImagesRaw = Number.parseInt(dietEnv("PI_KEEP_RECENT_TOOL_IMAGES") ?? String(dietFile.keepRecentImages), 10);
++    const dietKeepImages = Number.isNaN(dietKeepImagesRaw) ? CONTEXT_DIET_DEFAULTS.keepRecentImages : dietKeepImagesRaw;
+     const normalizeToolCallId = (id) => {
+         // Handle pipe-separated IDs from OpenAI Responses API
+         // Format: {call_id}|{id} where {id} can be 400+ chars with special chars (+, /, =)
+@@ -832,6 +937,9 @@ export function convertMessages(model, context, compat, options) {
+         return id;
+     };
+     const transformedMessages = transformMessages(context.messages, model, (id) => normalizeToolCallId(id));
++    const dietPlan = dietEnabled
++        ? planContextDiet(transformedMessages, dietKeepToolResults, dietFoldMinChars, dietKeepImages)
++        : null;
+     if (context.systemPrompt) {
+         const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole;
+         const role = useDeveloperRole ? "developer" : "system";
+@@ -894,7 +1002,8 @@ export function convertMessages(model, context, compat, options) {
+                 text: sanitizeSurrogates(block.text),
+             }));
+             const assistantText = assistantTextParts.map((part) => part.text).join("");
+-            const nonEmptyThinkingBlocks = msg.content
++            const replayThinking = !dietPlan || i === dietPlan.lastAssistantIndex;
++            const nonEmptyThinkingBlocks = (replayThinking ? msg.content : [])
+                 .filter(isThinkingContentBlock)
+                 .filter((block) => block.thinking.trim().length > 0);
+             if (nonEmptyThinkingBlocks.length > 0) {
+@@ -999,10 +1108,18 @@ export function convertMessages(model, context, compat, options) {
+                     .filter(isTextContentBlock)
+                     .map((block) => block.text)
+                     .join("\n");
+-                const hasImages = toolMsg.content.some((c) => c.type === "image");
++                const foldedText = dietPlan ? dietPlan.fold.get(j) : undefined;
++                const droppedImages = dietPlan ? dietPlan.dropImages.has(j) : false;
++                const hasImages = !foldedText && !droppedImages && toolMsg.content.some((c) => c.type === "image");
+                 // Always send tool result with text (or placeholder if only images)
+-                const hasText = textResult.length > 0;
+-                const toolResultText = hasText ? textResult : hasImages ? "(see attached image)" : "(no tool output)";
++                const hasText = foldedText !== undefined || textResult.length > 0;
++                const toolResultText = foldedText ?? (hasText
++                    ? textResult
++                    : hasImages
++                        ? "(see attached image)"
++                        : droppedImages
++                            ? `[context-diet: ${toolMsg.toolName ?? "tool"} returned ${toolMsg.content.filter((c) => c.type === "image").length} stale screenshot(s) omitted - re-run the tool if the image is needed again]`
++                            : "(no tool output)");
+                 // Some providers require the 'name' field in tool results
+                 const toolResultMsg = {
+                     role: "tool",

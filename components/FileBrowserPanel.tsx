@@ -57,7 +57,7 @@ function ToolbarIconButton({
         display: "flex", alignItems: "center", justifyContent: "center",
         width: 26, height: 26, padding: 0, marginRight,
         background,
-        border: "none", borderRadius: 6,
+        border: "none", borderRadius: "var(--radius-xs)",
         color,
         cursor: disabled ? "default" : "pointer",
       }}
@@ -238,7 +238,7 @@ export function FileBrowserPanel({ cwd, onOpenFile, onAtMention, onAtMentions, e
             style={{
               width: "100%", boxSizing: "border-box", fontSize: 12, fontFamily: "inherit",
               padding: "7px 28px 7px 26px",
-              border: "1px solid var(--accent)", borderRadius: 8,
+              border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)",
               outline: "none", background: "var(--bg)", color: "var(--text)",
             }}
           />
@@ -247,7 +247,7 @@ export function FileBrowserPanel({ cwd, onOpenFile, onAtMention, onAtMentions, e
               type="button"
               onClick={() => setFileSearchQuery("")}
               title={t("i18n.clearAll")}
-              style={{ position: "absolute", right: 14, display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, padding: 0, background: "none", border: "none", borderRadius: 5, color: "var(--text-dim)", cursor: "pointer" }}
+              style={{ position: "absolute", right: 14, display: "flex", alignItems: "center", justifyContent: "center", width: 20, height: 20, padding: 0, background: "none", border: "none", borderRadius: "var(--radius-xs)", color: "var(--text-dim)", cursor: "pointer" }}
             >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
@@ -287,7 +287,7 @@ export function FileBrowserPanel({ cwd, onOpenFile, onAtMention, onAtMentions, e
                     display: "flex", alignItems: "center", gap: 8,
                     width: "100%", padding: "7px 10px",
                     background: fileSearchActiveIdx === i ? "var(--bg-selected)" : "transparent",
-                    border: "none", borderRadius: 6,
+                    border: "none", borderRadius: "var(--radius-xs)",
                     color: "var(--text)", cursor: "pointer", textAlign: "left",
                     fontSize: 12, fontFamily: "var(--font-mono)",
                   }}

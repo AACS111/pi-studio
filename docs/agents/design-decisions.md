@@ -47,6 +47,27 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 ## Compaction SSE 事件
 新 pi 发 `compaction_start`/`compaction_end`，旧版发 `auto_compaction_start`/`auto_compaction_end`。`handleAgentEvent` 两套都收，保证 `isCompacting` 同步。手动 compact 是阻塞 POST — 按钮在响应返回前保持禁用。
 
+## 上下文瘦身（pi-ai 补丁 + 25% 自动压缩）
+
+**问题（实测 2026-09-11，d2o 会话 `2026-09-11T08-54-52…01a08fad`）**：一个 80 行数据的前端卡顿 bug 烧掉 **34,129,859 token / 283 次调用**（其中 99.2% 是 cacheRead），全程 27 分钟。请求体构成：历史 thinking **350KB（48%）** + 工具结果 **265KB（37%）**。根因不是 bug 难：LLM 无状态，第 n 轮要重发前 n−1 轮，总开销对轮数是平方级；而 deepseek-flash 声明窗口 1,000,000 + `reserveTokens: 19661` ⇒ 要涨到 ~98 万才触发压缩，240k 的上下文永远压不掉。
+
+**① 补丁：`patches/@earendil-works__pi-ai.patch`**（`pnpm patch @earendil-works/pi-ai` 生成，升级该包后需重打）
+改 `dist/api/openai-completions.js` 的 `convertMessages`，新增 `planContextDiet()`：
+1. **历史 thinking 只保留最近一条 assistant**（更早的 `reasoning_content` 置空）。注意 thinking 只在 `transformMessages` 判定「同 provider + api + model」时才回传，跨模型本来就丢。
+2. **陈旧工具结果折叠**：保留最近 8 条（`PI_KEEP_RECENT_TOOL_RESULTS`），更早且 >2000 字符的换成一行 `[folded: bash output was N KB / M lines …]`（`PI_FOLD_TOOL_RESULT_MIN_CHARS`）；被折叠的图片型结果不再附图。
+
+开关 `PI_CONTEXT_DIET=0` 关闭。**只改发给模型的内容**，会话文件 / UI / 审计不受影响。
+- **实测**（同一份 d2o 会话 573 条消息跑 `convertMessages`）：请求体 **974,606 → 454,737 字符（−53.3%）**，折叠 40 条工具结果。
+- **前置验证**：DeepSeek `/chat/completions` 在 `thinking:{type:"enabled"}` 下，历史 assistant 消息不带 `reasoning_content`（含 tool_calls + tool 结果链路）均返回 200 ⇒ 置空安全。
+
+**② 自动压缩改为按窗口比例触发（默认 25%）**
+- `lib/compaction-settings.ts`：新增 `triggerRatio`，写进 settings.json 的 `compaction` 段（pi 用 `settings.compaction?.reserveTokens ?? …` 普通属性读取，不校验多余字段）。`recommendedCompactionForWindow(window, ratio)` ⇒ 触发点 `window×ratio`、`reserveTokens = window − 触发点`、`keepRecentTokens = min(窗口 15%, 触发点 25%)`（且 ≤ 触发点 50%）。
+- `lib/rpc-manager.ts`：**每次会话启动按当前模型窗口重算**阈值（值没变不写盘）。于是同一份配置对 1M 窗口 = 250k 触发 / 62.5k 保留，对 131k 窗口 = 33k 触发 / 8.2k 保留。
+- `app/api/settings/compaction`（GET/PATCH）+ `SettingsPanel` 会话分组里的「上下文自动压缩」行（点行或右侧 pill 在 25/40/60/85% 循环）。PATCH 会用 settings.json 默认模型的窗口立即折算阈值，避免「比例改了、reserveTokens 还是旧值」。
+- 兜底：用户手调过的 `reserveTokens` 也会被这套策略接管；想回到旧的 85% 行为，把比例调到 85%。
+
+**没做（评估过并放弃）**：改 `contextWindow`（会污染模型目录显示）、全局 reserveTokens（对多模型窗口不通用）、每次压缩都重写会话文件（破坏审计）。
+
 ## 运行状态轮询 + 对账
 - 侧栏每 2.5s 轮询 `/api/agent/running`（标签页可见时；后台标签暂停，会话列表响应作初始回退）。
 - `useAgentSession` 把每条会话的 SSE 当主通道，每次 prompt 前打开。`prompt_done` 完成当前 UI 阶段与通知，但空闲 SSE 保持 30s 宽限窗口供下次 prompt 复用。`agent_start` 取消关闭定时器；`agent_settled` 收尾扩展注入的、没有 wrapper 级 `prompt_done` 的运行并开新宽限窗。**别在第一个 `agent_end` 就关闭**：重试、compaction、扩展排队消息会延续同一逻辑 prompt。
@@ -66,6 +87,15 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 - `/api/univer/worktrees` 返回 `trunkRev`（文件 mtime）供前端缓存 key；合并会使其失效（无论看的是什么）。
 - **Agent 铁律：永不自动合并 worktree。** 在 worktree 上编辑 → `worktree ready` → 停下，用户自己在查看器里点「合并到主干」或明确要求。**该铁律对所有 skill 一律适用**：任何 skill 模板/流水线不得写死 `univer worktree merge`，编辑完只标记 ready 即停手。
 - **验证纪律**：每个改动必须过 tsc + eslint + headless 浏览器往返（trunk→worktree→trunk 带样式断言）再交付 — 绝不把未验证状态交给用户（浏览器可能跑着旧 chunk/scope 缓存）。坑位清单见 sheet-edit 技能的交付流程铁律/常见坑（`setValue` 合并语义、`s:null` 是唯一清样式方式、SheetJS 丢对齐、`getCellData().s` 是样式 id 要读 `wb.save().styles[id]`、daemon 文件锁、dev 端口 10141）。
+
+## 办公文档两段式打开（.doc/.docx/.ppt/.pptx）
+
+与表格体验一致的两段式：**默认原生预览，点「AI 编辑」才进工作流**。
+
+- **默认直接预览**：doc/docx 走 mammoth HTML 预览（`DocumentViewer`）；ppt/pptx 走隐藏缓存只读预览 —— `POST /api/univer/ppt-preview` 把转换副本落到 `.internal/univer-view-cache/`（不进任何文件列表）+ 网关 iframe。
+- **只有点「AI 编辑」**才经 `POST /api/univer/from-xlsx` 生成可见的 `<basename>-ai-edit.univer`，进 worktree 工作流。
+- **agent 约定**：对话里被要求「创建/编辑 PPT、文档」时，一律用 office-edit skill 操作 `.univer` 文件并 `open-file-request` 推右侧；需要交付原件再 export 回 `.docx`/`.pptx`。
+- **#坑**：`UniverFileViewer` 对纯 doc/slide 单元**绝不能**走 `/api/univer/view` 的 xlsx 导出（CLI 报 `cannot export doc unit as xlsx`），已按 units 是否含 sheet 门控。
 
 ## 加密 xlsx（KET 桥）
 标准 OOXML 加密 / WPS TSD 加密 / WPS 结构加密的 `.xlsx` 无法被 fflate/SheetJS 解析时走 `lib/ket-bridge.ts` 的 WPS KET COM 自动化（ProgID `Ket.Application`）：首选 `Workbooks.Open` → `SaveAs(FileFormat=51)` 另存为标准 xlsx 并校验 PK 魔数；受限 WPS 365 企业版强制 TSD 容器时兜底 COM 按 Range 取数 + SheetJS 重建（只还原活动工作表）。解密结果按「源路径|大小|mtime|密码」缓存（上限 32 个 / 7 天）。KET 调用 90s 超时防弹窗挂死。
@@ -106,6 +136,7 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 - **渲染层另有一道自愈**：`components/WebViewer.tsx` 在 `active` / `visibilityTick`（面板收起→可见）/ `sessionEpoch`（会话 key 变化）任一信号变化时跑 `runHeal()`：幂等 `create(tabId)` + `getInfo(tabId)`，若视图 URL 为空白（`about:blank`/空/`chrome://`/`edge://`）则用 `lastUrlRef` 重导航。注意 `visibilityTick` **不能进 bounds-sync effect 的 deps**（会形成 bump→重跑→再 bump 死循环）。
 - **切会话 / 切项目都要保住 web 标签**：`AppShell.handleSelectSession` 与 `handleCwdChange` 从 panelMemory 恢复右侧标签时必须把 `currentWebTabs` **合并**进去，不能整体 `setFileTabs(savedPanel.fileTabs)` 覆盖，否则右侧网页标签会被丢。新建的 `<WebViewer>` 统一传 `sessionEpoch={sessionKey}`。
 - 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
+- **打包**（`scripts/package.mjs`）：自动设 `PI_WEB_DIST_DIR=.next-pkg` 与国内镜像（electron-builder-binaries / electron），GitHub 不可达时不卡下载；`electron-builder.yml` 用 `asar: false`（内置服务要读真实文件路径）、`npmRebuild: false`（原生依赖均为预编译产物）。命令：`pack:dir` / `pack:portable` / `pack:nsis` / `pack:msi` / `pack`。
 
 ## 浏览器控制桥（Semantic Browser V2）
 - **仅 Electron 模式**：右侧浏览器由 Electron 内嵌 WebContentsView 渲染，`bridge.cjs` 用 `executeJavaScript` + CDP 落到同一页面，语义接口（/snapshot /execute /select /fill /check /wait /assert）只在此模式提供。snapshot 返回 ref/role/name/value；评分定位器顺序 精确文本 > aria > placeholder > testid > contains，歧义返回 409 + 候选。

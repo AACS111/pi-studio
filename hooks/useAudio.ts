@@ -45,6 +45,32 @@ export function useAudio() {
     return ctxRef.current;
   }, []);
 
+  /**
+   * 预热 AudioContext。new AudioContext() 实测要 350~1000ms（Windows/Chromium，
+   * 首次创建要初始化音频线程），**不能放在点击发送的同一个回调里**——
+   * 那会让「点发送」这一帧直接掉到 1s 级长任务，肉眼就是发送卡一下。
+   * 这里在用户第一次 pointerdown（仍是合法 user gesture，允许 resume）或首次 idle
+   * 时提前建好，点发送时 getCtx 只做一次状态判断，同步开销为 0。
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let done = false;
+    const warm = () => {
+      if (done) return;
+      done = true;
+      const ctx = getCtx();
+      if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+    };
+    window.addEventListener("pointerdown", warm, { once: true, capture: true });
+    window.addEventListener("keydown", warm, { once: true, capture: true });
+    const idle = window.setTimeout(warm, 1200);
+    return () => {
+      window.clearTimeout(idle);
+      window.removeEventListener("pointerdown", warm, { capture: true });
+      window.removeEventListener("keydown", warm, { capture: true });
+    };
+  }, [getCtx]);
+
   const unlockAudio = useCallback((force = false) => {
     if (!force && !enabledRef.current) return;
     const ctx = getCtx();

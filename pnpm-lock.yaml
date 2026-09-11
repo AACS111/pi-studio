@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@earendil-works/pi-ai': 5876dce7ad25df90231392adccdbf0febe73791966cef080600de03a853ad93f
   '@univerjs-pro/uexcli@0.4.1': 17450c6cdca69faec2769d2c079e0abf8757f75c943b48c4a533827cafcf9c7d
 
 importers:
@@ -22,7 +23,7 @@ importers:
         version: 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-ai':
         specifier: 0.84.2
-        version: 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+        version: 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.2
         version: 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
@@ -7790,7 +7791,7 @@ snapshots:
 
   '@earendil-works/pi-agent-core@0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
-      '@earendil-works/pi-ai': 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-ai': 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-telemetry': 0.84.4
       diff: 8.0.4
       ignore: 7.0.5
@@ -7804,7 +7805,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
+  '@earendil-works/pi-ai@0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.5.4)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
@@ -7832,7 +7833,7 @@ snapshots:
   '@earendil-works/pi-coding-agent@0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-ai': 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-ai': 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-client': 0.84.2
       '@earendil-works/pi-protocol': 0.84.2
       '@earendil-works/pi-tui': 0.84.2

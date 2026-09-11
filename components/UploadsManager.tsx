@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 import { DirectoryPicker } from "./DirectoryPicker";
 
 interface UploadEntry {
@@ -63,6 +64,7 @@ function KindIcon({ kind }: { kind: UploadEntry["kind"] }) {
 }
 
 export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; onOpenFile?: (path: string, name: string) => void }) {
+  useNativeOverlayGuard();
   const { t } = useI18n();
   const isMobile = useIsMobile();
   const [stats, setStats] = useState<UploadsStats | null>(null);
@@ -193,10 +195,10 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
           maxHeight: "calc(100dvh - 16px)",
           background: "var(--bg)",
           border: "1px solid var(--border)",
-          borderRadius: 10,
+          borderRadius: "var(--radius-md)",
           display: "flex",
           flexDirection: "column",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -240,7 +242,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               style={{
                 background: "none",
                 border: "1px solid var(--border)",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 padding: "3px 8px",
                 fontSize: 11,
                 color: "var(--text)",
@@ -259,7 +261,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               style={{
                 background: "none",
                 border: "1px solid var(--border)",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 padding: "5px 10px",
                 fontSize: 12,
                 color: "var(--text)",
@@ -275,7 +277,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               style={{
                 background: "none",
                 border: "1px solid var(--border)",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 padding: "5px 10px",
                 fontSize: 12,
                 color: "var(--text)",
@@ -291,7 +293,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
               style={{
                 background: "none",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 padding: "5px 8px",
                 color: "var(--text-muted)",
                 cursor: "pointer",
@@ -327,7 +329,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                   minWidth: 220,
                   background: "var(--bg)",
                   border: "1px solid var(--border)",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   padding: "6px 10px",
                   fontSize: 12,
                   fontFamily: "var(--font-mono)",
@@ -343,7 +345,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                 style={{
                   background: "none",
                   border: "1px solid var(--border)",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   padding: "6px 12px",
                   fontSize: 12,
                   color: "var(--text)",
@@ -360,7 +362,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                 style={{
                   background: "var(--accent)",
                   border: "none",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   padding: "6px 12px",
                   fontSize: 12,
                   color: "#fff",
@@ -377,7 +379,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                 style={{
                   background: "none",
                   border: "1px solid var(--border)",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   padding: "5px 10px",
                   fontSize: 12,
                   color: "var(--text)",
@@ -397,7 +399,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                 style={{
                   background: "none",
                   border: "1px solid var(--border)",
-                  borderRadius: 6,
+                  borderRadius: "var(--radius-xs)",
                   padding: "5px 10px",
                   fontSize: 12,
                   color: "var(--text-muted)",
@@ -459,7 +461,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
             style={{
               margin: "8px 18px 0",
               padding: "6px 10px",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               background: "rgba(248,113,113,0.10)",
               border: "1px solid rgba(248,113,113,0.30)",
               color: "#f87171",
@@ -490,7 +492,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                     alignItems: "center",
                     gap: 10,
                     padding: "7px 10px",
-                    borderRadius: 7,
+                    borderRadius: "var(--radius-sm)",
                     border: "1px solid var(--border)",
                     background: "var(--bg-panel)",
                   }}
@@ -528,7 +530,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                     style={{
                       background: "none",
                       border: "1px solid var(--border)",
-                      borderRadius: 6,
+                      borderRadius: "var(--radius-xs)",
                       padding: "4px 9px",
                       fontSize: 12,
                       color: "var(--accent)",
@@ -545,7 +547,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                     style={{
                       background: "none",
                       border: "1px solid var(--border)",
-                      borderRadius: 6,
+                      borderRadius: "var(--radius-xs)",
                       padding: "4px 9px",
                       fontSize: 12,
                       color: "var(--text)",
@@ -564,7 +566,7 @@ export function UploadsManager({ onClose, onOpenFile }: { onClose: () => void; o
                     style={{
                       background: "none",
                       border: "1px solid var(--border)",
-                      borderRadius: 6,
+                      borderRadius: "var(--radius-xs)",
                       padding: "4px 9px",
                       fontSize: 12,
                       color: "#f87171",

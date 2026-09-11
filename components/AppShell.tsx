@@ -21,6 +21,7 @@ import { SkillsPanel } from "./SkillsPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { WindowControls } from "./WindowControls";
+import { DesktopResizeHandles } from "./DesktopResizeHandles";
 import { GlowBackground } from "./GlowBackground";
 import { useTheme } from "@/hooks/useTheme";
 import { useAccentColor } from "@/hooks/useAccentColor";
@@ -1455,20 +1456,15 @@ export function AppShell() {
         }
       }
     `}</style>
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      width: "100%",
-      height: "var(--app-viewport-height, 100dvh)",
-      paddingLeft: "env(safe-area-inset-left)",
-      paddingRight: "env(safe-area-inset-right)",
-      overflow: "hidden",
-      background: "var(--bg)",
-    }}>
-        {/* 动态背景层：DeepSeek Harness 官网风格（固定最底层、不遮挡交互） */}
+    <div className="app-shell-root" style={{ background: "transparent" }}>
+        {/* 动态背景层：DeepSeek Harness 官网风格（固定最底层、不遮挡交互）。
+            浅色桌面主题下该层整层隐藏，让窗口直接透出桌面壁纸（见 GlowBackground 的
+            desktop-peek 分支）；深色下它是被玻璃模糊的深空星图。 */}
         <GlowBackground />
-        {/* Top bar: window drag region + file panel toggle + window controls */}
-        <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--hairline)", height: "calc(36px + env(safe-area-inset-top))", paddingTop: "env(safe-area-inset-top)", background: "var(--bg-panel)", position: "relative" }}>
+        {/* 自绘窗口缩放把手（透明窗口在 Windows 上没有原生缩放边框） */}
+        <DesktopResizeHandles />
+        {/* 顶部玻璃条：窗口拖动区 + 会话信息 + 窗口控制 */}
+        <div ref={topBarRef} className="glass-card" style={{ display: "flex", alignItems: "center", flexShrink: 0, height: 44, position: "relative", zIndex: 2 }}>
           {/* App brand: mark + name in the window title bar (top-most row) */}
           <div
             className="app-region-drag"
@@ -1603,7 +1599,7 @@ export function AppShell() {
                 <div className="session-info-popover" style={{
                   background: "var(--bg-panel)",
                   borderBottom: "1px solid var(--hairline)",
-                  boxShadow: "0 10px 28px rgba(0,0,0,0.10)",
+                  boxShadow: "var(--shadow-lg)",
                   padding: "12px 16px",
                 }}>
                   {sessionStats ? (() => {
@@ -1773,7 +1769,7 @@ export function AppShell() {
       />
 
       {/* Content row (below the full-width top bar) */}
-      <div style={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+      <div className="app-shell-row">
       {/* First-level activity bar (一级导航) — column 1 */}
       <ActivityBar
         active={activeActivity}
@@ -1792,22 +1788,14 @@ export function AppShell() {
       <div
         ref={sidebarResizer.panelRef}
         id="session-sidebar"
-        className={`sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarResizer.isResizing ? " sidebar-resizing" : ""}`}
+        className={`glass-card sidebar-container${sidebarOpen ? " sidebar-open" : " sidebar-closed"}${mobileSidebarReady ? "" : " sidebar-mobile-pending"}${sidebarResizer.isResizing ? " sidebar-resizing" : ""}`}
         style={{
           "--sidebar-width": `${sidebarResizer.width}px`,
-          /* 玻璃工作区：与 Composer/用户气泡同配方的 iMessage 玻璃水滴材质——
-             半透明底 + 顶部淡 accent 斜向染 + backdrop 模糊，让动态背景从侧栏透出。
-             用内联样式写在 globals.css 之外，避开打包时 lightningcss 折叠 -webkit- 前缀的坑。 */
-          background:
-            "linear-gradient(168deg, color-mix(in srgb, var(--accent) 7%, transparent) 0%, color-mix(in srgb, var(--accent) 2%, transparent) 36%, transparent 64%), color-mix(in srgb, var(--bg-panel) 60%, transparent)",
-          backdropFilter: "blur(26px) saturate(1.45)",
-          WebkitBackdropFilter: "blur(26px) saturate(1.45)",
-          borderRight: "1px solid color-mix(in srgb, var(--border) 50%, transparent)",
+          /* 悬浮玻璃卡：窗口左侧留白（外层 padding）里透出桌面壁纸/星图。
+             内联写法写在 globals.css 之外，避开打包时 lightningcss 折叠 -webkit- 前缀的坑。 */
           display: "flex",
           flexDirection: "column",
           flexShrink: 0,
-          paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: "env(safe-area-inset-bottom)",
           zIndex: 200,
         } as React.CSSProperties}
       >
@@ -1823,12 +1811,14 @@ export function AppShell() {
         />
       )}
 
-      {/* Center: chat */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      {/* Center: chat — 一张独立的悬浮玻璃卡 */}
+      <div className="glass-card" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, position: "relative", borderRadius: "var(--glass-card-radius)" }}>
+        {/* 毛玻璃由 .glass-card::before（z-index:-1）提供，这里不再需要单独的
+            承载层：卡上的 backdrop-filter 会把 fixed 后代变成相对卡定位。 */}
         {/* Chat header — session info + search + stats, above the chat content （项目组视图下合并进 TeamChat 头部，仅保留 1 行） */}
 
         {/* Chat content */}
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <div style={{ flex: 1, overflow: "hidden", position: "relative", zIndex: 1 }}>
           {showChat ? (
             <ChatWorkspace
               session={selectedSession}
@@ -1917,14 +1907,13 @@ export function AppShell() {
       <div
         ref={rightPanelResizer.panelRef}
         id="file-panel"
-        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}${rightPanelMaximized ? " right-panel-maximized" : ""}`}
+        className={`glass-card right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizer.isResizing ? " right-panel-resizing" : ""}${rightPanelMaximized ? " right-panel-maximized" : ""}`}
         style={{
           "--right-panel-width": `${rightPanelResizer.width}px`,
           position: "relative",
           display: "flex",
           flexDirection: "column",
-          borderLeft: "1px solid var(--hairline)",
-          background: "var(--bg)",
+          borderRadius: "var(--glass-card-radius)",
         } as React.CSSProperties}
       >
         {/* Right panel header: home toggle + panel controls (mode pills removed —
@@ -1933,12 +1922,11 @@ export function AppShell() {
           display: "flex",
           alignItems: "center",
           flexShrink: 0,
-          height: "calc(36px + env(safe-area-inset-top))",
-          paddingTop: "env(safe-area-inset-top)",
+          height: 44,
           paddingLeft: 10,
           paddingRight: 6,
           gap: 2,
-          background: "var(--bg-panel)",
+          background: "transparent",
           borderBottom: "1px solid var(--hairline)",
         }}>
           {/* Home (Codex-style task cards) */}
@@ -1966,7 +1954,7 @@ export function AppShell() {
               marginRight: 4,
               background: rightPanelMode === "home" ? "var(--accent-soft)" : "none",
               border: "none",
-              borderRadius: 7,
+              borderRadius: "var(--radius-sm)",
               color: rightPanelMode === "home" ? "var(--accent-hover)" : "var(--text-muted)",
               cursor: "pointer",
               flexShrink: 0,
@@ -2000,7 +1988,7 @@ export function AppShell() {
                 width: 28, height: 28, padding: 0,
                 background: rightPanelMaximized ? "var(--bg-selected)" : "none",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 color: rightPanelMaximized ? "var(--text)" : "var(--text-muted)",
                 cursor: "pointer", flexShrink: 0,
                 transition: "color 0.12s, background 0.12s",
@@ -2036,7 +2024,7 @@ export function AppShell() {
               display: "flex", alignItems: "center", justifyContent: "center",
               width: 28, height: 28, padding: 0,
               background: "none", border: "none",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               color: "var(--text-muted)", cursor: "pointer", flexShrink: 0,
               transition: "color 0.12s, background 0.12s",
             }}
@@ -2079,7 +2067,7 @@ export function AppShell() {
                         marginBottom: 12,
                         background: "color-mix(in srgb, #ef4444 10%, transparent)",
                         border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)",
-                        borderRadius: 9,
+                        borderRadius: "var(--radius-md)",
                         fontSize: 11.5,
                         lineHeight: 1.5,
                         color: "#ef4444",
@@ -2102,12 +2090,13 @@ export function AppShell() {
                           gap: 14,
                           width: "100%",
                           padding: "16px 18px",
-                          background: "var(--bg-panel)",
+                          /* 半透明玻璃面，和侧栏「新建会话」按钮同一套材质，
+                             避免在玻璃卡里拉出一排纯白块 */
+                          background: "var(--glass-bg)",
                           border: "1px solid var(--hairline)",
-                          borderRadius: 14,
+                          borderRadius: "var(--radius-lg)",
                           cursor: "pointer",
                           textAlign: "left",
-                          boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
                           transition: "transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease",
                         }}
                         onMouseEnter={(e) => {
@@ -2128,7 +2117,7 @@ export function AppShell() {
                             justifyContent: "center",
                             width: 40,
                             height: 40,
-                            borderRadius: 12,
+                            borderRadius: "var(--radius-lg)",
                             background: `color-mix(in srgb, ${card.color} 12%, transparent)`,
                             color: card.color,
                             flexShrink: 0,
@@ -2283,8 +2272,8 @@ export function AppShell() {
           zIndex: 500,
           background: "var(--bg-panel)",
           border: "1px solid var(--hairline)",
-          borderRadius: 8,
-          boxShadow: "0 8px 24px rgba(0,0,0,0.10)",
+          borderRadius: "var(--radius-sm)",
+          boxShadow: "var(--shadow-lg)",
           padding: 6,
         }}
       >
@@ -2318,7 +2307,7 @@ export function AppShell() {
             width: "100%", boxSizing: "border-box",
             fontSize: 13, fontFamily: "inherit",
             padding: "7px 10px",
-            border: "1px solid var(--border)", borderRadius: 6,
+            border: "1px solid var(--border)", borderRadius: "var(--radius-xs)",
             outline: "none", background: "var(--bg)", color: "var(--text)",
           }}
         />
@@ -2346,7 +2335,7 @@ export function AppShell() {
                   display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 2,
                   width: "100%", padding: "7px 10px",
                   background: contentSearchActiveIdx === i ? "var(--bg-selected)" : "transparent",
-                  border: "none", borderRadius: 6,
+                  border: "none", borderRadius: "var(--radius-xs)",
                   color: "var(--text)", cursor: "pointer", textAlign: "left",
                 }}
                 onMouseEnter={() => setContentSearchActiveIdx(i)}

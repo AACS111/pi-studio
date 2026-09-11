@@ -5,6 +5,7 @@ import { sendAgentCommand } from "@/lib/agent-client";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import type { PluginPackageInfo, PluginsResponse, CatalogPackage } from "@/lib/api-types";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 
 type PluginScope = PluginPackageInfo["scope"];
 type PluginAction = "install" | "remove" | "update" | "disable" | "enable";
@@ -176,7 +177,7 @@ function buttonStyle(disabled?: boolean, danger?: boolean): React.CSSProperties 
     padding: "6px 12px",
     background: danger ? "rgba(239,68,68,0.08)" : "none",
     border: "1px solid var(--border)",
-    borderRadius: 6,
+    borderRadius: "var(--radius-xs)",
     color: danger ? "#ef4444" : "var(--text-muted)",
     cursor: disabled ? "not-allowed" : "pointer",
     fontSize: 12,
@@ -227,7 +228,7 @@ function Toggle({
           height: 16,
           borderRadius: "50%",
           background: "var(--bg)",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.22)",
+          boxShadow: "var(--shadow-sm)",
           transition: "left 0.18s cubic-bezier(.4,0,.2,1)",
         }}
       />
@@ -250,7 +251,7 @@ function SegmentedScope({
       style={{
         display: "inline-flex",
         border: "1px solid var(--border)",
-        borderRadius: 7,
+        borderRadius: "var(--radius-sm)",
         overflow: "hidden",
         height: 30,
       }}
@@ -396,7 +397,7 @@ function AddPluginPanel({
             height: 36,
             padding: "0 11px",
             border: "1px solid var(--border)",
-            borderRadius: 6,
+            borderRadius: "var(--radius-xs)",
             background: "var(--bg-panel)",
             color: "var(--text)",
             fontSize: 13,
@@ -410,7 +411,7 @@ function AddPluginPanel({
           style={{
             height: 36,
             padding: "0 18px",
-            borderRadius: 6,
+            borderRadius: "var(--radius-xs)",
             border: "none",
             background: "var(--accent)",
             color: "#fff",
@@ -467,7 +468,7 @@ function AddPluginPanel({
                     flexDirection: "column",
                     gap: 5,
                     border: "1px solid var(--border)",
-                    borderRadius: 8,
+                    borderRadius: "var(--radius-sm)",
                     padding: "10px 11px",
                     background: "var(--bg-panel)",
                   }}
@@ -497,7 +498,7 @@ function AddPluginPanel({
                         flexShrink: 0,
                         height: 24,
                         padding: "0 11px",
-                        borderRadius: 5,
+                        borderRadius: "var(--radius-xs)",
                         border: "none",
                         background: installed ? "rgba(34,197,94,0.1)" : "var(--accent)",
                         color: installed ? "#16a34a" : "#fff",
@@ -622,7 +623,7 @@ function AddPluginPanel({
                 height: 36,
                 padding: "0 11px",
                 border: "1px solid var(--border)",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 background: "var(--bg-panel)",
                 color: "var(--text)",
                 fontFamily: "var(--font-mono)",
@@ -658,7 +659,7 @@ function AddPluginPanel({
                       marginBottom: 4,
                       padding: "4px 9px",
                       border: "1px solid var(--border)",
-                      borderRadius: 6,
+                      borderRadius: "var(--radius-xs)",
                       background: "var(--bg-panel)",
                       color: "var(--text-dim)",
                       cursor: "pointer",
@@ -860,6 +861,7 @@ export function PluginsConfig({
   onClose: () => void;
   onReloaded?: () => void;
 }) {
+  useNativeOverlayGuard();
   const isMobile = useIsMobile();
   const { t } = useI18n();
   const [data, setData] = useState<PluginsResponse | null>(null);
@@ -1091,10 +1093,10 @@ export function PluginsConfig({
           maxHeight: "calc(100dvh - 16px)",
           background: "var(--bg)",
           border: "1px solid var(--border)",
-          borderRadius: 8,
+          borderRadius: "var(--radius-sm)",
           display: "flex",
           flexDirection: "column",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.18)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
         }}
       >
@@ -1213,7 +1215,7 @@ export function PluginsConfig({
                             alignItems: "center",
                             gap: 7,
                             padding: "8px 8px",
-                            borderRadius: 5,
+                            borderRadius: "var(--radius-xs)",
                             cursor: "pointer",
                             background: isSelected ? "var(--bg-selected)" : "none",
                           }}
@@ -1294,7 +1296,7 @@ export function PluginsConfig({
                   alignItems: "center",
                   gap: 6,
                   padding: "7px 8px",
-                  borderRadius: 5,
+                  borderRadius: "var(--radius-xs)",
                   border: "none",
                   width: "100%",
                   cursor: "pointer",

@@ -89,7 +89,11 @@ export function Markdown({
 				codeBlockLightTheme="vitesse-light"
 				codeBlockDarkTheme="vitesse-dark"
 				codeBlockProps={CODE_BLOCK_PROPS}
-				deferNodesUntilVisible={true}
+				// #坑 markstream 的 defer 占位有缺陷：流式结束后可见标记只写内部 ref（K.current）
+				// 不触发重渲染，正文节点数 > initialRenderBatchSize(40) 时，结尾未及标记的节点
+				// 会永久停留在灰色占位条（.node-placeholder 闪烁条）。关闭 defer 后节点直接渲染；
+				// 超大消息仍有 maxLiveNodes=320 的虚拟窗口兜底（该路径用 setState，无此 bug）。
+				deferNodesUntilVisible={false}
 			/>
 		</div>
 	);

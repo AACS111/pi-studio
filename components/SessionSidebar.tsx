@@ -929,7 +929,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     style={{
                       height: 30, padding: "0 14px",
                       background: "var(--bg)", border: "1px solid var(--border)",
-                      borderRadius: 7, color: "var(--text-muted)",
+                      borderRadius: "var(--radius-sm)", color: "var(--text-muted)",
                       cursor: "pointer", fontSize: 12,
                       transition: "background 0.12s, color 0.12s",
                     }}
@@ -943,7 +943,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     style={{
                       height: 30, padding: "0 14px",
                       background: removeBusy ? "var(--bg-selected)" : "#ef4444", border: "none",
-                      borderRadius: 7, color: "#fff",
+                      borderRadius: "var(--radius-sm)", color: "#fff",
                       cursor: removeBusy ? "wait" : "pointer", fontSize: 12, fontWeight: 600,
                       opacity: removeBusy ? 0.7 : 1,
                       transition: "background 0.12s, opacity 0.12s",
@@ -975,7 +975,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             title={t("sidebar.addProject")}
             style={{
               display: "flex", alignItems: "center", gap: 9, width: "100%",
-              padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
+              padding: "6px 10px", background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
               color: "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: 500, textAlign: "left",
               transition: "background 0.12s",
             }}
@@ -1001,7 +1001,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 aria-expanded={dropdownOpen}
                 style={{
                   display: "flex", alignItems: "center", gap: 9, width: "100%",
-                  padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
+                  padding: "6px 10px", background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
                   color: "var(--text)", cursor: "pointer", fontSize: 13, fontWeight: 500, textAlign: "left",
                   transition: "background 0.12s",
                 }}
@@ -1033,8 +1033,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   minWidth: 180,
                   background: "var(--bg-panel)",
                   border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  boxShadow: "0 2px 10px rgba(0,0,0,0.08)",
+                  borderRadius: "var(--radius-sm)",
+                  boxShadow: "var(--shadow-md)",
                   padding: 4,
                   display: "flex",
                   flexDirection: "column",
@@ -1050,7 +1050,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                     title={`${hidden} · ${t("sidebar.restoreProject")}`}
                     style={{
                       display: "flex", alignItems: "center", gap: 8, width: "100%",
-                      padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
+                      padding: "6px 10px", background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
                       color: "var(--text)", cursor: "pointer", fontSize: 12, textAlign: "left",
                       transition: "background 0.1s",
                     }}
@@ -1082,18 +1082,18 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           title={selectedCwd ? t("sidebar.newSessionTitle", { path: selectedCwd }) : t("sidebar.selectProject")}
           style={{
             display: "flex", alignItems: "center", gap: 9, width: "100%",
-            padding: "7px 10px", background: "var(--accent)", border: "none", borderRadius: 8,
-            color: "var(--accent-contrast)",
+            padding: "7px 10px", background: "var(--glass-bg)", border: "1px solid var(--hairline)", borderRadius: "var(--radius-md)",
+            color: "var(--text)",
             cursor: selectedCwd ? "pointer" : "not-allowed",
             fontSize: 13, fontWeight: 600, textAlign: "left",
             transition: "background 0.12s, opacity 0.12s",
             opacity: selectedCwd ? 1 : 0.45,
-            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.10)",
+            boxShadow: "var(--shadow-xs)",
           }}
-          onMouseEnter={(e) => { if (selectedCwd) e.currentTarget.style.background = "var(--accent-hover)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = "var(--accent)"; }}
+          onMouseEnter={(e) => { if (selectedCwd) e.currentTarget.style.background = "var(--bg-hover)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "var(--glass-bg)"; }}
         >
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent-contrast)" strokeWidth="2.2" strokeLinecap="round" style={{ flexShrink: 0 }} aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2.2" strokeLinecap="round" style={{ flexShrink: 0 }} aria-hidden="true">
             <line x1="12" y1="5" x2="12" y2="19" />
             <line x1="5" y1="12" x2="19" y2="12" />
           </svg>
@@ -1108,7 +1108,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           title={t("team.sidebar.createTeam")}
           style={{
             display: "flex", alignItems: "center", gap: 9, width: "100%",
-            padding: "6px 10px", background: "transparent", border: "none", borderRadius: 6,
+            padding: "6px 10px", background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
             color: selectedCwd ? "var(--text)" : "var(--text-dim)",
             cursor: selectedCwd ? "pointer" : "not-allowed",
             fontSize: 13, fontWeight: 500, textAlign: "left",
@@ -1146,7 +1146,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               fontSize: 11,
               padding: "4px 8px",
               border: "1px solid var(--border)",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               outline: "none",
               background: "transparent",
               color: "var(--text)",
@@ -1175,7 +1175,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 style={{
                   display: "flex", alignItems: "center", gap: 9, width: "100%",
                   padding: "7px 10px", margin: "2px 0",
-                  background: isSel ? "var(--accent-soft)" : "var(--bg-hover)", borderRadius: 6,
+                  background: isSel ? "var(--accent-soft)" : "var(--bg-hover)", borderRadius: "var(--radius-xs)",
                 }}
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-dim)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
@@ -1195,7 +1195,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   style={{
                     flex: 1, minWidth: 0, height: 26,
                     fontSize: 12.5, padding: "4px 8px",
-                    border: "1px solid var(--accent)", borderRadius: 5,
+                    border: "1px solid var(--accent)", borderRadius: "var(--radius-xs)",
                     outline: "none", background: "var(--bg)", color: "var(--text)",
                   }}
                 />
@@ -1215,7 +1215,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                 display: "flex", alignItems: "center", gap: 9, width: "100%",
                 padding: "7px 10px", margin: "2px 0",
                 background: isSel ? "var(--accent-soft)" : isHovered ? "var(--bg-hover)" : "transparent",
-                borderRadius: 6,
+                borderRadius: "var(--radius-sm)",
+                boxShadow: isSel ? "inset 2px 0 0 var(--accent)" : "none",
                 color: "var(--text)",
                 cursor: "pointer", fontSize: 12.5,
                 transition: "background 0.1s",
@@ -1249,7 +1250,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
                     width: 20, height: 20, padding: 0, flexShrink: 0,
-                    background: "transparent", border: "none", borderRadius: 5,
+                    background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
                     color: "var(--text-muted)", cursor: "pointer",
                     transition: "color 0.12s, background 0.12s",
                   }}
@@ -1280,7 +1281,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
                     width: 20, height: 20, padding: 0, flexShrink: 0,
-                    background: "transparent", border: "none", borderRadius: 5,
+                    background: "transparent", border: "none", borderRadius: "var(--radius-xs)",
                     color: "var(--text-muted)", cursor: "pointer",
                     transition: "color 0.12s, background 0.12s",
                   }}
@@ -1324,7 +1325,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
               width: 24, height: 24, padding: 0,
-              background: "none", border: "none", borderRadius: 6,
+              background: "none", border: "none", borderRadius: "var(--radius-xs)",
               color: sessionRefreshDone ? "#4ade80" : "var(--text-dim)",
               cursor: "pointer",
               transition: "color 0.12s, background 0.12s",
@@ -1551,9 +1552,10 @@ function SessionItem({
         margin: "0 6px",
         cursor: confirmDelete || renaming ? "default" : "pointer",
         background: confirmDelete
-          ? "rgba(239,68,68,0.06)"
+          ? "color-mix(in srgb, #ef4444 8%, transparent)"
           : isSelected ? "var(--accent-soft)" : hovered ? "var(--bg-hover)" : "transparent",
-        borderRadius: 6,
+        borderRadius: "var(--radius-sm)",
+        boxShadow: isSelected ? "inset 2px 0 0 var(--accent)" : "none",
         transition: "background 0.1s",
         opacity: deleting ? 0.5 : 1,
         gap: 6,
@@ -1572,7 +1574,7 @@ function SessionItem({
               style={{
                 height: 24, padding: "0 9px",
                 background: "#ef4444", border: "none",
-                borderRadius: 6, color: "#fff",
+                borderRadius: "var(--radius-xs)", color: "#fff",
                 cursor: "pointer", fontSize: 11, fontWeight: 600,
                 whiteSpace: "nowrap",
               }}
@@ -1584,7 +1586,7 @@ function SessionItem({
               style={{
                 height: 24, padding: "0 9px",
                 background: "var(--bg)", border: "1px solid var(--border)",
-                borderRadius: 6, color: "var(--text-muted)",
+                borderRadius: "var(--radius-xs)", color: "var(--text-muted)",
                 cursor: "pointer", fontSize: 11,
                 whiteSpace: "nowrap",
               }}
@@ -1610,7 +1612,7 @@ function SessionItem({
             fontSize: 12,
             padding: "4px 8px",
             border: "1px solid var(--accent)",
-            borderRadius: 5,
+            borderRadius: "var(--radius-xs)",
             outline: "none",
             background: "var(--bg)",
             color: "var(--text)",
@@ -1679,7 +1681,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 24, height: 24, padding: 0,
                   background: isPinned ? "var(--bg-selected)" : "var(--bg-hover)", border: "1px solid var(--border)",
-                  borderRadius: 6, color: isPinned ? "var(--accent)" : "var(--text-muted)",
+                  borderRadius: "var(--radius-xs)", color: isPinned ? "var(--accent)" : "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   transition: "background 0.12s, color 0.12s",
                 }}
@@ -1698,7 +1700,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 24, height: 24, padding: 0,
                   background: "var(--bg-hover)", border: "1px solid var(--border)",
-                  borderRadius: 6, color: "var(--text-muted)",
+                  borderRadius: "var(--radius-xs)", color: "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   transition: "background 0.12s, color 0.12s",
                 }}
@@ -1716,7 +1718,7 @@ function SessionItem({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 24, height: 24, padding: 0,
                   background: "var(--bg-hover)", border: "1px solid var(--border)",
-                  borderRadius: 6, color: "var(--text-muted)",
+                  borderRadius: "var(--radius-xs)", color: "var(--text-muted)",
                   cursor: "pointer", flexShrink: 0,
                   transition: "background 0.12s, color 0.12s",
                 }}

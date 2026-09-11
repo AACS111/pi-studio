@@ -589,7 +589,7 @@ export function TerminalPanel({ cwd }: Props) {
                   borderRadius: 8,
                   border: "1px solid var(--border)",
                   background: "var(--bg-panel)",
-                  boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+                  boxShadow: "var(--shadow-lg)",
                 }}
               >
                 {[

@@ -375,7 +375,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
                 if (e.key === "Escape") setEditingName(false);
               }}
               style={{
-                fontWeight: 600, fontSize: 14, border: "1px solid var(--accent)", borderRadius: 6,
+                fontWeight: 600, fontSize: 14, border: "1px solid var(--accent)", borderRadius: "var(--radius-xs)",
                 padding: "2px 8px", background: "var(--bg)", color: "var(--text)", outline: "none", maxWidth: 260,
               }}
             />
@@ -466,7 +466,7 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
                       alignItems: "center",
                       gap: 3,
                       padding: "1px 8px",
-                      borderRadius: 10,
+                      borderRadius: "var(--radius-md)",
                       border: `1px solid ${runningNow ? "var(--accent)" : "var(--border)"}`,
                       background: runningNow
                         ? "color-mix(in srgb, var(--accent) 12%, transparent)"
@@ -669,14 +669,14 @@ export function TeamChat({ sessionId, teamName, onOpenFile, chatInputRef }: Prop
         )}
         {/* P1-2：人工审批闸门（等待批准/驳回） */}
         {runStatus?.status === "waiting_approval" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, padding: "10px 12px", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)" }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", flex: 1 }}>
               🔒 等待人工审批：{runStatus.pendingApproval?.from ?? "?"} → {runStatus.pendingApproval?.to ?? "?"}
             </span>
-            <button onClick={() => data.approveRun()} style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid rgba(46,194,125,0.4)", background: "rgba(46,194,125,0.12)", color: "#2ec27e", fontSize: 12, cursor: "pointer" }}>
+            <button onClick={() => data.approveRun()} style={{ padding: "5px 12px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(46,194,125,0.4)", background: "rgba(46,194,125,0.12)", color: "#2ec27e", fontSize: 12, cursor: "pointer" }}>
               ✅ 批准
             </button>
-            <button onClick={() => data.rejectRun()} style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid rgba(229,72,77,0.4)", background: "rgba(229,72,77,0.12)", color: "#e5484d", fontSize: 12, cursor: "pointer" }}>
+            <button onClick={() => data.rejectRun()} style={{ padding: "5px 12px", borderRadius: "var(--radius-sm)", border: "1px solid rgba(229,72,77,0.4)", background: "rgba(229,72,77,0.12)", color: "#e5484d", fontSize: 12, cursor: "pointer" }}>
               ⛔ 驳回
             </button>
           </div>
@@ -724,7 +724,7 @@ function RoleAvatar({ emoji, dot, size = 34, clickable, onClick, title }: { emoj
         fontSize: Math.round(size * 0.5),
         background: "var(--bg-panel, rgba(0,0,0,0.03))",
         border: `2px solid ${dot}`,
-        boxShadow: "0 1px 3px rgba(15,23,42,0.12)",
+        boxShadow: "var(--shadow-sm)",
         userSelect: "none",
         ...(clickable ? { cursor: "pointer", transition: "transform 0.12s, box-shadow 0.12s" } : {}),
       }}
@@ -893,7 +893,7 @@ function MessageBubble({
             {execStatus?.model?.modelId && (
               <span
                 title={`${execStatus.model.provider}/${execStatus.model.modelId}`}
-                style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: 6 }}
+                style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: "var(--radius-xs)" }}
               >
                 {modelDisplayName(execStatus.model.modelId)}
               </span>
@@ -1055,7 +1055,7 @@ function LiveRoleBlock({
           {model && (
             <span
               title={model}
-              style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: 6 }}
+              style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", background: "color-mix(in srgb, var(--text-muted) 12%, transparent)", padding: "1px 6px", borderRadius: "var(--radius-xs)" }}
             >
               {modelDisplayName(model.split("/").pop() ?? model)}
             </span>
@@ -1097,7 +1097,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 4,
     maxWidth: 200,
     padding: "1px 8px",
-    borderRadius: 9,
+    borderRadius: "var(--radius-md)",
     border: "1px solid var(--border)",
     background: "var(--bg-soft, rgba(0,0,0,0.03))",
     color: "var(--text-muted)",
@@ -1128,7 +1128,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 10,
     background: "var(--accent-soft, rgba(0,120,255,0.12))",
     color: "var(--accent)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "2px 8px",
     whiteSpace: "nowrap",
   },
@@ -1136,7 +1136,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 11,
     background: "var(--bg-soft, rgba(0,0,0,0.04))",
     border: "1px solid var(--border)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     padding: "2px 8px",
     color: "var(--text)",
     whiteSpace: "nowrap",
@@ -1148,13 +1148,13 @@ const styles: Record<string, CSSProperties> = {
     fontSize: 10,
     color: "var(--text-muted)",
     border: "1px dashed var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "2px 6px",
   },
   settingsBtn: {
     background: "transparent",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     fontSize: 13,
     padding: "2px 8px",
     cursor: "pointer",
@@ -1188,7 +1188,7 @@ const styles: Record<string, CSSProperties> = {
   bubbleRow: { display: "flex", width: "100%" },
   bubble: {
     padding: "8px 12px",
-    borderRadius: 12,
+    borderRadius: "var(--radius-lg)",
     fontSize: 13,
   },
   bubbleUser: {
@@ -1212,7 +1212,7 @@ const styles: Record<string, CSSProperties> = {
   },
   bubbleOuter: {
     padding: "10px 12px",
-    borderRadius: 12,
+    borderRadius: "var(--radius-lg)",
     background: "var(--bg-soft, rgba(0,0,0,0.04))",
     border: "1px solid var(--hairline, var(--border))",
     borderTopLeftRadius: 4,
@@ -1224,7 +1224,7 @@ const styles: Record<string, CSSProperties> = {
     width: "100%",
     padding: "5px 10px",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     background: "var(--bg-soft, rgba(0,0,0,0.03))",
     color: "var(--text-muted)",
     fontSize: 11.5,
@@ -1238,7 +1238,7 @@ const styles: Record<string, CSSProperties> = {
   thinkBody: {
     marginTop: 4,
     padding: "9px 12px",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     background: "var(--bg-panel, rgba(0,0,0,0.02))",
     border: "1px solid transparent",
     borderLeft: "3px solid var(--border)",
@@ -1283,8 +1283,8 @@ const styles: Record<string, CSSProperties> = {
     marginBottom: 4,
     background: "var(--bg-panel)",
     border: "1px solid var(--border)",
-    borderRadius: 10,
-    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+    borderRadius: "var(--radius-md)",
+    boxShadow: "var(--shadow-lg)",
     padding: 4,
     display: "flex",
     flexDirection: "column",
@@ -1300,7 +1300,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "6px 10px",
     background: "transparent",
     border: "none",
-    borderRadius: 7,
+    borderRadius: "var(--radius-sm)",
     color: "var(--text-muted)",
     cursor: "pointer",
     fontSize: 12.5,
@@ -1311,7 +1311,7 @@ const styles: Record<string, CSSProperties> = {
     width: "100%",
     resize: "none",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "8px 12px",
     fontSize: 13,
     fontFamily: "inherit",
@@ -1321,7 +1321,7 @@ const styles: Record<string, CSSProperties> = {
   },
   steerInput: {
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 10px",
     fontSize: 12,
     background: "var(--bg)",
@@ -1334,7 +1334,7 @@ const styles: Record<string, CSSProperties> = {
     gap: 6,
     padding: "10px 12px",
     border: "1px solid var(--border)",
-    borderRadius: 14,
+    borderRadius: "var(--radius-lg)",
     background: "var(--bg)",
     boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -16px rgba(15,23,42,0.10)",
   },
@@ -1369,7 +1369,7 @@ const styles: Record<string, CSSProperties> = {
     marginTop: 2,
     cursor: "ns-resize",
     touchAction: "none",
-    borderRadius: 6,
+    borderRadius: "var(--radius-xs)",
     opacity: 0.7,
   },
   composerSteer: {
@@ -1390,7 +1390,7 @@ const styles: Record<string, CSSProperties> = {
     height: 34,
     padding: 0,
     border: "1px solid var(--border)",
-    borderRadius: 9,
+    borderRadius: "var(--radius-md)",
     background: "var(--bg-soft, rgba(0,0,0,0.03))",
     color: "var(--text-muted)",
     cursor: "pointer",
@@ -1408,7 +1408,7 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 132,
     padding: "6px 10px",
     border: "1px solid var(--border)",
-    borderRadius: 9,
+    borderRadius: "var(--radius-md)",
     background: "var(--bg-soft, rgba(0,0,0,0.03))",
     color: "var(--text-muted)",
     fontSize: 12,
@@ -1438,7 +1438,7 @@ const styles: Record<string, CSSProperties> = {
     minWidth: 240,
     background: "var(--bg-panel)",
     border: "1px solid var(--border)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     boxShadow: "0 -6px 20px rgba(0,0,0,0.14)",
     overflow: "hidden",
     padding: 4,
@@ -1454,7 +1454,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "7px 10px",
     background: "transparent",
     border: "none",
-    borderRadius: 7,
+    borderRadius: "var(--radius-sm)",
     color: "var(--text-muted)",
     fontSize: 12.5,
     cursor: "pointer",
@@ -1483,7 +1483,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "7px 14px",
     background: "var(--accent)",
     border: "none",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     color: "#fff",
     cursor: "pointer",
     fontSize: 13,
@@ -1499,7 +1499,7 @@ const styles: Record<string, CSSProperties> = {
     padding: "7px 14px",
     background: "rgba(220,38,38,0.1)",
     border: "1px solid rgba(220,38,38,0.3)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     color: "#dc2626",
     cursor: "pointer",
     fontSize: 13,
@@ -1524,7 +1524,7 @@ const styles: Record<string, CSSProperties> = {
     background: "color-mix(in srgb, var(--accent) 10%, transparent)",
     border: "1px solid color-mix(in srgb, var(--accent) 35%, transparent)",
     color: "var(--accent)",
-    borderRadius: 9,
+    borderRadius: "var(--radius-md)",
     fontSize: 10.5,
     padding: "1px 8px",
     cursor: "pointer",
@@ -1535,7 +1535,7 @@ const styles: Record<string, CSSProperties> = {
     background: "var(--accent)",
     color: "#fff",
     border: "none",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 14px",
     fontSize: 13,
     cursor: "pointer",
@@ -1545,7 +1545,7 @@ const styles: Record<string, CSSProperties> = {
     background: "var(--bg-soft, rgba(0,0,0,0.05))",
     color: "var(--text)",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 12px",
     fontSize: 12,
     cursor: "pointer",
@@ -1554,7 +1554,7 @@ const styles: Record<string, CSSProperties> = {
     background: "rgba(220,38,38,0.1)",
     color: "#dc2626",
     border: "1px solid rgba(220,38,38,0.3)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 14px",
     fontSize: 13,
     cursor: "pointer",
@@ -1566,19 +1566,19 @@ function runStatusChip(status: string) {
     status === "completed"
       ? "rgba(16,185,129,0.12)"
       : status === "running" || status === "pending"
-        ? "rgba(59,130,246,0.12)"
+        ? "color-mix(in srgb, var(--accent) 12%, transparent)"
         : status === "cancelled"
-          ? "rgba(107,114,128,0.15)"
-          : "rgba(220,38,38,0.1)";
+          ? "color-mix(in srgb, var(--text-muted) 15%, transparent)"
+          : "color-mix(in srgb, #dc2626 10%, transparent)";
   const color =
     status === "completed"
       ? "#10b981"
       : status === "running" || status === "pending"
-        ? "#3b82f6"
+        ? "var(--accent)"
         : status === "cancelled"
           ? "#6b7280"
           : "#dc2626";
-  return { fontSize: 10, borderRadius: 6, padding: "1px 6px", background: bg, color };
+  return { fontSize: 10, borderRadius: "var(--radius-xs)", padding: "1px 6px", background: bg, color };
 }
 
 

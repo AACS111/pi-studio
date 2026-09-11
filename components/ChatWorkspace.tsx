@@ -71,6 +71,19 @@ const MAX_PANES = 4;
 /** Narrow outer band (fraction) that still triggers a split; everything else adds to the group. */
 const EDGE_FRAC = 0.16;
 
+/**
+ * 分屏落点只服务于「工作区内部拖拽」（标签页 / 侧栏会话）。判定用 dataTransfer 的私有
+ * MIME：dragover 阶段浏览器就会暴露 types，因此可在拖拽经过时可靠区分内部拖拽与外部文件
+ * 拖拽（图片/附件）。外部文件拖拽已由 ChatWindow 的绿色落点层表达，绝不能再点亮分屏蒙版。
+ */
+const INTERNAL_DRAG_TYPES = ["text/pi-workspace-tab", "text/pi-session-drag"];
+function isInternalDrag(e: React.DragEvent): boolean {
+  const types = e.dataTransfer?.types;
+  if (!types) return false;
+  const list = Array.from(types);
+  return INTERNAL_DRAG_TYPES.some((type) => list.includes(type));
+}
+
 function countLeaves(node: Layout): number {
   if (node.kind === "leaf") return 1;
   return node.children.reduce((a, c) => a + countLeaves(c), 0);
@@ -543,7 +556,25 @@ export function ChatWorkspace(props: Props) {
     setDragGhost(null);
   }, []);
 
+  // 兜底：任何拖拽结束（落在窗外/按 Esc 取消/外部文件 drop 后浏览器不再派发 dragleave）
+  // 都必须清掉分屏落点，否则蒙版会一直挂在窗格上。
+  useEffect(() => {
+    const resetDrag = () => {
+      setDraggingTab(null);
+      setDropTarget(null);
+      setDragGhost(null);
+    };
+    window.addEventListener("dragend", resetDrag);
+    window.addEventListener("drop", resetDrag);
+    return () => {
+      window.removeEventListener("dragend", resetDrag);
+      window.removeEventListener("drop", resetDrag);
+    };
+  }, []);
+
   const handleDropZoneEnter = useCallback((leafId: string) => (e: React.DragEvent) => {
+    // 外部文件（图片/附件）拖拽交给 ChatWindow 的落点层处理，不进入分屏落点状态。
+    if (!isInternalDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
     if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -604,7 +635,13 @@ export function ChatWorkspace(props: Props) {
     }
     // Session dragged in from the sidebar.
     const sessionJson = e.dataTransfer.getData("text/pi-session-drag");
-    if (!sessionJson) return;
+    if (!sessionJson) {
+      // 非内部拖拽（外部文件、外部文本等）落到窗格：清掉可能残留的落点蒙版。
+      setDraggingTab(null);
+      setDropTarget(null);
+      setDragGhost(null);
+      return;
+    }
     try {
       const s = JSON.parse(sessionJson) as SessionInfo;
       const key = ensureOpenTab(s);
@@ -777,7 +814,7 @@ export function ChatWorkspace(props: Props) {
       {/* Pane container */}
       <div
         ref={containerRef}
-        style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden", background: "var(--bg)" }}
+        style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden", background: "transparent" }}
       >
         {leafNodes.map((leaf) => {
           const rect = leaves.get(leaf.id);
@@ -879,7 +916,7 @@ export function ChatWorkspace(props: Props) {
               background: "var(--bg-panel)",
               border: "1px solid var(--border)",
               borderRadius: 6,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.2)",
+              boxShadow: "var(--shadow-lg)",
               color: "var(--text)",
               fontSize: 12,
               maxWidth: 220,
@@ -986,6 +1023,7 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
   const barRef = useRef<HTMLDivElement>(null);
   const overflowBtnRef = useRef<HTMLButtonElement>(null);
   const [overflowCount, setOverflowCount] = useState(0);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
   const [overflowOpen, setOverflowOpen] = useState(false);
   const [overflowPos, setOverflowPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -1020,8 +1058,9 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
           position: "relative",
           display: "flex",
           alignItems: "flex-end",
-          background: "var(--bg-panel)",
-          borderBottom: "1px solid var(--hairline)",
+          /* 玻璃模式下不铺不透明灰底（会像一块白板），改用卡片自身的半透明面 */
+          background: "transparent",
+          boxShadow: "inset 0 -1px 0 var(--hairline)",
           overflow: "hidden",
           flexShrink: 0,
           height: 36,
@@ -1036,6 +1075,8 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
             onDrag={onTabDrag}
             onDragEnd={onTabDragEnd}
             onClick={() => onActivate(tab.key)}
+            onMouseEnter={() => setHoverKey(tab.key)}
+            onMouseLeave={() => setHoverKey((k) => (k === tab.key ? null : k))}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1044,10 +1085,11 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
               paddingLeft: 12,
               paddingRight: 6,
               borderRight: "1px solid var(--hairline)",
-              background: tab.isActive ? "var(--bg)" : "var(--bg-panel)",
+              /* 悬停反馈与会话列表同一套：--bg-hover 提亮 + 文字提色 */
+              background: tab.isActive ? "var(--glass-bg)" : hoverKey === tab.key ? "var(--bg-hover)" : "transparent",
               cursor: "pointer",
               fontSize: 12,
-              color: tab.isActive ? "var(--text)" : "var(--text-muted)",
+              color: tab.isActive || hoverKey === tab.key ? "var(--text)" : "var(--text-muted)",
               whiteSpace: "nowrap",
               maxWidth: 220,
               minWidth: 90,
@@ -1096,7 +1138,7 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
               position: "absolute",
               right: 0, top: 0, bottom: 0, width: 40,
               display: "flex", alignItems: "flex-end", justifyContent: "center",
-              background: "linear-gradient(90deg, transparent, var(--bg-panel) 34%, var(--bg-panel) 100%)",
+              background: "linear-gradient(90deg, transparent, var(--glass-bg) 34%, var(--glass-bg) 100%)",
               zIndex: 10,
             }}
           >
@@ -1138,7 +1180,7 @@ function PaneTabBar({ tabs, onActivate, onClose, onTabDragStart, onTabDrag, onTa
             minWidth: 200, maxWidth: 320,
             maxHeight: 320, overflowY: "auto",
             background: "var(--bg-panel)", border: "1px solid var(--border)", borderRadius: 8,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.2)", padding: 4,
+            boxShadow: "var(--shadow-lg)", padding: 4,
           }}
           onMouseLeave={() => setOverflowOpen(false)}
         >

@@ -535,7 +535,7 @@ function ImageViewer({ filePath, cwd, sourceSessionId }: Props) {
               maxWidth: "100%",
               maxHeight: "100%",
               objectFit: "contain",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+              boxShadow: "var(--shadow-md)",
             }}
           />
         )}
@@ -772,7 +772,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, onAiEdit }: Props & { 
             style={{
               display: "flex", alignItems: "center", gap: 5,
               padding: "3px 10px",
-              background: "none", border: "1px solid var(--border)", borderRadius: 7,
+              background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
               fontSize: 11,
               color: aiBusy ? "var(--text-dim)" : "var(--accent)",
               fontWeight: 600, cursor: aiBusy ? "default" : "pointer",
@@ -809,7 +809,7 @@ function DocumentViewer({ filePath, cwd, sourceSessionId, onAiEdit }: Props & { 
         </span>
       </div>
       {aiError && (
-        <div role="alert" style={{ margin: "6px 16px 0", padding: "6px 10px", background: "color-mix(in srgb, #ef4444 10%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", borderRadius: 8, fontSize: 11.5, color: "#ef4444", wordBreak: "break-word", flexShrink: 0 }}>
+        <div role="alert" style={{ margin: "6px 16px 0", padding: "6px 10px", background: "color-mix(in srgb, #ef4444 10%, transparent)", border: "1px solid color-mix(in srgb, #ef4444 35%, transparent)", borderRadius: "var(--radius-sm)", fontSize: 11.5, color: "#ef4444", wordBreak: "break-word", flexShrink: 0 }}>
           {aiError}
         </div>
       )}

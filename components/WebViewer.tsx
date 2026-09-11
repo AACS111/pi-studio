@@ -14,6 +14,8 @@ declare global {
         destroy: (tabId: string) => Promise<void>;
         setVisible: (tabId: string, visible: boolean) => void;
         setBounds: (tabId: string, bounds: { x: number; y: number; width: number; height: number }) => void;
+        /** DOM 全屏弹窗打开/关闭：隐藏/恢复原生视图（否则弹窗会被浏览器内容压住）。 */
+        setOverlay?: (suspended: boolean) => void;
         navigate: (tabId: string, url: string) => Promise<{ url: string | null; title: string | null }>;
         back: (tabId: string) => Promise<{ moved: boolean }>;
         forward: (tabId: string) => Promise<{ moved: boolean }>;

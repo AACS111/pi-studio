@@ -292,7 +292,7 @@ function LibraryCard({
           <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
             {t("team.settings.agentModel")}: {item.model || t("team.settings.defaultModel")}
           </div>
-          <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto", border: "1px solid var(--hairline)", borderRadius: 8, padding: 8 }}>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)", whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto", border: "1px solid var(--hairline)", borderRadius: "var(--radius-sm)", padding: 8 }}>
             {item.systemPrompt}
           </div>
           <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
@@ -317,7 +317,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const styles: Record<string, React.CSSProperties> = {
   input: {
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "7px 10px",
     fontSize: 13,
     fontFamily: "inherit",
@@ -329,13 +329,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   card: {
     border: "1px solid var(--border)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     padding: "9px 11px",
     background: "var(--bg-soft, rgba(0,0,0,0.02))",
   },
   formCard: {
     border: "1px solid var(--accent)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     padding: "10px 12px",
     display: "flex",
     flexDirection: "column",
@@ -346,14 +346,14 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: "var(--text-dim)",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "1px 6px",
   },
   overrideBadge: {
     fontSize: 10,
     color: "var(--accent)",
     background: "rgba(0,120,255,0.10)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "1px 6px",
   },
   iconBtn: {
@@ -363,13 +363,13 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 13,
     cursor: "pointer",
     padding: "2px 4px",
-    borderRadius: 6,
+    borderRadius: "var(--radius-xs)",
   },
   btnPrimary: {
     background: "var(--accent)",
     color: "#fff",
     border: "none",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 12px",
     fontSize: 12,
     cursor: "pointer",
@@ -378,7 +378,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "var(--bg-soft, rgba(0,0,0,0.05))",
     color: "var(--text)",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 12px",
     fontSize: 12,
     cursor: "pointer",

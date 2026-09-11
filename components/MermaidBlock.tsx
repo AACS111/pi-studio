@@ -6,6 +6,7 @@ import { vs } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { vscDarkPlus } from "react-syntax-highlighter/dist/cjs/styles/prism";
 import { useTheme } from "@/hooks/useTheme";
 import { useI18n } from "@/hooks/useI18n";
+import { useNativeOverlayGuard } from "@/hooks/useNativeOverlayGuard";
 import { copyText } from "@/lib/clipboard";
 
 interface MermaidBlockProps {
@@ -118,6 +119,8 @@ export function MermaidBlock({ code, isStreaming, defaultPreview = false }: Merm
 
 function MermaidZoomDialog({ svg, onClose }: { svg: string; onClose: () => void }) {
   const { t } = useI18n();
+  // <dialog> 走 top layer 能盖住 DOM，但盖不住 Electron 右侧原生浏览器，同样需要隐藏它。
+  useNativeOverlayGuard();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [zoom, setZoom] = useState(1);
 

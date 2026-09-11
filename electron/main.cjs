@@ -35,7 +35,7 @@
   };
 })();
 
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell, WebContentsView } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, shell, WebContentsView } = require("electron");
 
 // require 完成后立即恢复（后续不再需要内置模块解析）
 if (globalThis.__piElectronRestore) { globalThis.__piElectronRestore(); globalThis.__piElectronRestore = undefined; }
@@ -48,6 +48,62 @@ const { startBridge } = require("./bridge.cjs");
 const PRELOAD = path.join(__dirname, "preload.cjs");
 
 const APP_ROOT = path.join(__dirname, "..");
+// 自绘窗口缩放：transparent 窗口在 Windows 上没有原生 thick frame，由渲染进程
+// 的 8 方位把手通过 pi-window-resize-* IPC 调用。
+const MIN_WINDOW_W = 940;
+const MIN_WINDOW_H = 600;
+const RESIZE_DIRS = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw"]);
+let resizeState = null;
+
+function clampToWorkArea(bounds) {
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const x = Math.min(Math.max(bounds.x, area.x - 40), area.x + area.width - 80);
+  const y = Math.min(Math.max(bounds.y, area.y - 4), area.y + area.height - 40);
+  return { x, y, width: bounds.width, height: bounds.height };
+}
+
+function registerWindowResizeIpc() {
+  // dir 为起拖时鼠标所在的方位（渲染进程在 pointerdown 时算一次，拖动期间
+  // 即使指针跑出把手也不换方向）；用 screen.getCursorScreenPoint() 跟踪真实
+  // 光标而不是 dx/dy 累加，避免多次 setBounds 的舍入漂移。
+  ipcMain.on("pi-window-resize-start", (_event, dir) => {
+    if (!RESIZE_DIRS.has(dir)) return;
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isResizable()) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    resizeState = { dir, startCursor: screen.getCursorScreenPoint(), startBounds: mainWindow.getBounds() };
+  });
+  // 高频通道（send，不走 invoke）：每帧 setBounds（Windows 上已实测流畅）。
+  ipcMain.on("pi-window-resize-move", () => {
+    if (!mainWindow || mainWindow.isDestroyed() || !resizeState) return;
+    const { dir, startCursor, startBounds } = resizeState;
+    const cur = screen.getCursorScreenPoint();
+    const dx = cur.x - startCursor.x;
+    const dy = cur.y - startCursor.y;
+    let { x, y, width, height } = startBounds;
+    if (dir.includes("e")) width = startBounds.width + dx;
+    if (dir.includes("s")) height = startBounds.height + dy;
+    if (dir.includes("w")) {
+      const w = Math.min(Math.max(startBounds.width - dx, MIN_WINDOW_W), startBounds.width + startBounds.x);
+      x = startBounds.x + startBounds.width - w;
+      width = w;
+    }
+    if (dir.includes("n")) {
+      const h = Math.min(Math.max(startBounds.height - dy, MIN_WINDOW_H), startBounds.height + startBounds.y);
+      y = startBounds.y + startBounds.height - h;
+      height = h;
+    }
+    if (dir.includes("e")) width = Math.max(width, MIN_WINDOW_W);
+    if (dir.includes("s")) height = Math.max(height, MIN_WINDOW_H);
+    const next = clampToWorkArea({ x, y, width: Math.round(width), height: Math.round(height) });
+    const c = mainWindow.getBounds();
+    if (next.x === c.x && next.y === c.y && next.width === c.width && next.height === c.height) return;
+    mainWindow.setBounds(next);
+  });
+  ipcMain.on("pi-window-resize-end", () => {
+    resizeState = null;
+  });
+}
+
 // 开发模式窗口/任务栏图标（打包模式 build/ 不随包分发，自动回退 exe 内嵌图标）
 const WINDOW_ICON = path.join(APP_ROOT, "build", "icon.ico");
 const DIST_DIR = process.env.PI_WEB_DIST_DIR || ".next-pkg";
@@ -69,6 +125,11 @@ const webViews = new Map();
 const shownWebViews = new Set();
 const pendingWebViewState = new Map();
 let activeWebViewTabId = null;
+// 渲染层「期望可见」的标签：DOM 全屏弹窗打开期间原生视图被隐藏，弹窗关闭后按它恢复。
+// 与 activeWebViewTabId 分开，避免面板收起（setVisible(false)）后弹窗关闭又把视图浮出来。
+let desiredVisibleTabId = null;
+// DOM 全屏弹窗/遮罩打开中：原生视图必须整体隐藏（它盖在所有 HTML 之上，不受 z-index 约束）。
+let webViewOverlaySuspended = false;
 let lastWebViewBounds = null;
 let downloadHandlerRegistered = false;
 const recentBrowserDownloads = [];
@@ -436,6 +497,7 @@ function createWebView(tabId) {
     },
   });
   view.setBackgroundColor("#ffffff");
+  attachContextMenu(view.webContents);
   registerDownloadHandler(view);
   // target=_blank 弹窗直接在当前原生视图里打开，避免脱离右侧面板。
   view.webContents.setWindowOpenHandler(({ url }) => {
@@ -486,6 +548,39 @@ function destroyWebView(tabId) {
   }
   webViews.delete(tabId);
   if (activeWebViewTabId === tabId) activeWebViewTabId = null;
+  if (desiredVisibleTabId === tabId) desiredVisibleTabId = null;
+}
+
+/**
+ * DOM 全屏弹窗（设置 / 模型配置 / 目录选择等）打开/关闭时暂停原生视图。
+ * 原生 WebContentsView 不接受 CSS z-index 约束，永远叠在最上层；弹窗期间必须整体
+ * 隐藏，关闭后再按 desiredVisibleTabId（渲染层最后一次 setVisible(true) 的标签）
+ * 恢复显示，并用 lastWebViewBounds 重新定位 + 强制 invalidate 重画。
+ */
+function setWebViewOverlaySuspended(suspended) {
+  const next = Boolean(suspended);
+  if (next === webViewOverlaySuspended) return;
+  webViewOverlaySuspended = next;
+  if (next) {
+    for (const [id, view] of webViews) {
+      try {
+        view.setVisible(false);
+      } catch {
+        try {
+          mainWindow?.contentView.removeChildView(view);
+        } catch {
+          /* best-effort */
+        }
+      }
+      shownWebViews.delete(id);
+    }
+    return;
+  }
+  // 弹窗关闭：仅当渲染层仍期望该标签可见（面板未收起）时恢复，避免视图浮在聊天区上。
+  if (!desiredVisibleTabId) return;
+  const view = webViews.get(desiredVisibleTabId);
+  if (!view || view.webContents.isDestroyed()) return;
+  setWebViewVisible(desiredVisibleTabId, true);
 }
 
 function setWebViewVisible(tabId, visible) {
@@ -495,9 +590,16 @@ function setWebViewVisible(tabId, visible) {
     const pending = pendingWebViewState.get(tabId) || {};
     pending.visible = visible;
     pendingWebViewState.set(tabId, pending);
+    if (visible) desiredVisibleTabId = tabId;
+    else if (desiredVisibleTabId === tabId) desiredVisibleTabId = null;
     return;
   }
-  if (visible) activeWebViewTabId = tabId;
+  if (visible) {
+    activeWebViewTabId = tabId;
+    desiredVisibleTabId = tabId;
+  } else if (desiredVisibleTabId === tabId) {
+    desiredVisibleTabId = null;
+  }
   for (const [id, candidate] of webViews) {
     if (id === tabId) continue;
     try {
@@ -509,6 +611,20 @@ function setWebViewVisible(tabId, visible) {
         /* best-effort */
       }
     }
+  }
+  // 弹窗遮挡期间只记录「应显示哪个标签」，不真正显示——否则原生视图会盖住弹窗。
+  if (visible && webViewOverlaySuspended) {
+    try {
+      view.setVisible(false);
+    } catch {
+      try {
+        mainWindow?.contentView.removeChildView(view);
+      } catch {
+        /* best-effort */
+      }
+    }
+    shownWebViews.delete(tabId);
+    return;
   }
   try {
     view.setVisible(visible);
@@ -590,6 +706,9 @@ function registerWebViewIpc() {
   ipcMain.on("pi-webview-bounds", (_event, tabId, bounds) => {
     setWebViewBounds(String(tabId), bounds);
   });
+  ipcMain.on("pi-webview-overlay", (_event, suspended) => {
+    setWebViewOverlaySuspended(suspended);
+  });
   ipcMain.handle("pi-webview-navigate", async (_event, tabId, rawUrl) => {
     const id = String(tabId);
     claimWebView(id); // 渲染层认领（视图已存在时不会走 createWebView，需显式认领）
@@ -643,6 +762,77 @@ function registerWebViewIpc() {
 }
 
 // ---------------------------------------------------------------------------
+// 右键菜单
+// ---------------------------------------------------------------------------
+
+/**
+ * 统一右键菜单（主窗口渲染层 + 右侧原生浏览器共用）。
+ *
+ * Electron **不像浏览器那样自带原生右键菜单**——不注册 `context-menu` 事件就完全
+ * 没反应，这就是「对话历史里的图片右键不能复制」的根因。这里提供：编辑框剪贴板操作、
+ * 选中文本「复制」、复制图片（`copyImageAt` 把渲染好的位图直接写进剪贴板，data URL /
+ * `/api/sessions/<id>/media?ref=…` 接口图都适用）、图片另存为、复制图片 / 链接地址、
+ * 检查元素。
+ */
+function contextMenuLabels() {
+  const zh = String(app.getLocale() || "").toLowerCase().startsWith("zh");
+  return zh
+    ? {
+        cut: "剪切", copy: "复制", paste: "粘贴", selectAll: "全选",
+        copyImage: "复制图片", saveImage: "图片另存为…", copyImageUrl: "复制图片地址",
+        openLink: "在默认浏览器中打开链接", copyLink: "复制链接地址", inspect: "检查元素",
+      }
+    : {
+        cut: "Cut", copy: "Copy", paste: "Paste", selectAll: "Select All",
+        copyImage: "Copy Image", saveImage: "Save Image As…", copyImageUrl: "Copy Image Address",
+        openLink: "Open Link in Browser", copyLink: "Copy Link Address", inspect: "Inspect Element",
+      };
+}
+
+function attachContextMenu(contents) {
+  contents.on("context-menu", (_event, params) => {
+    const L = contextMenuLabels();
+    const template = [];
+    const isImage = params.mediaType === "image";
+    const editFlags = params.editFlags || {};
+
+    if (params.isEditable) {
+      template.push(
+        { label: L.cut, role: "cut", enabled: Boolean(editFlags.canCut) },
+        { label: L.copy, role: "copy", enabled: Boolean(editFlags.canCopy) },
+        { label: L.paste, role: "paste", enabled: Boolean(editFlags.canPaste) },
+        { type: "separator" },
+        { label: L.selectAll, role: "selectAll" },
+      );
+    } else if (params.selectionText) {
+      template.push({ label: L.copy, role: "copy" }, { type: "separator" });
+    }
+
+    if (isImage) {
+      template.push(
+        { label: L.copyImage, click: () => { try { contents.copyImageAt(params.x, params.y); } catch { /* best-effort */ } } },
+        { label: L.saveImage, click: () => { try { contents.downloadURL(params.srcURL); } catch { /* best-effort */ } } },
+      );
+      if (params.srcURL && !params.srcURL.startsWith("data:")) {
+        template.push({ label: L.copyImageUrl, click: () => clipboard.writeText(params.srcURL) });
+      }
+      template.push({ type: "separator" });
+    } else if (params.linkURL) {
+      template.push(
+        { label: L.openLink, click: () => { void shell.openExternal(params.linkURL); } },
+        { label: L.copyLink, click: () => clipboard.writeText(params.linkURL) },
+        { type: "separator" },
+      );
+    }
+
+    template.push({ label: L.inspect, click: () => contents.inspectElement(params.x, params.y) });
+
+    const win = BrowserWindow.fromWebContents(contents) || mainWindow;
+    Menu.buildFromTemplate(template).popup(win && !win.isDestroyed() ? { window: win } : undefined);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // 窗口
 // ---------------------------------------------------------------------------
 
@@ -650,10 +840,16 @@ function createWindow(url) {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
-    minWidth: 940,
-    minHeight: 600,
+    minWidth: MIN_WINDOW_W,
+    minHeight: MIN_WINDOW_H,
     show: false,
-    backgroundColor: "#0d0d0d",
+    // 桌面穿透玻璃：窗口本体透明，浅色主题下 html 根背景透明 → 直接看到 Windows
+    // 桌面；深色主题由页面画动态背景星图（不透桌面，保证对比度）。
+    // 代价：Windows 上 transparent 窗口会丢掉原生 thick frame（实测无 WS_THICKFRAME），
+    // 原生边缘缩放失效 + 无窗口阴影；缩放改由页面里的 DesktopResizeHandles
+    // 自绘 8 方位把手（pi-window-resize-* IPC）。
+    transparent: true,
+    backgroundColor: "#00000000",
     title: "Pi Studio",
     icon: fs.existsSync(WINDOW_ICON) ? WINDOW_ICON : undefined,
     // 自定义窗口：无原生标题栏/菜单栏（titleBarStyle:"hidden" 保留原生缩放边缘，
@@ -669,6 +865,7 @@ function createWindow(url) {
   });
 
   mainWindow.once("ready-to-show", () => mainWindow?.show());
+  attachContextMenu(mainWindow.webContents);
   // 最大化状态变化 → 通知渲染进程（WindowControls 切换 □/❐ 图标）。
   mainWindow.on("maximize", () => {
     if (!mainWindow?.isDestroyed()) mainWindow.webContents.send("pi-window-maximized", true);
@@ -681,6 +878,8 @@ function createWindow(url) {
     webViews.clear();
     activeWebViewTabId = null;
     mainWindow = null;
+    desiredVisibleTabId = null;
+    webViewOverlaySuspended = false;
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -695,6 +894,9 @@ function createWindow(url) {
     const info = parseNavDetails(args);
     if (info && info.isMainFrame && !info.isSameDocument) {
       markOrphansAndScheduleSweep();
+      // 整页硬重载会把渲染层 DOM（含弹窗）全部销毁，但主进程的暂停标记仍留着。
+      // 若不清零，重载后浏览器会永久保持隐藏（渲染层不会补发 setOverlay(false)）。
+      webViewOverlaySuspended = false;
     }
   });
   // 无原生菜单后，重新注册几个常用快捷键（开发者工具/刷新/全屏）。
@@ -728,6 +930,7 @@ function createWindow(url) {
   ipcMain.on("pi-window-close", () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
   });
+  registerWindowResizeIpc();
   registerWebViewIpc();
   mainWindow.loadURL(url);
 }

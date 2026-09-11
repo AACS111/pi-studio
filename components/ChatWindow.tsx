@@ -7,6 +7,7 @@ import { asBracketedPaste, toTerminalKeyData } from "@/lib/terminal-input";
 import { countToolCallBlocks, getAssistantErrorMessage, getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { MessageView } from "./MessageView";
 import { ChangedFilesCard } from "./ChangedFilesCard";
+import { PlanApprovalCard } from "./PlanApprovalCard";
 import { TodoPanel } from "./percho/TodoPanel";
 import { MessageList as PerchoMessageList } from "./percho/MessageList";
 import { NotionToc } from "./percho/NotionToc";
@@ -253,6 +254,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, bashRunning, pendingBash, modelNames, modelList, modelError, modelScopeWarnings, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
+    planMode, planStages,
     visionProxyStatus,
     visionModels, visionModelSelected, handleVisionModelChange,
     retryInfo, contextUsage, forkingEntryId,
@@ -269,6 +271,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     handleRecallQueue,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands,
+    handlePlanModeChange, handleExecutePlan, handleExecutePlanStep,
   } = useAgentSession({
     session, newSessionCwd, onAgentEnd: wrappedOnAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
@@ -524,6 +527,48 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     return handleSend(message, images);
   }, [aiEditContext, handleSend, onAiEditContextConsumed]);
 
+  const handleRevisePlan = useCallback(() => {
+    chatInputRef?.current?.focus();
+  }, [chatInputRef]);
+
+  const planDoneCount = planStages.filter((stage) => stage.done).length;
+  const planCardSessionId = session?.id ?? sessionIdRef.current ?? null;
+  // 计划面板只在「计划模式」或「刚批准过、正在执行的计划」下出现。
+  // 普通会话里模型若残留过计划阶段（历史消息），不再弹面板——否则等于把计划模式混进普通会话。
+  const planSignature = planStages.map((stage) => `${stage.step}:${stage.text}`).join("|");
+  const [activeRunSignature, setActiveRunSignature] = useState<string | null>(null);
+  // 只在新一轮计划开始（进入计划模式）或切换会话时清除上轮的执行态，
+  // 不能在「执行开始时 planMode 变 false」的同一渲染里清除，否则执行卡会立刻消失。
+  const prevPlanModeRef = useRef(planMode);
+  const prevPlanSessionRef = useRef(planCardSessionId);
+  useEffect(() => {
+    if (planMode && !prevPlanModeRef.current) setActiveRunSignature(null);
+    prevPlanModeRef.current = planMode;
+    if (prevPlanSessionRef.current !== planCardSessionId) {
+      prevPlanSessionRef.current = planCardSessionId;
+      setActiveRunSignature(null);
+    }
+  }, [planMode, planCardSessionId]);
+  const showExecutingPlan = !planMode
+    && activeRunSignature !== null && activeRunSignature === planSignature
+    && planDoneCount < planStages.length
+    && (planDoneCount > 0 || sessionBusy);
+  const executePlanWithCard = useCallback((steps: number[]) => {
+    setActiveRunSignature(planSignature);
+    void handleExecutePlan(steps);
+  }, [handleExecutePlan, planSignature]);
+  const executePlanStepWithCard = useCallback((step: number) => {
+    setActiveRunSignature(planSignature);
+    void handleExecutePlanStep(step);
+  }, [handleExecutePlanStep, planSignature]);
+  const planCard = planMode
+    ? (planStages.length > 0 && !sessionBusy
+        ? <PlanApprovalCard stages={planStages} mode="plan" busy={sessionBusy} sessionId={planCardSessionId} onExecute={executePlanWithCard} onRunStep={executePlanStepWithCard} onRevise={handleRevisePlan} />
+        : null)
+    : (showExecutingPlan
+        ? <PlanApprovalCard stages={planStages} mode="executing" busy={sessionBusy} sessionId={planCardSessionId} onExecute={executePlanWithCard} onRunStep={executePlanStepWithCard} />
+        : null);
+
   const chatInputElement = (
     <ChatInput
       ref={chatInputRef}
@@ -548,6 +593,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       compactResult={compactResult}
       toolPreset={toolPreset}
       onToolPresetChange={session || isNew ? handleToolPresetChange : undefined}
+      planMode={planMode}
+      onPlanModeChange={session || isNew ? handlePlanModeChange : undefined}
       thinkingLevel={thinkingLevel}
       onThinkingLevelChange={session || isNew ? handleThinkingLevelChange : undefined}
       availableThinkingLevels={availableThinkingLevels}
@@ -574,6 +621,11 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       fileUploadError={fileUploadError}
     />
   );
+
+  // 扩展 UI 请求（含 ask_user 选择）：Codex 式内联卡片，紧贴输入框上方，不用居中弹窗
+  const extensionDialogElement = extensionDialog ? (
+    <ExtensionDialog request={extensionDialog} onRespond={respondToExtensionUi} />
+  ) : null;
 
   const aboveEditorWidgets = extensionWidgets.filter((widget) => widget.placement !== "belowEditor");
   const belowEditorWidgets = extensionWidgets.filter((widget) => widget.placement === "belowEditor");
@@ -635,13 +687,6 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
         </div>
       )}
 
-      {extensionDialog && (
-        <ExtensionDialog
-          request={extensionDialog}
-          onRespond={respondToExtensionUi}
-        />
-      )}
-
       {extensionCustomUi && (
         <ExtensionCustomPanel
           request={extensionCustomUi}
@@ -678,6 +723,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
               </div>
             </div>
             <NoticeShelf notices={notices} align="right" />
+            {extensionDialogElement}
             {chatInputElement}
           </div>
         </div>
@@ -1037,7 +1083,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
         </div>
         {aiEditContext && (
           <div style={{ margin: "0 auto 8px", padding: "0 16px", ...(fullWidth ? { width: "85%", marginLeft: "5%", marginRight: "10%" } : { maxWidth: 820 }) }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, background: "rgba(78,173,104,0.08)", border: "1px solid rgba(78,173,104,0.22)", color: "var(--text)", fontSize: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: "var(--radius-sm)", background: "rgba(78,173,104,0.08)", border: "1px solid rgba(78,173,104,0.22)", color: "var(--text)", fontSize: 12 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ color: "var(--accent)", flexShrink: 0 }}>
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
                 <path d="M3 9h18" />
@@ -1073,6 +1119,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             onOpen={() => onSessionStatsPanelOpen?.()}
           />
         )}
+        {planCard}
+        {extensionDialogElement}
         {chatInputElement}
         <ExtensionStatusBar statuses={extensionStatuses} />
       </div>
@@ -1091,7 +1139,7 @@ function ExtensionWidgets({ widgets }: { widgets: Array<{ key: string; lines: st
           key={widget.key}
           style={{
             border: "1px solid var(--border)",
-            borderRadius: 7,
+            borderRadius: "var(--radius-sm)",
             background: "var(--bg-panel)",
             overflow: "hidden",
           }}
@@ -1140,9 +1188,9 @@ function NoticeShelf({ notices, floating = false, align = "left" }: { notices: N
               maxHeight: 60,
               marginBottom: index === notices.length - 1 ? 0 : 6,
               overflow: "hidden",
-              borderRadius: 14,
+              borderRadius: "var(--radius-lg)",
               border: "1px solid color-mix(in srgb, var(--border) 70%, transparent)",
-              background: "var(--bg)",
+              background: "var(--bg-elevated)",
               color: "var(--text-muted)",
               width: "fit-content",
               maxWidth: "min(100%, 620px)",
@@ -1202,33 +1250,20 @@ function ExtensionDialog({
   };
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        zIndex: 90,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-        background: "rgba(0,0,0,0.18)",
-      }}
-    >
+    <div style={{ margin: "0 auto 8px", maxWidth: 820, padding: "0 16px", width: "100%" }}>
       <div
         role="dialog"
-        aria-modal="true"
         style={{
-          width: "min(560px, 100%)",
           border: "1px solid var(--border)",
-          borderRadius: 8,
-          background: "var(--bg)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
+          borderRadius: "var(--radius-lg)",
+          background: "var(--bg-panel)",
+          boxShadow: "0 1px 2px rgba(15,23,42,0.04), 0 8px 24px -18px rgba(15,23,42,0.35)",
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-          <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 650 }}>{request.title}</div>
-          <div style={{ marginTop: 3, color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>{t("chat.extensionRequest")}</div>
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 650 }}>{request.title}</div>
+          <div style={{ marginTop: 2, color: "var(--text-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}>{t("chat.extensionRequest")}</div>
         </div>
 
         <div style={{ padding: 14 }}>
@@ -1244,7 +1279,7 @@ function ExtensionDialog({
                   style={{
                     width: "100%",
                     padding: "9px 10px",
-                    borderRadius: 7,
+                    borderRadius: "var(--radius-sm)",
                     border: "1px solid var(--border)",
                     background: "var(--bg-panel)",
                     color: "var(--text)",
@@ -1271,7 +1306,7 @@ function ExtensionDialog({
               style={{
                 width: "100%",
                 padding: "9px 10px",
-                borderRadius: 7,
+                borderRadius: "var(--radius-sm)",
                 border: "1px solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text)",
@@ -1293,7 +1328,7 @@ function ExtensionDialog({
                 width: "100%",
                 minHeight: 220,
                 padding: 10,
-                borderRadius: 7,
+                borderRadius: "var(--radius-sm)",
                 border: "1px solid var(--border)",
                 background: "var(--bg-panel)",
                 color: "var(--text)",
@@ -1312,9 +1347,9 @@ function ExtensionDialog({
             onClick={() => onRespond(request, { cancelled: true })}
             style={{
               padding: "6px 10px",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               border: "1px solid var(--border)",
-              background: "var(--bg)",
+              background: "var(--bg-elevated)",
               color: "var(--text-muted)",
               cursor: "pointer",
             }}
@@ -1326,7 +1361,7 @@ function ExtensionDialog({
               onClick={submitValue}
               style={{
                 padding: "6px 10px",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 border: "1px solid var(--accent)",
                 background: "var(--accent)",
                 color: "#fff",
@@ -1340,7 +1375,7 @@ function ExtensionDialog({
               onClick={submitValue}
               style={{
                 padding: "6px 10px",
-                borderRadius: 6,
+                borderRadius: "var(--radius-xs)",
                 border: "1px solid var(--accent)",
                 background: "var(--accent)",
                 color: "#fff",
@@ -1406,9 +1441,9 @@ function ExtensionCustomPanel({
           width: "min(920px, 100%)",
           maxHeight: "min(760px, calc(100vh - 40px))",
           border: "1px solid var(--border)",
-          borderRadius: 8,
-          background: "var(--bg)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.28)",
+          borderRadius: "var(--radius-sm)",
+          background: "var(--bg-elevated)",
+          boxShadow: "var(--shadow-lg)",
           overflow: "hidden",
           outline: "none",
         }}
@@ -1467,7 +1502,7 @@ function ExtensionCustomPanel({
             onClick={() => onInput(request, "\x03")}
             style={{
               padding: "5px 9px",
-              borderRadius: 6,
+              borderRadius: "var(--radius-xs)",
               border: "1px solid var(--border)",
               background: "var(--bg-panel)",
               color: "var(--text-muted)",
@@ -1550,7 +1585,7 @@ function SessionStatusChip({ session, sessionStats, contextUsage, running, t, fu
         marginTop: 0,
         marginBottom: 6,
         padding: "3px 10px",
-        background: "none", border: "none", borderRadius: 6,
+        background: "none", border: "none", borderRadius: "var(--radius-xs)",
         color: "var(--text-muted)", cursor: "pointer",
         fontSize: 12, fontVariantNumeric: "tabular-nums",
         transition: "background 0.12s, color 0.12s",

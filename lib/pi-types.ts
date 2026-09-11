@@ -161,6 +161,12 @@ export interface AgentSessionLike {
   getSteeringMessages(): readonly string[];
   getFollowUpMessages(): readonly string[];
   clearQueue(): { steering: string[]; followUp: string[] };
+  /** 注入自定义上下文消息（display:false）。计划模式用 deliverAs:"nextTurn" 注入，
+   *  不落盘、不显示、每轮用完即弃，避免污染会话历史。 */
+  sendCustomMessage?(
+    message: { customType: string; content: string; display: boolean; details?: unknown },
+    options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+  ): Promise<void>;
   getAllTools(): ToolInfo[];
   getActiveToolNames(): string[];
   setActiveToolsByName(names: string[]): void;

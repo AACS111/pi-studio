@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld("piElectron", {
     toggleMaximize: () => ipcRenderer.invoke("pi-window-maximize-toggle"),
     close: () => ipcRenderer.send("pi-window-close"),
     isMaximized: () => ipcRenderer.invoke("pi-window-is-maximized"),
+    // 自绘窗口缩放（transparent 窗口在 Windows 上没有原生缩放边框）：
+    // begin 在 pointerdown 确定方位，move 在 rAF 里逐帧发（只发信号，
+    // 主进程用真实光标算新 bounds），end 释放。
+    beginResize: (dir) => ipcRenderer.send("pi-window-resize-start", dir),
+    moveResize: () => ipcRenderer.send("pi-window-resize-move"),
+    endResize: () => ipcRenderer.send("pi-window-resize-end"),
     onMaximizedChange: (listener) => {
       const wrapped = (_event, maximized) => listener(Boolean(maximized));
       ipcRenderer.on("pi-window-maximized", wrapped);
@@ -38,6 +44,9 @@ contextBridge.exposeInMainWorld("piElectron", {
     destroy: (tabId) => ipcRenderer.invoke("pi-webview-destroy", tabId),
     setVisible: (tabId, visible) => ipcRenderer.send("pi-webview-visible", tabId, visible),
     setBounds: (tabId, bounds) => ipcRenderer.send("pi-webview-bounds", tabId, bounds),
+    // DOM 全屏弹窗（设置 / 模型配置等）打开/关闭：原生 WebContentsView 永远盖在 HTML 之上，
+    // 必须在弹窗期间隐藏，否则弹窗会被浏览器内容压住（见 hooks/useNativeOverlayGuard.ts）。
+    setOverlay: (suspended) => ipcRenderer.send("pi-webview-overlay", Boolean(suspended)),
     navigate: (tabId, url) => ipcRenderer.invoke("pi-webview-navigate", tabId, url),
     back: (tabId) => ipcRenderer.invoke("pi-webview-back", tabId),
     forward: (tabId) => ipcRenderer.invoke("pi-webview-forward", tabId),

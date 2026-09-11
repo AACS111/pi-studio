@@ -368,7 +368,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                         style={{
                           fontSize: 10,
                           padding: "1px 6px",
-                          borderRadius: 6,
+                          borderRadius: "var(--radius-xs)",
                           flexShrink: 0,
                           background: "color-mix(in srgb, #f59e0b 15%, transparent)",
                           color: "#f59e0b",
@@ -593,7 +593,7 @@ export function TeamSettings({ sessionId, onClose, initialAgentId, onSaved }: Pr
                   >
                     <span style={{ color: gstyle.color, fontWeight: 700, fontSize: 14, width: 18, textAlign: "center" }}>{gstyle.symbol}</span>
                     <span style={{ fontWeight: 600, fontSize: 13 }}>{gw.name}</span>
-                    <span style={{ fontSize: 10.5, color: gstyle.color, border: `1px solid ${gstyle.color}`, borderRadius: 8, padding: "1px 8px" }}>{gstyle.label}</span>
+                    <span style={{ fontSize: 10.5, color: gstyle.color, border: `1px solid ${gstyle.color}`, borderRadius: "var(--radius-sm)", padding: "1px 8px" }}>{gstyle.label}</span>
                     <span style={{ fontSize: 11, color: "var(--text-muted)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{gw.description}</span>
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{open ? "▴" : "▾"}</span>
                   </div>
@@ -841,7 +841,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 14,
     cursor: "pointer",
     padding: "4px 6px",
-    borderRadius: 6,
+    borderRadius: "var(--radius-xs)",
   },
   tab: {
     background: "transparent",
@@ -862,14 +862,14 @@ const styles: Record<string, React.CSSProperties> = {
   },
   tabCount: {
     background: "var(--bg-soft, rgba(0,0,0,0.06))",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     fontSize: 10,
     padding: "1px 6px",
     color: "var(--text-muted)",
   },
   input: {
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "7px 10px",
     fontSize: 13,
     fontFamily: "inherit",
@@ -881,7 +881,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   agentCard: {
     border: "1px solid var(--border)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     padding: "10px 12px",
     background: "var(--bg-soft, rgba(0,0,0,0.02))",
   },
@@ -889,14 +889,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: "rgba(0,120,255,0.12)",
     color: "var(--accent)",
     fontSize: 11,
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "1px 8px",
   },
   condChip: {
     fontSize: 11,
     color: "var(--text-muted)",
     background: "var(--bg-soft, rgba(0,0,0,0.05))",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "2px 8px",
   },
   grid2: {
@@ -908,7 +908,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "var(--accent)",
     color: "#fff",
     border: "none",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "8px 16px",
     fontSize: 13,
     cursor: "pointer",
@@ -917,7 +917,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "var(--bg-soft, rgba(0,0,0,0.05))",
     color: "var(--text)",
     border: "1px solid var(--border)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "8px 14px",
     fontSize: 13,
     cursor: "pointer",
@@ -926,7 +926,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: "transparent",
     color: "#e5484d",
     border: "1px solid rgba(229,72,77,0.4)",
-    borderRadius: 8,
+    borderRadius: "var(--radius-sm)",
     padding: "6px 12px",
     fontSize: 12,
     cursor: "pointer",
@@ -941,7 +941,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   flowCard: {
     border: "1px solid var(--border)",
-    borderRadius: 10,
+    borderRadius: "var(--radius-md)",
     padding: "10px 12px",
     background: "var(--bg-soft, rgba(0,0,0,0.02))",
   },

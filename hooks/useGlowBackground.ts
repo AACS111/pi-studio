@@ -160,6 +160,19 @@ export function useGlowBackground() {
     }
   }, []);
 
+  /** 只把光晕强度还原成默认值（不动开关与样式）——“重置外观”按钮用。 */
+  const resetGlowIntensity = useCallback(() => {
+    const st = getStore();
+    st.intensity = GLOW_INTENSITY_DEFAULT;
+    st.version++;
+    st.listeners.forEach((cb) => cb());
+    try {
+      window.localStorage.removeItem(STORAGE_INTENSITY);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   const resetGlowEnabled = useCallback(() => {
     const st = getStore();
     st.enabled = DEFAULT_ENABLED;
@@ -186,6 +199,7 @@ export function useGlowBackground() {
     setGlowEnabled,
     setGlowStyle,
     setGlowIntensity,
+    resetGlowIntensity,
     resetGlowEnabled,
   };
 }

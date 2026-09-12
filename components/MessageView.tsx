@@ -181,6 +181,9 @@ function UserMessageView({ message, cwd, onOpenFile, onOpenWebUrl, entryId, onFo
 
   return (
     <div
+      /* data-pi-user-msg：液态发送特效（LiquidSendFx）用它定位“对话区最新一条用户气泡”，
+         让输入框文字像分流一样飞向它。无任何样式/行为耦合，纯定位锚点。 */
+      data-pi-user-msg=""
       style={{ marginBottom: 16, display: "flex", flexDirection: "column", alignItems: "flex-end" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}

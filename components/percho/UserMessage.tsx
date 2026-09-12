@@ -23,7 +23,7 @@ export function UserMessage({
 	const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
 	return (
-		<div className="group flex justify-end" data-toc-message-id={message.id} data-entry-id={message.entryId}>
+		<div className="group flex justify-end" data-toc-message-id={message.id} data-entry-id={message.entryId} data-pi-user-msg="">
 			<div className="max-w-[85%]">
 				<MessageClock ts={message.timestamp} />
 				{message.images.length > 0 && (

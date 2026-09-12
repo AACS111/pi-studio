@@ -617,6 +617,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       visionModelSelected={visionModelSelected}
       onVisionModelChange={handleVisionModelChange}
       onUploadFiles={handleUploadFiles}
+      onOpenInPanel={onOpenFile}
       fileUploadBusy={fileUploadBusy}
       fileUploadError={fileUploadError}
     />

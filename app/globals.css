@@ -51,6 +51,8 @@
   --text-muted: #161C28;
   --text-dim: #242B3B;
   --accent: #2563EB;
+  /* 逗号分隔的 RGB 通道，供 rgba(var(--accent-rgb), α) 使用（见 .pi-flow-char） */
+  --accent-rgb: 37, 99, 235;
   --accent-hover: #1D4ED8;
   --accent-contrast: #ffffff;
   --accent-soft: rgba(37, 99, 235, 0.09);
@@ -111,6 +113,7 @@ html.dark {
   --text-muted: #ECF3FB;
   --text-dim: #D6DFEB;
   --accent: #60A5FA;
+  --accent-rgb: 96, 165, 250;
   --accent-hover: #93C5FD;
   --accent-contrast: #0B1220;
   --accent-soft: rgba(96, 165, 250, 0.14);
@@ -1797,11 +1800,430 @@ html.dark {
     animation: none;
   }
 }
+
+/* 流体链：在任意两点间铺一串相互重叠的小球，让它们被 goo 滤镜融成**一条连续的液柱**。
+   为什么必须这么做：goo 的融合距离上限 ≈ stdDeviation（实测 blur=8 时 12px 是上限）。
+   直接把一滴水从发送按钮挪到 60px 外的引导按钮，全程没有任何“桥”，看上去只是
+   一个小圆点自己飘过去（这就是之前效果不对的原因）。液柱把这段路填满后，
+   水流真的从按钮“拉”到新按钮上——分裂才真的像水分流。
+
+   ★ 坐标系：这些小球被挂进 .pi-liquid 内部（那是**以 root 为原点**的定位层，
+   而且带 filter:url(#pi-goo)）。所以 JS 写进来的必须是 **root 相对坐标**，
+   直接传 getBoundingClientRect 的视口坐标会整条偏掉（实测偏到视口外）。 */
+.pi-vein-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pi-vein-dot {
+  position: absolute;
+  border-radius: 9999px;
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 72%, #55d8ff), var(--accent));
+  transition: transform 0.26s cubic-bezier(0.4, 0, 0.7, 0.2), opacity 0.26s ease;
+}
 /* placeholder 对比度：从 UA 默认（≈text-dim，浅色玻璃底上不可读）提到 muted */
 .chat-composer textarea::placeholder {
   color: var(--text-muted);
   opacity: 1;
 }
+
+/* ── 发送液态反馈（Liquid gooey）────────────────────────────────────────
+   见 components/LiquidSendFx.tsx。三个技术点：
+     ① gooey 融合：全局 SVG 滤镜 #pi-goo（app/layout.tsx）+ 本层 filter:url()，
+        层内圆/胶囊被模糊后 alpha 放大，自动粘成一体，缝隙里长出水滴桥；
+     ② 液态抽水：发送时尾巴 scaleX 猛拉再回弹、主球脉冲、两滴水飞出；
+     ③ 文字水流：输入框文字逐字复制成覆盖层（portal 到 body），飞向按钮并消散。
+   位置全靠实测写入 CSS 变量（--pi-goo-r/-b/-size、--pi-chip-*），
+   所以任意宽度（含移动端 compact 布局）都贴着真实发送按钮，不写死坐标。
+   动画与发送完全解耦：handleSend 在触发动画的同一帧就执行，动画只是覆盖层。 */
+.pi-liquid-root {
+  position: fixed;
+  left: 0;
+  top: 0;
+  /* fixed + 实测坐标挂在 body 上（全局单例）。z-index 取 1：高于卡片背景、
+     低于正文/控件（它们在各自层叠上下文里），液体从内容下面流过去 */
+  z-index: 1;
+  pointer-events: none;
+}
+.pi-liquid {
+  position: absolute;
+  /* 负 inset 给滤镜 blur 留出扩散空间，否则水滴边缘被自己的盒子截掉 */
+  inset: 0;
+  pointer-events: none;
+  filter: url(#pi-goo);
+  /* 不加 opacity 过渡：本层只在动画相位内出现，淡入会额外滞后 ~0.3s；
+     相位类挂上的那一刻就应该是可见的（同步、不依赖后续重渲染） */
+  opacity: 0;
+}
+/* 静止态不常驻显示（宿主在 body 上，没有 hover 语境），仅动画相位内可见。
+   ★ 必须把三个相位都列上：之前只写了 .pi-flow，于是**只发附件、不写字**时
+   （handleSend 里 playLiquidSend 要求有文字，beginSplit 却总是调用）
+   只有 pi-split 相位 → .pi-liquid 停在 opacity:0，整个分裂动画肉眼完全看不到。 */
+.pi-liquid-root.pi-flow .pi-liquid,
+.pi-liquid-root.pi-split .pi-liquid,
+.pi-liquid-root.pi-chip-flow .pi-liquid {
+  opacity: 1;
+}
+/* 水块公共部分：只放定位与形状。**背景不在这里给** —— 这条选择器带子组合器
+   （.pi-liquid > span 特异度 0,1,1）会盖过 .pi-liquid-main / .pi-liquid-tail 的
+   自身 background（0,1,0），曾导致主球的径向渐变整个失效。背景一律由各自规则给。 */
+.pi-liquid > span {
+  position: absolute;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+/* 主球：与发送按钮同尺寸同位置，液体脉动的“泵” */
+.pi-liquid-main {
+  right: var(--pi-goo-r, 21px);
+  bottom: var(--pi-goo-b, 9px);
+  width: var(--pi-goo-size, 32px);
+  height: var(--pi-goo-size, 32px);
+  background: radial-gradient(
+    circle at 34% 28%,
+    color-mix(in srgb, var(--accent) 22%, #ffffff) 0%,
+    var(--accent) 52%,
+    color-mix(in srgb, var(--accent) 66%, #8b5cf6) 100%
+  );
+  box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 42%, transparent);
+}
+/* 尾巴：静止是一条被压扁的薄胶囊（探出主球左侧） */
+.pi-liquid-tail {
+  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) * 1.25);
+  bottom: calc(var(--pi-goo-b, 9px) + var(--pi-goo-size, 32px) / 2 - var(--pi-goo-size, 32px) * 0.21);
+  width: calc(var(--pi-goo-size, 32px) * 3.4);
+  height: calc(var(--pi-goo-size, 32px) * 0.42);
+  transform: scaleX(0.36);
+  transform-origin: right center;
+  background: color-mix(in srgb, var(--accent) 78%, #8b5cf6);
+  opacity: 0.85;
+}
+/* 桥：主球与尾巴之间的额外水块，脉动时产生“拉丝” */
+.pi-liquid-ghost {
+  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) * 0.5);
+  bottom: calc(var(--pi-goo-b, 9px) + var(--pi-goo-size, 32px) * 0.28);
+  width: calc(var(--pi-goo-size, 32px) * 0.7);
+  height: calc(var(--pi-goo-size, 32px) * 0.7);
+  opacity: 0.9;
+}
+/* 主球背景单独重申：特异度高于 .pi-liquid > span，保证渐变不被公共 background 盖掉 */
+.pi-liquid > .pi-liquid-main {
+  background: radial-gradient(
+    circle at 34% 28%,
+    color-mix(in srgb, var(--accent) 22%, #ffffff) 0%,
+    var(--accent) 52%,
+    color-mix(in srgb, var(--accent) 66%, #8b5cf6) 100%
+  );
+}
+.pi-liquid > .pi-liquid-tail {
+  background: color-mix(in srgb, var(--accent) 78%, #8b5cf6);
+}
+.pi-liquid > .pi-liquid-drop-b {
+  background: color-mix(in srgb, var(--accent) 62%, #6d8cff);
+}
+/* 两滴水：静止藏在主球身上，点击时被打散出去 */
+.pi-liquid-drop-a,
+.pi-liquid-drop-b {
+  width: calc(var(--pi-goo-size, 32px) * 0.32);
+  height: calc(var(--pi-goo-size, 32px) * 0.32);
+  opacity: 0;
+}
+.pi-liquid-drop-a {
+  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) * 0.1);
+  bottom: calc(var(--pi-goo-b, 9px) + var(--pi-goo-size, 32px) * 0.94);
+}
+.pi-liquid-drop-b {
+  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) * 0.86);
+  bottom: calc(var(--pi-goo-b, 9px) - var(--pi-goo-size, 32px) * 0.1);
+  background: color-mix(in srgb, var(--accent) 62%, #6d8cff);
+}
+
+/* 点击发送：整条液体向发送按钮“抽水” */
+.pi-liquid-root.pi-flow .pi-liquid-main {
+  animation: pi-main-pulse 0.9s cubic-bezier(0.18, 0.85, 0.2, 1) both;
+}
+.pi-liquid-root.pi-flow .pi-liquid-tail {
+  animation: pi-tail-pull 0.9s cubic-bezier(0.18, 0.85, 0.2, 1) both;
+}
+.pi-liquid-root.pi-flow .pi-liquid-ghost {
+  animation: pi-ghost-stretch 0.9s cubic-bezier(0.18, 0.85, 0.2, 1) both;
+}
+.pi-liquid-root.pi-flow .pi-liquid-drop-a {
+  animation: pi-drop-a 0.9s ease both;
+}
+.pi-liquid-root.pi-flow .pi-liquid-drop-b {
+  animation: pi-drop-b 0.9s ease both;
+}
+@keyframes pi-main-pulse {
+  0% { transform: scale(0.92); }
+  25% { transform: scale(1.16); }
+  48% { transform: scale(0.8); }
+  72% { transform: scale(1.07); }
+  100% { transform: scale(0.92); }
+}
+@keyframes pi-tail-pull {
+  0% { transform: scaleX(0.36); }
+  22% { transform: scaleX(1.5) translateX(-14px); }
+  45% { transform: scaleX(2.2) translateX(-16px); }
+  70% { transform: scaleX(1.1) translateX(-6px); }
+  100% { transform: scaleX(0.36); }
+}
+@keyframes pi-ghost-stretch {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.5) translateX(-6px); }
+  55% { transform: scale(0.7) translateX(-14px); }
+  100% { transform: scale(1); }
+}
+@keyframes pi-drop-a {
+  0% { transform: scale(0.7); opacity: 0.9; }
+  42% { transform: translate(22px, -26px) scale(1.25); opacity: 0.85; }
+  100% { transform: translate(44px, -12px) scale(0); opacity: 0; }
+}
+@keyframes pi-drop-b {
+  0% { transform: scale(0.8); opacity: 0.85; }
+  35% { transform: translate(30px, -10px) scale(1.15); opacity: 0.8; }
+  100% { transform: translate(58px, -4px) scale(0); opacity: 0; }
+}
+
+/* 底部波纹条：抽水时沿输入框底边掠过一道光 */
+.pi-liquid-wave {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 1px;
+  height: 3px;
+  border-radius: 9999px;
+  pointer-events: none;
+  z-index: -1;
+  opacity: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 70%, #55d8ff),
+    color-mix(in srgb, var(--accent) 55%, #a548ff),
+    transparent
+  );
+  filter: blur(3px);
+}
+.pi-liquid-root.pi-flow .pi-liquid-wave {
+  animation: pi-wave 0.9s ease both;
+}
+@keyframes pi-wave {
+  0% { opacity: 0; transform: scaleX(0.2); }
+  25% { opacity: 0.9; transform: scaleX(0.7); }
+  55% { opacity: 0.8; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(0.15); }
+}
+
+/* 发送按钮分裂：主球向右滑出，左右各“渗出”一滴喂给新的 引导 / 停止 按钮 */
+.pi-liquid-split-a,
+.pi-liquid-split-b {
+  width: calc(var(--pi-goo-size, 32px) * 0.78);
+  height: calc(var(--pi-goo-size, 32px) * 0.78);
+  bottom: calc(var(--pi-goo-b, 9px) + var(--pi-goo-size, 32px) * 0.11);
+  background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 70%, #55d8ff), var(--accent));
+  opacity: 0;
+}
+/* ★ 水滴的落点必须落在**融合半径内**：起点先放在主球边缘再往外一点（--pi-goo-split），
+   实际终点由 JS 写入 --split-a-dx / --split-b-dx，但 CSS 这一层只负责“沿着液柱方向
+   做小幅渗流”，真正把水送到目标按钮的是 .pi-liquid-vein。
+   之前把水滴一路挪到 60px 外，超出融合半径 → 全程无桥，改成“先粘连再断开”。 */
+.pi-liquid-split-a {
+  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) + var(--pi-goo-split, 60px));
+}
+.pi-liquid-split-b {
+  right: calc(var(--pi-goo-r, 21px) - var(--pi-goo-split, 60px));
+}
+.pi-liquid-root.pi-split .pi-liquid-main {
+  animation: pi-split-main 0.72s cubic-bezier(0.25, 0.9, 0.25, 1) both;
+}
+.pi-liquid-root.pi-split .pi-liquid-split-a {
+  animation: pi-split-drop-a 0.72s cubic-bezier(0.3, 0.8, 0.3, 1) both;
+}
+.pi-liquid-root.pi-split .pi-liquid-split-b {
+  animation: pi-split-drop-b 0.72s cubic-bezier(0.3, 0.8, 0.3, 1) both;
+}
+@keyframes pi-split-main {
+  0% { transform: scale(1); }
+  26% { transform: scale(1.24); }
+  62% { transform: scale(0.86); }
+  100% { transform: scale(1); }
+}
+/* 向左渗出（终点由 --split-a-dx 实测，负值） */
+@keyframes pi-split-drop-a {
+  0% { transform: translate(0, 0) scale(0.2); opacity: 0; }
+  30% { opacity: 0.95; }
+  62% { transform: translate(calc(var(--split-a-dx, -60px) * 0.55), -3px) scale(1.05); opacity: 0.9; }
+  100% { transform: translate(var(--split-a-dx, -60px), 0) scale(0.14); opacity: 0; }
+}
+@keyframes pi-split-drop-b {
+  0% { transform: translate(0, 0) scale(0.2); opacity: 0; }
+  30% { opacity: 0.95; }
+  62% { transform: translate(calc(var(--split-b-dx, 60px) * 0.55), 3px) scale(1.05); opacity: 0.9; }
+  100% { transform: translate(var(--split-b-dx, 60px), 0) scale(0.14); opacity: 0; }
+}
+
+/* 新按钮“长出来”：从 0.6 缩放弹入（与上方水滴落点同帧） */
+.pi-split-in {
+  animation: pi-split-in 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes pi-split-in {
+  0% { transform: scale(0.55); opacity: 0; }
+  60% { opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* 新用户气泡「从左侧滑入」。
+   ★ 为什么不再让它“等光字汇到位”：气泡位置无法在点击时可靠得知（React 异步插入 +
+     消息列表滚动），光字去追气泡必然飘错（用户实测“飘的位置差距很大”）。
+     改成两个解耦的相对动效：光字向右飘出、气泡从左侧进场，时间上衔接即可。
+
+   实现要点：
+     · .pi-bubble-in-left-pending 是入场**前**的静息态（不可见 + 左移），
+       由 MutationObserver 在微任务里加上，早于下一帧渲染，所以不会先闪一帧。
+     · .pi-bubble-in-left 是入场动画；两者都只动 transform / opacity，
+       绝不碰布局属性（不引发重排、不推挤列表）。 */
+.pi-bubble-in-left-pending {
+  opacity: 0;
+  transform: translateX(-26px) scale(0.97);
+}
+.pi-bubble-in-left {
+  animation: pi-bubble-in-left 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: left center;
+}
+@keyframes pi-bubble-in-left {
+  0% { opacity: 0; transform: translateX(-26px) scale(0.97); }
+  55% { opacity: 1; transform: translateX(3px) scale(1); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+/* ★ 发送液态效果**故意不遵从** prefers-reduced-motion：见 components/LiquidSendFx.tsx
+   里 RESPECT_REDUCED_MOTION 的说明。本机 Windows 关闭「显示动画」后该媒体查询
+   恒为 reduce，会把整套发送反馈整个吞掉（用户反馈“看不到效果”的真正原因）。 */
+
+/* 引导 / 后续消息 chip：点一下 → 一滴水从 chip 被吸进发送按钮（只做反馈，不发送） */
+.pi-liquid-chip {
+  left: var(--pi-chip-x, 50%);
+  top: var(--pi-chip-y, 50%);
+  width: var(--pi-chip-w, 18px);
+  height: var(--pi-chip-w, 18px);
+  margin-left: calc(var(--pi-chip-w, 18px) / -2);
+  margin-top: calc(var(--pi-chip-w, 18px) / -2);
+  opacity: 0;
+}
+.pi-liquid-root.pi-chip-flow .pi-liquid-chip {
+  animation: pi-chip-absorb 0.6s cubic-bezier(0.3, 0.8, 0.3, 1) both;
+}
+@keyframes pi-chip-absorb {
+  0% { transform: translate(0, 0) scale(0.2); opacity: 0.9; }
+  35% { transform: translate(calc(var(--pi-chip-dx, 0px) * 0.3), calc(var(--pi-chip-dy, 0px) * 0.3)) scale(1.1); opacity: 0.95; }
+  70% { transform: translate(calc(var(--pi-chip-dx, 0px) * 0.75), calc(var(--pi-chip-dy, 0px) * 0.75)) scale(0.85); opacity: 0.85; }
+  100% { transform: translate(var(--pi-chip-dx, 0px), var(--pi-chip-dy, 0px)) scale(0.15); opacity: 0; }
+}
+/* chip 自身被“捏”一下 */
+.pi-chip-squish {
+  animation: pi-chip-squish 0.18s ease;
+}
+@keyframes pi-chip-squish {
+  0% { transform: scale(1); }
+  45% { transform: scale(0.93); }
+  100% { transform: scale(1); }
+}
+
+/* 长文本附件卡片：出现时像一滴水凝成形（跟发送的液态语言同一套） */
+.pi-text-attach {
+  animation: pi-text-attach-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes pi-text-attach-in {
+  0% { opacity: 0; transform: scale(0.88) translateY(2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* 文字水流覆盖层（命令式定位到 textarea 的矩形上）
+   ★ 绝不能设 overflow:hidden —— 逐字 span 是**飞到盒子外面**去的（终点在对话区
+   气泡上，横跨整个视口）。曾经写了 overflow:hidden，结果每个字一离开输入框
+   就被裁掉：肉眼只看到输入框里闪一下字，完全看不到“飞向对话区”（用户实测反馈）。 */
+.pi-flow-text {
+  position: fixed;
+  display: none;
+  z-index: 4000;
+  pointer-events: none;
+  color: var(--text);
+}
+.pi-flow-text > div {
+  white-space: pre-wrap;
+}
+/* 字符 → 流光星点：文字本体隐去（font-size:0 + color:transparent），改画一颗光点。
+
+   为什么从“玻璃水球”换成“星光”：水球要四层光影 + inset 高光 + 投影才能在浅色底上
+   立起来，观感偏“重”，体积大、颗数多时容易散成好几团（用户反馈“像三股水流”）。
+   星光只有一层柔光晕，更轻、更连贯，也天然适合连成一条流。
+
+   ★ 不发散成多股的关键：每颗字符**只有一个**光点（不再挂卫星子珠）。
+   ★ 位移由 driveFlow 逐帧写 transform（光字只做**相对**向右飘移，不依赖任何
+     绝对坐标——见 LiquidSendFx.tsx 里 MAX_FLOW_CHARS 上方的设计说明），
+     所以这里**不能**再写 CSS 动画。
+
+   ★ 渲染上踩过的坑（都表现为“看着像甜甜圈而不是光点”），实测对比后确定：
+     ① **不要在内层放白色核心**。曾经试过「蓝色光晕 + 居中小白核」，
+        在 11~20px 这个真实尺寸下必然读成一圈蓝环（白核把光晕挤成了边）。
+        实测「纯蓝柔光晕，中心最实、向外单调衰减到 0」才是最像光点的方案。
+     ② 外发光**不要**用 filter:drop-shadow —— 它跟随 alpha 轮廓，会在外面描出一圈硬边。
+     ③ 颜色用 rgba(var(--accent-rgb), α)，不用 color-mix(...,transparent)：
+        后者在部分渲染路径下会把外层折叠成全透明，柔光直接消失。
+     ④ 不做十字星芒：两条渐变线交叉在浅底上会渲染出“方框”感。 */
+.pi-flow-char {
+  position: relative;
+  display: inline-block;
+  white-space: pre;
+  font-size: 0;
+  color: transparent;
+  /* 直径 = 基准 × 逐字抖动系数（JS 写入），让光点大小错落、有节奏 */
+  width: calc(var(--pi-mote-size, 18px) * var(--pi-mote-scale, 1));
+  height: calc(var(--pi-mote-size, 18px) * var(--pi-mote-scale, 1));
+  margin: 0 -1px;
+  vertical-align: middle;
+  border-radius: 50%;
+  /* 单层柔光晕：中心最实，一路单调衰减到全透明（①） */
+  background: radial-gradient(
+    circle,
+    rgba(var(--accent-rgb), 0.95) 0%,
+    rgba(var(--accent-rgb), 0.82) 30%,
+    rgba(var(--accent-rgb), 0.45) 58%,
+    rgba(var(--accent-rgb), 0) 100%
+  );
+  will-change: transform, opacity;
+  opacity: 0;
+}
+/* 空白字符不发光点（仍占位，保证逐字排版位置与真实文字一致） */
+.pi-flow-char[data-blank="1"] {
+  background: none;
+}
+
+
+
+/* 字符 → 流光星点：文字本体隐去（font-size:0 + color:transparent），改画一颗
+   带柔光的亮点。
+
+   为什么从“玻璃水球”换成“星光”：水球要四层光影 + inset 高光 + 投影才能在浅色底上
+   立起来，观感偏“重”，体积大、颗数多时容易散成好几团（用户反馈“像三股水流”）。
+   星光只有「白热核 + 柔光晕」两层，更轻、更连贯，也天然适合连成一条流。
+
+   ★ 不发散成多股的关键：每颗字符**只有一个**光点（不再挂卫星子珠）。
+   ★ 位移由 driveFlow 逐帧写 transform（终点要跟着列表滚动/气泡出现实时改），
+     所以这里**不能**再写 CSS 动画。
+
+   ★ 渲染上踩过的两个坑（都表现为“看着像甜甜圈而不是光点”）：
+     ① alpha 必须**单调递减**。曾经写成 white(1) → accent(0.55) → accent(0.9)，
+        中间先降后升，于是在 58% 处形成一圈更实的高饱和环 —— 就是那个“甜甜圈”。
+        正确做法：核心最亮，向外一路衰减到 0。
+     ② 不要用 border-radius + 实心背景去画圆：外层渐变会被硬裁成环。
+        纯 radial-gradient 自己衰减到 transparent，边缘天然是柔的。
+        （border-radius 保留也无妨，但不要依赖它成形。）
+     ③ 外发光用 box-shadow，**不要用 filter:drop-shadow** —— 后者跟随 alpha 轮廓，
+        会在圆外描出一圈硬边“光环”。
+
+
+/* 说明：液态效果（.pi-liquid* / .pi-flow-* / .pi-split-* / .pi-bubble-in-left* /
+   .pi-vein-*）**故意不在这里关闭**，原因见 LiquidSendFx.tsx 的 RESPECT_REDUCED_MOTION。 */
 
 /* <details> 内容区抽屉式展开/折叠动画 */
 .drawer-details::details-content {

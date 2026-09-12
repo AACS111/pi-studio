@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { VisionProxyStatus } from "@/hooks/useAgentSession";
 import type { SkillsResponse } from "@/lib/api-types";
-import { clearDraft, getDraft, setDraft, type ChatDraftImage } from "@/lib/draft-store";
+import { clearDraft, getDraft, setDraft, type ChatDraftImage, type ChatDraftTextFile } from "@/lib/draft-store";
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
@@ -18,6 +18,7 @@ import {
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
+import { absorbToSend, playLiquidSend, splitToTargets } from "./LiquidSendFx";
 
 export interface AttachedImage {
   data: string;   // base64, no prefix
@@ -94,6 +95,8 @@ interface Props {
   placeholder?: string;
   /** 隐藏左侧「附件」按钮（项目组任务只收文本，上传文件无意义时用） */
   hideAttach?: boolean;
+  /** 点击长文本附件卡片时在右侧面板打开（通常是 ChatWindow 的 onOpenFile） */
+  onOpenInPanel?: (path: string) => void;
 }
 
 export interface ChatInputHandle {
@@ -142,6 +145,62 @@ function persistImagesToUploads(files: File[]): void {
   xhr.onload = () => { /* 静默 */ };
   xhr.onerror = () => { /* 静默 */ };
   xhr.send(formData);
+}
+
+/**
+ * 长文本粘贴转附件（性能：超长文本落在被控 textarea 里，每敲一个字都要重渲染
+ * 整棵 composer，几千字就开始掉帧）。超过下面任一阈值的一次性粘贴不走 textarea，
+ * 而是写成上传目录里的一个文本文件，输入框只留一张卡片。
+ * 按住 Alt 粘贴可绕过（高级用户想要原文时）。
+ */
+const PASTE_TO_FILE_CHARS = 1200;
+const PASTE_TO_FILE_LINES = 24;
+
+export function shouldPasteAsFile(text: string): boolean {
+  if (text.length >= PASTE_TO_FILE_CHARS) return true;
+  let lines = 1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) {
+      lines += 1;
+      if (lines >= PASTE_TO_FILE_LINES) return true;
+    }
+  }
+  return false;
+}
+
+/** 用首行做可读文件名（非法字符转 -），后面接时间戳防重名。 */
+export function pastedTextFileName(text: string, now = new Date()): string {
+  const slug = (text.split("\n", 1)[0] ?? "")
+    .trim()
+    .replace(/[\\/:*?"<>|#%&\s]+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 28);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `pasted-${slug ? `${slug}-` : ""}${stamp}.txt`;
+}
+
+/** 把粘贴的长文本上传成附件文件，返回卡片需要的元信息（失败抛出，由调用方提示）。 */
+async function uploadPastedText(text: string): Promise<ChatDraftTextFile> {
+  const name = pastedTextFileName(text);
+  const formData = new FormData();
+  formData.append("files", new File([text], name, { type: "text/plain;charset=utf-8" }), name);
+  const res = await fetch("/api/uploads", { method: "POST", body: formData });
+  const data = (await res.json().catch(() => ({}))) as {
+    uploaded?: { name: string; path: string }[];
+    error?: string;
+    errors?: { error?: string }[];
+  };
+  if (!res.ok && res.status !== 207) throw new Error(data.error ?? `HTTP ${res.status}`);
+  const entry = data.uploaded?.[0];
+  if (!entry?.path) throw new Error(data.errors?.[0]?.error ?? `HTTP ${res.status}`);
+  return { name: entry.name, path: entry.path, chars: text.length, preview: text.slice(0, 160) };
+}
+
+/** 卡片副标题：1.2k / 8.4k，比裸数字好读 */
+function formatCharCount(chars: number): string {
+  if (chars >= 1000) return `${(chars / 1000).toFixed(1)}k`;
+  return String(chars);
 }
 
 const THINKING_LEVELS = ["auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
@@ -376,6 +435,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   fileUploadError,
   placeholder,
   hideAttach,
+  onOpenInPanel,
 }: Props, ref) {
   const { t } = useI18n();
   const isMobile = useIsMobile();
@@ -389,6 +449,12 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>(() => (
     draftKey ? draftImagesToAttachedImages(getDraft(draftKey)?.images) : []
   ));
+  /** 长文本粘贴转成的附件文件（每个卡片对应上传目录里的一个 .txt） */
+  const [attachedTexts, setAttachedTexts] = useState<ChatDraftTextFile[]>(() => (
+    draftKey ? getDraft(draftKey)?.textFiles ?? [] : []
+  ));
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteError, setPasteError] = useState<string | null>(null);
   const trimmedValue = value.trimStart();
   const bashMode = attachedImages.length === 0 && trimmedValue.startsWith("!");
   const bashExcluded = bashMode && trimmedValue.startsWith("!!");
@@ -411,6 +477,23 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     : {};
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 发送按钮 DOM：交给液态层实测位置（任意宽度下液体都贴着真实按钮）
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
+  /** composer 卡片（.chat-composer）——液态层定位与分裂动画的参照矩形 */
+  const composerRef = useRef<HTMLDivElement>(null);
+  const stopButtonRef = useRef<HTMLButtonElement>(null);
+  const steerButtonRef = useRef<HTMLButtonElement>(null);
+  /** 「后续消息」按钮 —— 分裂动画的右侧落点 */
+  const followUpButtonRef = useRef<HTMLButtonElement>(null);
+  /**
+   * 发送按钮“分裂”过渡态：发送后约 0.7s 内，引导/停止按钮先渲染出来（透明占位），
+   * 由 LiquidSendFx 把两滴液体从发送按钮渗到它们身上，动画结束才真正可交互。
+   * 纯视觉时序，不影响任何发送逻辑。
+   */
+  const [flushSplit, setFlushSplit] = useState(false);
+  const splitTimerRef = useRef<number | null>(null);
+  /** 点击发送那一刻的发送按钮中心（视口坐标）——流式态它会被卸载，必须在点击回调里同步量好 */
+  const splitAnchorRef = useRef<{ x: number; y: number; size: number } | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const modelDropdownPanelRef = useRef<HTMLDivElement>(null);
   const toolDropdownRef = useRef<HTMLDivElement>(null);
@@ -419,6 +502,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const historyMenuRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
+  /**
+   * 粘贴事件不携带修饰键，所以用 window 上的 keydown/keyup 记录 Alt 是否按住：
+   * 按住 Alt 粘贴 = 长文本保留原文（不转附件），给需要把长文当提示词发的场景留逃生门。
+   */
+  const altKeyRef = useRef(false);
   const lastCompositionEndAtRef = useRef(0);
   const slashCommandsRequestedRef = useRef(false);
   const slashItemRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -429,12 +517,14 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const draftKeyRef = useRef(draftKey);
   const valueRef = useRef(value);
   const attachedImagesRef = useRef(attachedImages);
+  const attachedTextsRef = useRef(attachedTexts);
   const pendingImageCountRef = useRef(0);
   const isStreamingRef = useRef(isStreaming);
   // 发送确认中锁：带图片的发送要等视觉代理/prompt 提交完成，期间禁止重复发送
   const pendingSendRef = useRef(false);
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
+  attachedTextsRef.current = attachedTexts;
   isStreamingRef.current = isStreaming;
 
   useImperativeHandle(ref, () => ({
@@ -566,6 +656,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setValue("");
     setAtQuery(null);
     setHistoryMenuOpen(false);
+    setAttachedTexts([]);
+    setPasteError(null);
     if (draftKey) clearDraft(draftKey);
     if (draftKeyRef.current && draftKeyRef.current !== draftKey) clearDraft(draftKeyRef.current);
     clearImages();
@@ -579,8 +671,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft(draftKey, {
       value,
       images: attachedImages.map(imageToDraftImage),
+      textFiles: attachedTexts,
     });
-  }, [attachedImages, draftKey, value]);
+  }, [attachedImages, attachedTexts, draftKey, value]);
 
   useEffect(() => {
     const previousDraftKey = draftKeyRef.current;
@@ -590,6 +683,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setDraft(previousDraftKey, {
         value: valueRef.current,
         images: attachedImagesRef.current.map(imageToDraftImage),
+        textFiles: attachedTextsRef.current,
       });
     }
 
@@ -602,6 +696,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       prev.forEach(revokeImagePreview);
       return draftImagesToAttachedImages(draft?.images);
     });
+    setAttachedTexts(draft?.textFiles ?? []);
+    setPasteError(null);
   }, [draftKey]);
 
   useEffect(() => {
@@ -612,18 +708,92 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [value]);
 
   useEffect(() => {
+    const syncAlt = (e: globalThis.KeyboardEvent) => {
+      altKeyRef.current = e.altKey;
+    };
+    const clearAlt = () => {
+      altKeyRef.current = false;
+    };
+    window.addEventListener("keydown", syncAlt, true);
+    window.addEventListener("keyup", syncAlt, true);
+    window.addEventListener("blur", clearAlt);
     return () => {
+      window.removeEventListener("keydown", syncAlt, true);
+      window.removeEventListener("keyup", syncAlt, true);
+      window.removeEventListener("blur", clearAlt);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (splitTimerRef.current) window.clearTimeout(splitTimerRef.current);
       attachedImagesRef.current.forEach(revokeImagePreview);
     };
   }, []);
 
+  /**
+   * 点击发送的一瞬间触发「按钮分裂」：先让引导/后续/停止按钮以占位态出现（同一帧），
+   * 再把两滴液体从发送按钮渗到它们身上，动画结束才真正放开交互。
+   * 必须在调用方（父级）把 isStreaming 置 true 之前同步调用。
+   *
+   * ★ 为何不只用 React 状态驱动：空会话发第一条消息时 ChatWindow 会切分支，
+   *   ChatInput 整块卸载重建，新实例的 flushSplit 是 false，分裂就丢了（实测）。
+   *   所以真正跑动画的是一个**与组件生命周期无关的 DOM 轮询**：等引导/后续/停止
+   *   按钮真出现在 DOM 里，再拿实测坐标开跑（此实现在首条消息与后续消息行为一致）。
+   */
+  const armSplit = useCallback(() => {
+    const start = performance.now();
+    const step = () => {
+      const composer = document.querySelector<HTMLElement>(".chat-composer");
+      const anchor = splitAnchorRef.current;
+      const steer = document.querySelector<HTMLElement>('[data-pi-split="steer"]');
+      const follow = document.querySelector<HTMLElement>('[data-pi-split="followup"]');
+      const stop = document.querySelector<HTMLElement>('[data-pi-split="stop"]');
+      if (composer && anchor && (steer || follow || stop)) {
+        splitToTargets(composer, { x: anchor.x, y: anchor.y }, anchor.size, steer, follow);
+        return;
+      }
+      // 按钮最多滞后一两帧（isStreaming 翻转后同步渲染）；400ms 还没等到就放弃。
+      if (performance.now() - start < 400) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, []);
+
+  const beginSplit = useCallback(() => {
+    const btn = sendButtonRef.current;
+    if (btn) {
+      const r = btn.getBoundingClientRect();
+      splitAnchorRef.current = { x: r.left + r.width / 2, y: r.top + r.height / 2, size: r.width };
+    } else {
+      splitAnchorRef.current = null;
+    }
+    setFlushSplit(true);
+    if (splitTimerRef.current) window.clearTimeout(splitTimerRef.current);
+    splitTimerRef.current = window.setTimeout(() => {
+      setFlushSplit(false);
+      splitTimerRef.current = null;
+    }, 760);
+    armSplit();
+  }, [armSplit]);
+
   const handleSend = useCallback(async () => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
+    const rawMsg = value.trim();
+    const textPaths = attachedTexts.map((file) => file.path);
+    if (!rawMsg && !attachedImages.length && !textPaths.length) return;
     if (isStreaming || pendingSendRef.current) return;
+    // 文本附件以 @绝对路径 前置给模型（模型自己 read 文件），用户敲的短评跟在后面。
+    const msg = textPaths.length
+      ? [...textPaths.map((p) => `@${p}`), rawMsg].filter(Boolean).join("\n\n")
+      : rawMsg;
+    // 液态反馈只搬用户真敲的字：附件路径的字符不该出现在水流里。
+    if (rawMsg) {
+      playLiquidSend(rawMsg, textareaRef.current, sendButtonRef.current);
+    }
+    // 按钮分裂：发送后引导/停止按钮会出现，让它们由发送按钮“分水”长出来。
+    beginSplit();
     onAudioUnlock?.();
-    if (!attachedImages.length && msg.startsWith("/") && onBuiltinCommand) {
-      const result = await onBuiltinCommand(msg);
+    if (!attachedImages.length && !textPaths.length && rawMsg.startsWith("/") && onBuiltinCommand) {
+      const result = await onBuiltinCommand(rawMsg);
       if (result.handled) {
         if (!result.error) clearInput();
         return;
@@ -668,7 +838,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return;
     }
     clearInput();
-  }, [value, attachedImages, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, attachedTexts, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock, beginSplit]);
 
   const slashQuery = value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -700,7 +870,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? t(slashQuery ? "chat.match" : "chat.command")
     : t(slashQuery ? "chat.matches" : "chat.commands", { count: filteredSlashCommands.length });
   const hasInputText = Boolean(value.trim());
-  const canQueueStreamingMessage = hasInputText && attachedImages.length === 0;
+  const hasSendable = hasInputText || attachedImages.length > 0 || attachedTexts.length > 0;
+  const canQueueStreamingMessage = (hasInputText || attachedTexts.length > 0) && attachedImages.length === 0;
 
   // ── @ file autocomplete ──────────────────────────────────────────────────
   // Recomputed from the text before the caret on every change/caret move.
@@ -885,12 +1056,16 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, []);
 
   const sendQueued = useCallback((mode: "steer" | "followup") => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length) return;
+    const rawMsg = value.trim();
+    const textPaths = attachedTexts.map((file) => file.path);
+    if (!rawMsg && !attachedImages.length && !textPaths.length) return;
     if (attachedImages.length) return;
     onAudioUnlock?.();
+    const msg = textPaths.length
+      ? [...textPaths.map((p) => `@${p}`), rawMsg].filter(Boolean).join("\n\n")
+      : rawMsg;
     const streamingBehavior = mode === "steer" ? "steer" : "followUp";
-    if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
+    if (!textPaths.length && msg.startsWith("/") && onPromptWithStreamingBehavior) {
       onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImages.length ? attachedImages : undefined);
       clearInput();
       return;
@@ -901,7 +1076,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
     }
     clearInput();
-  }, [value, attachedImages, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock]);
+  }, [value, attachedImages, attachedTexts, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock]);
 
   const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
     const lastIndex = displayedSlashCommands.length - 1;
@@ -1077,18 +1252,53 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   }, []);
 
+  /**
+   * 把一次粘贴的长文本转成附件：上传成文件 + 在 composer 里挂一张卡片。
+   * 正文不落在 textarea，所以输入框不会因为几万字而每敲一键卡一下。
+   */
+  const attachPastedText = useCallback(async (text: string) => {
+    setPasteError(null);
+    setPasteBusy(true);
+    try {
+      const entry = await uploadPastedText(text);
+      setAttachedTexts((prev) => [...prev, entry]);
+    } catch (err) {
+      // 已 preventDefault，原文不会再被浏览器插进 textarea：失败时必须自己放回去，
+      // 否则用户粘的长文就丢了（宁可卡一下，不能吞内容）。
+      const fallback = err instanceof Error ? err.message : String(err);
+      setPasteError(`${t("chat.textAttachmentFailed")}: ${fallback}`);
+      setValue((prev) => (prev.trim() ? `${prev}\n\n${text}` : text));
+      setAtQuery(null);
+    } finally {
+      setPasteBusy(false);
+    }
+  }, [t]);
+
+  const removeTextAttachment = useCallback((index: number) => {
+    setAttachedTexts((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = Array.from(e.clipboardData?.items ?? []);
     const fileItems = items.filter((item) => item.kind === "file");
-    if (!fileItems.length) return;
+    if (fileItems.length) {
+      e.preventDefault();
+      const files = fileItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
+      if (!files.length) return;
+      const images = files.filter((f) => f.type.startsWith("image/"));
+      const others = files.filter((f) => !f.type.startsWith("image/"));
+      if (images.length) processImageFiles(images);
+      if (others.length) onUploadFiles?.(others);
+      return;
+    }
+    // 纯文本粘贴：只有“一次贴进来就很长”才转文件，短文本走浏览器默认插入。
+    // Alt 是逃生门：按住 Alt 粘贴保留原文（想直接把长文本当提示词发时用）。
+    if (altKeyRef.current) return;
+    const text = e.clipboardData?.getData("text/plain") ?? "";
+    if (!text || !shouldPasteAsFile(text)) return;
     e.preventDefault();
-    const files = fileItems.map((item) => item.getAsFile()).filter((f): f is File => f !== null);
-    if (!files.length) return;
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    const others = files.filter((f) => !f.type.startsWith("image/"));
-    if (images.length) processImageFiles(images);
-    if (others.length) onUploadFiles?.(others);
-  }, [processImageFiles, onUploadFiles]);
+    void attachPastedText(text);
+  }, [processImageFiles, onUploadFiles, attachPastedText]);
 
   useEffect(() => {
     if (slashQuery === null) {
@@ -1195,6 +1405,13 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   })();
   const toolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
 
+  /**
+   * 控制项是否展开（桌面恒展开；移动端折叠成「更多控件」）。
+   * 引导/停止按钮的分裂动画依赖它——桌面分裂时它们已经在场上，
+   * 移动端则先展开再分裂，保持同样的“从发送按钮长出来”观感。
+   */
+  const controlsOpen = isMobile ? controlsMenuOpen || flushSplit : true;
+
   // 引导/后续消息 chip（流式态）：桌面放在工具行右侧，移动端（compact）放在输入行尾部。
   // 取代旧版占满输入行的大按钮 —— 保留键盘行为不变（Enter 默认引导）。
   const renderQueueChip = (mode: "steer" | "followup", compact: boolean) => {
@@ -1209,6 +1426,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       <button
         key={mode}
         onClick={() => sendQueued(mode)}
+        /* 水滴吸附反馈：从 chip 吸一滴进发送按钮（只做视觉，不改变发送行为） */
+        onPointerDown={(e) => {
+          if (!enabled) return;
+          absorbToSend(e.currentTarget, sendButtonRef.current);
+        }}
         disabled={!enabled}
         title={queueTitle}
         style={{
@@ -1483,7 +1705,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           </div>
         )}
         {/* Glass composer 卡片（A+B 融合：Composer 卡片结构 + iMessage 玻璃水滴材质，与用户气泡同配方） */}
-        <div className={`chat-composer${isStreaming ? " chat-composer-streaming" : ""}`}>
+        <div ref={composerRef} className={`chat-composer${isStreaming ? " chat-composer-streaming" : ""}`} data-pifx="v2">
         {/* Image previews（收进卡内顶部） */}
         {attachedImages.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "10px 12px 0" }}>
@@ -1511,6 +1733,78 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* 长文本粘贴转成的附件卡片：正文在上传目录里，这里只挂一张可点开的卡片 */}
+        {(attachedTexts.length > 0 || pasteBusy) && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "10px 12px 0" }}>
+            {attachedTexts.map((file, i) => (
+              <div
+                key={file.path}
+                className="pi-text-attach"
+                title={`${file.preview}${file.chars > file.preview.length ? "…" : ""}\n\n${t("chat.textAttachmentPasteHint")}`}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6,
+                  minWidth: 0, maxWidth: 320, padding: "4px 4px 4px 8px",
+                  background: "color-mix(in srgb, var(--accent) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--accent) 26%, transparent)",
+                  borderRadius: "var(--radius-sm)",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => onOpenInPanel?.(file.path)}
+                  disabled={!onOpenInPanel}
+                  title={t("chat.textAttachmentOpen")}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, minWidth: 0,
+                    padding: 0, background: "none", border: "none",
+                    color: "var(--text)", fontSize: 12, lineHeight: 1.3,
+                    cursor: onOpenInPanel ? "pointer" : "default", textAlign: "left",
+                  }}
+                >
+                  <span style={{ display: "flex", flexShrink: 0 }}>{getFileIcon(file.name, 14)}</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {file.name}
+                  </span>
+                  <span style={{ flexShrink: 0, color: "var(--text-muted)", fontSize: 11 }}>
+                    {formatCharCount(file.chars)} {t("chat.charCount")}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeTextAttachment(i)}
+                  title={t("chat.textAttachmentRemove")}
+                  aria-label={t("chat.textAttachmentRemove")}
+                  style={{
+                    flexShrink: 0, width: 18, height: 18, padding: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: "none", border: "none", borderRadius: "50%",
+                    color: "var(--text-muted)", cursor: "pointer",
+                  }}
+                >
+                  <svg width="9" height="9" viewBox="0 0 8 8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+                    <line x1="1" y1="1" x2="7" y2="7" /><line x1="7" y1="1" x2="1" y2="7" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+            {pasteBusy && (
+              <div
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "4px 10px",
+                  background: "var(--bg-subtle)", border: "1px solid var(--hairline)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--text-muted)", fontSize: 12,
+                }}
+              >
+                <span
+                  style={{ width: 11, height: 11, borderRadius: "50%", border: "2px solid var(--border)", borderTopColor: "var(--accent)", animation: "spin 0.8s linear infinite", display: "inline-block" }}
+                />
+                {t("chat.savingPastedText")}
+              </div>
+            )}
           </div>
         )}
 
@@ -1901,8 +2195,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
           )}
         </div>
 
-        {/* File upload status */}
-        {fileUploadError && (
+        {/* File upload / 长文本转存错误 */}
+        {(fileUploadError || pasteError) && (
           <div
             role="alert"
             style={{
@@ -1924,7 +2218,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               <line x1="12" y1="8" x2="12" y2="12" />
               <line x1="12" y1="16" x2="12.01" y2="16" />
             </svg>
-            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{fileUploadError}</span>
+            <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{fileUploadError ?? pasteError}</span>
           </div>
         )}
           {/* Composer 工具行：附件 / bash / 模型 | 引导·后续 chips | 控制项 | 圆形发送·停止（全部收进玻璃卡内，替代旧版底部第二排） */}
@@ -2224,8 +2518,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </div>
             )}
           {!isMobile && <div style={{ flex: 1, minWidth: 0 }} />}
-          {isStreaming && !isMobile && onSteer && renderQueueChip("steer", false)}
-          {isStreaming && !isMobile && onFollowUp && renderQueueChip("followup", false)}
+          {/* 桌面的「引导 / 后续消息」不再用独立 chip：发送后由发送按钮“分水”分出三个按钮
+              （引导 / 后续 / 停止，见下方按钮组）。移动端仍用输入行尾部的小 chips。 */}
 
           {/* RIGHT: thinking + tools preset + compact + sound (idle) | Stop + sound (streaming) */}
           <div ref={controlsMenuRef} style={{
@@ -2237,6 +2531,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             marginLeft: isMobile ? 0 : "auto",
           }}>
             {isMobile && (
+              <div>
               <button
                 type="button"
                  title={controlsMenuOpen ? undefined : t("chat.moreControls")}
@@ -2258,7 +2553,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   padding: "8px 10px",
                   background: "none",
                   border: "none",
-                  borderRadius: 9,
+                  borderRadius: "var(--radius-md)",
                   color: "var(--text-muted)",
                   cursor: controlsMenuOpen ? "default" : "pointer",
                   fontSize: 12,
@@ -2280,8 +2575,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               >
                 {t("chat.moreControls")}
               </button>
+              </div>
             )}
-            <div style={{
+            <div
+              data-pi-ctrl="row"
+              style={{
               display: isMobile ? (controlsMenuOpen ? "flex" : "none") : "flex",
               alignItems: "center",
               gap: isMobile ? 1 : 2,
@@ -2296,12 +2594,96 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 flexWrap: "nowrap",
                 justifyContent: "flex-end",
                 border: "1px solid color-mix(in srgb, var(--border) 72%, transparent)",
-                borderRadius: 10,
+                borderRadius: "var(--radius-md)",
                 background: "color-mix(in srgb, var(--bg-panel) 92%, var(--bg))",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.14)",
+                boxShadow: "var(--shadow-lg)",
                 backdropFilter: "blur(10px)",
               } : null),
             }}>
+            {controlsOpen && (
+              <>
+            {onPlanModeChange && (
+              <button
+                onClick={() => onPlanModeChange(!planMode)}
+                title={t("plan.title")}
+                aria-label={t("plan.title")}
+                aria-pressed={Boolean(planMode)}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                  padding: isMobile ? "0 6px" : "8px 12px",
+                  width: isMobile ? "auto" : undefined,
+                  height: 32,
+                  background: planMode ? "color-mix(in srgb, var(--accent) 16%, transparent)" : "none",
+                  border: "none",
+                  borderRadius: "var(--radius-md)",
+                  color: planMode ? "var(--accent)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: planMode ? 600 : 400,
+                  transition: "background 0.12s, color 0.12s",
+                }}
+                onMouseEnter={(e) => {
+                  if (planMode) return;
+                  e.currentTarget.style.background = "var(--bg-hover)";
+                  e.currentTarget.style.color = "var(--text)";
+                }}
+                onMouseLeave={(e) => {
+                  if (planMode) return;
+                  e.currentTarget.style.background = "none";
+                  e.currentTarget.style.color = "var(--text-muted)";
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 11l3 3L22 4" />
+                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+                {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{t("plan.title")}</span>}
+              </button>
+            )}
+            {onSoundToggle !== undefined && (
+              <button
+                onClick={onSoundToggle}
+                 title={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
+                 aria-label={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                  width: isMobile ? 32 : 32,
+                  height: 32,
+                  padding: 0,
+                  background: "none",
+                  border: "none",
+                  borderRadius: "var(--radius-md)",
+                  color: soundEnabled ? "var(--text-muted)" : "var(--text-dim)",
+                  cursor: "pointer",
+                  opacity: soundEnabled ? 1 : 0.55,
+                  transition: "background 0.12s, color 0.12s, opacity 0.12s",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--bg-hover)";
+                  e.currentTarget.style.color = "var(--text)";
+                  e.currentTarget.style.opacity = "1";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "none";
+                  e.currentTarget.style.color = soundEnabled ? "var(--text-muted)" : "var(--text-dim)";
+                  e.currentTarget.style.opacity = soundEnabled ? "1" : "0.55";
+                }}
+              >
+                {soundEnabled ? (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                  </svg>
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="23" y1="9" x2="17" y2="15" />
+                    <line x1="17" y1="9" x2="23" y2="15" />
+                  </svg>
+                )}
+              </button>
+            )}
             {!isStreaming && onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} style={{ position: "relative" }}>
                 <button
@@ -2316,7 +2698,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     height: 32,
                     background: thinkingDropdownOpen ? "var(--bg-hover)" : "none",
                     border: "none",
-                    borderRadius: 9,
+                    borderRadius: "var(--radius-md)",
                     color: "var(--text-muted)",
                     cursor: isStreaming ? "not-allowed" : "pointer",
                     fontSize: 12,
@@ -2343,8 +2725,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {thinkingDropdownOpen && (
                   <div style={{
                     position: "absolute", bottom: "calc(100% + 6px)", right: 0,
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                    zIndex: 100, background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)", boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
                     overflow: "hidden", minWidth: 180,
                   }}>
                     {THINKING_LEVELS.filter((lvl) => {
@@ -2403,7 +2785,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     height: 32,
                     background: toolDropdownOpen ? "var(--bg-hover)" : "none",
                     border: "none",
-                    borderRadius: 9,
+                    borderRadius: "var(--radius-md)",
                     color: "var(--text-muted)",
                     cursor: isStreaming ? "not-allowed" : "pointer",
                     fontSize: 12,
@@ -2428,8 +2810,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 {toolDropdownOpen && (
                   <div style={{
                     position: "absolute", bottom: "calc(100% + 6px)", right: 0,
-                    zIndex: 100, background: "var(--bg)", border: "1px solid var(--border)",
-                    borderRadius: 8, boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
+                    zIndex: 100, background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                    borderRadius: "var(--radius-sm)", boxShadow: "0 -4px 16px rgba(0,0,0,0.10)",
                     overflow: "hidden", minWidth: 120,
                   }}>
                     {TOOL_PRESETS.map((lvl) => {
@@ -2478,7 +2860,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     height: 32,
                     background: isCompacting ? "rgba(239,68,68,0.08)" : "none",
                     border: "none",
-                    borderRadius: 9,
+                    borderRadius: "var(--radius-md)",
                     color: isCompacting ? "#ef4444" : "var(--text-muted)",
                     cursor: (isStreaming && !isCompacting) ? "not-allowed" : "pointer",
                     fontSize: 12, opacity: (isStreaming && !isCompacting) ? 0.5 : 1,
@@ -2508,88 +2890,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             )}
 
-            {onPlanModeChange && (
-              <button
-                onClick={() => onPlanModeChange(!planMode)}
-                title={t("plan.title")}
-                aria-label={t("plan.title")}
-                aria-pressed={Boolean(planMode)}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                  padding: isMobile ? "0 6px" : "8px 12px",
-                  width: isMobile ? "auto" : undefined,
-                  height: 32,
-                  background: planMode ? "color-mix(in srgb, var(--accent) 16%, transparent)" : "none",
-                  border: "none",
-                  borderRadius: "var(--radius-md)",
-                  color: planMode ? "var(--accent)" : "var(--text-muted)",
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontWeight: planMode ? 600 : 400,
-                  transition: "background 0.12s, color 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  if (planMode) return;
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                }}
-                onMouseLeave={(e) => {
-                  if (planMode) return;
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = "var(--text-muted)";
-                }}
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M9 11l3 3L22 4" />
-                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
-                </svg>
-                {(!isMobile || controlsMenuOpen) && <span style={{ whiteSpace: "nowrap" }}>{t("plan.title")}</span>}
-              </button>
-            )}
-            {onSoundToggle !== undefined && (
-              <button
-                onClick={onSoundToggle}
-                 title={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                 aria-label={soundEnabled ? t("chat.disableSound") : t("chat.enableSound")}
-                style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-                  width: isMobile ? 32 : 32,
-                  height: 32,
-                  padding: 0,
-                  background: "none",
-                  border: "none",
-                  borderRadius: 9,
-                  color: soundEnabled ? "var(--text-muted)" : "var(--text-dim)",
-                  cursor: "pointer",
-                  opacity: soundEnabled ? 1 : 0.55,
-                  transition: "background 0.12s, color 0.12s, opacity 0.12s",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                  e.currentTarget.style.color = "var(--text)";
-                  e.currentTarget.style.opacity = "1";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "none";
-                  e.currentTarget.style.color = soundEnabled ? "var(--text-muted)" : "var(--text-dim)";
-                  e.currentTarget.style.opacity = soundEnabled ? "1" : "0.55";
-                }}
-              >
-                {soundEnabled ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                  </svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                    <line x1="23" y1="9" x2="17" y2="15" />
-                    <line x1="17" y1="9" x2="23" y2="15" />
-                  </svg>
-                )}
-              </button>
-            )}
             {isMobile && controlsMenuOpen && (
               <button
                 type="button"
@@ -2630,37 +2930,127 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </svg>
               </button>
             )}
+              </>
+            )}
             </div>
           </div>
 
-            {/* Send / Stop —— 圆形主操作钮（ChatGPT 式：可用时 accent 填充 ↑；流式态变红色 ■ 停止） */}
-            {isStreaming ? (
-              <button
-                onClick={onAbort}
-                title={t("chat.stopAgent")}
-                aria-label={t("chat.stopAgent")}
-                style={{
-                  flexShrink: 0,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  width: 32, height: 32, padding: 0,
-                  borderRadius: "50%",
-                  background: "rgba(239,68,68,0.12)",
-                  border: "1px solid rgba(239,68,68,0.35)",
-                  color: "#ef4444",
-                  cursor: "pointer",
-                  transition: "background 0.15s",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.22)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.12)"; }}
-              >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                  <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
-                </svg>
-              </button>
+            {/* Send / Stop —— 圆形主操作钮。发送后它会“分裂”成 引导 / 停止 两个按钮：
+                分裂期间引导/停止以占位态出现（不接收指针），液体滴落到位后才可交互。 */}
+            {/* Send / Stop —— 圆形主操作钮。发送后它会“分裂”成 引导 / 后续 / 停止 三个按钮：
+                分裂期间它们以占位态出现（不接收指针），液体滴落到位后才可交互。 */}
+            {(isStreaming || flushSplit) ? (
+              <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 4 : 6, flexShrink: 0 }}>
+                {isStreaming && onSteer && (
+                  <button
+                    ref={steerButtonRef}
+                    type="button"
+                    data-pi-split="steer"
+                    onClick={() => sendQueued("steer")}
+                    disabled={!canQueueStreamingMessage}
+                    className={flushSplit ? "pi-split-in" : undefined}
+                    title={t("chat.steer")}
+                    aria-label={t("chat.steer")}
+                    style={{
+                      flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                      height: 32, padding: isMobile ? "0 8px" : "0 12px",
+                      background: canQueueStreamingMessage ? "color-mix(in srgb, var(--accent) 13%, transparent)" : "none",
+                      border: "1px solid " + (canQueueStreamingMessage ? "color-mix(in srgb, var(--accent) 42%, transparent)" : "var(--hairline)"),
+                      borderRadius: "var(--radius-md)",
+                      color: canQueueStreamingMessage ? "var(--accent)" : "var(--text-dim)",
+                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
+                      fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                      pointerEvents: flushSplit ? "none" : "auto",
+                      opacity: flushSplit ? 0.4 : 1,
+                      transition: "background 0.12s, color 0.12s, border-color 0.12s",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!canQueueStreamingMessage || flushSplit) return;
+                      e.currentTarget.style.background = "color-mix(in srgb, var(--accent) 22%, transparent)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = canQueueStreamingMessage ? "color-mix(in srgb, var(--accent) 13%, transparent)" : "none";
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M2 8V3.5M2 3.5 5 6M2 3.5 8 8" />
+                    </svg>
+                    {!isMobile && <span>{t("chat.steer")}</span>}
+                  </button>
+                )}
+                {isStreaming && onFollowUp && (
+                  <button
+                    ref={followUpButtonRef}
+                    type="button"
+                    data-pi-split="followup"
+                    onClick={() => sendQueued("followup")}
+                    disabled={!canQueueStreamingMessage}
+                    className={flushSplit ? "pi-split-in" : undefined}
+                    title={t("chat.followUp")}
+                    aria-label={t("chat.followUp")}
+                    style={{
+                      flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                      height: 32, padding: isMobile ? "0 8px" : "0 12px",
+                      background: canQueueStreamingMessage ? "var(--bg-subtle)" : "none",
+                      border: "1px solid var(--hairline)",
+                      borderRadius: "var(--radius-md)",
+                      color: canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)",
+                      cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
+                      fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                      pointerEvents: flushSplit ? "none" : "auto",
+                      opacity: flushSplit ? 0.4 : 1,
+                      transition: "background 0.12s, color 0.12s",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!canQueueStreamingMessage || flushSplit) return;
+                      e.currentTarget.style.background = "var(--bg-hover)";
+                      e.currentTarget.style.color = "var(--text)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = canQueueStreamingMessage ? "var(--bg-subtle)" : "none";
+                      e.currentTarget.style.color = canQueueStreamingMessage ? "var(--text-muted)" : "var(--text-dim)";
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M2 2v4.5M2 4.5 5 2M2 4.5 8 2" />
+                    </svg>
+                    {!isMobile && <span>{t("chat.followUp")}</span>}
+                  </button>
+                )}
+                <button
+                  ref={stopButtonRef}
+                  data-pi-split="stop"
+                  onClick={isStreaming ? onAbort : undefined}
+                  disabled={flushSplit || !isStreaming}
+                  className={flushSplit ? "pi-split-in" : undefined}
+                  title={t("chat.stopAgent")}
+                  aria-label={t("chat.stopAgent")}
+                  style={{
+                    flexShrink: 0,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 32, height: 32, padding: 0,
+                    borderRadius: "50%",
+                    background: "rgba(239,68,68,0.12)",
+                    border: "1px solid rgba(239,68,68,0.35)",
+                    color: "#ef4444",
+                    pointerEvents: flushSplit ? "none" : "auto",
+                    opacity: flushSplit ? 0.4 : 1,
+                    cursor: "pointer",
+                    transition: "background 0.15s",
+                  }}
+                  onMouseEnter={(e) => { if (flushSplit) return; e.currentTarget.style.background = "rgba(239,68,68,0.22)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.12)"; }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                    <rect x="1.5" y="1.5" width="7" height="7" rx="1.5" fill="currentColor" />
+                  </svg>
+                </button>
+              </div>
             ) : (
               <button
+                ref={sendButtonRef}
                 onClick={handleSend}
-                disabled={!value.trim() && !attachedImages.length}
+                disabled={!hasSendable}
                 title={t("chat.send")}
                 aria-label={t("chat.send")}
                 style={{
@@ -2668,19 +3058,19 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   width: 32, height: 32, padding: 0,
                   borderRadius: "50%",
-                  background: (value.trim() || attachedImages.length) ? "var(--accent)" : "transparent",
-                  border: (value.trim() || attachedImages.length) ? "1px solid transparent" : "1px solid var(--hairline)",
-                  color: (value.trim() || attachedImages.length) ? "#fff" : "var(--text-dim)",
-                  cursor: (value.trim() || attachedImages.length) ? "pointer" : "not-allowed",
-                  boxShadow: (value.trim() || attachedImages.length) ? "0 2px 10px -2px color-mix(in srgb, var(--accent) 60%, transparent)" : "none",
+                  background: hasSendable ? "var(--accent)" : "transparent",
+                  border: hasSendable ? "1px solid transparent" : "1px solid var(--hairline)",
+                  color: hasSendable ? "#fff" : "var(--text-dim)",
+                  cursor: hasSendable ? "pointer" : "not-allowed",
+                  boxShadow: hasSendable ? "0 2px 10px -2px color-mix(in srgb, var(--accent) 60%, transparent)" : "none",
                   transition: "background 0.15s, box-shadow 0.15s, border-color 0.15s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!(value.trim() || attachedImages.length)) return;
+                  if (!hasSendable) return;
                   e.currentTarget.style.background = "var(--accent-hover)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.background = (value.trim() || attachedImages.length) ? "var(--accent)" : "transparent";
+                  e.currentTarget.style.background = hasSendable ? "var(--accent)" : "transparent";
                 }}
               >
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

@@ -136,6 +136,8 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 - **渲染层另有一道自愈**：`components/WebViewer.tsx` 在 `active` / `visibilityTick`（面板收起→可见）/ `sessionEpoch`（会话 key 变化）任一信号变化时跑 `runHeal()`：幂等 `create(tabId)` + `getInfo(tabId)`，若视图 URL 为空白（`about:blank`/空/`chrome://`/`edge://`）则用 `lastUrlRef` 重导航。注意 `visibilityTick` **不能进 bounds-sync effect 的 deps**（会形成 bump→重跑→再 bump 死循环）。
 - **切会话 / 切项目都要保住 web 标签**：`AppShell.handleSelectSession` 与 `handleCwdChange` 从 panelMemory 恢复右侧标签时必须把 `currentWebTabs` **合并**进去，不能整体 `setFileTabs(savedPanel.fileTabs)` 覆盖，否则右侧网页标签会被丢。新建的 `<WebViewer>` 统一传 `sessionEpoch={sessionKey}`。
 - 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
+- **对话区那张 `.glass-card` 故意不带 backdrop 模糊**（`AppShell.tsx` 加 `chat-glass-flat`，`globals.css` 里把它变成 `--glass-blur: none`）：大块 `backdrop-filter` 会把整块对话区（同时是 RootScroller）提升成一个独立合成层（CDP LayerTree 里是 `1528x1308 [BackdropFilter,OverflowScrolling,RootScroller]`），**第三方截图工具的「窗口截图」路径读不到这一层**，读不到的部分按透明处理 —— 现象是「截图/贴图里对话区空白、直接透出桌面壁纸」（鼠标停在对话区里必现；Snipaste 实测，关掉该模糊即恢复）。关掉后对话区回到窗口根合成层，GDI BitBlt / PrintWindow(2) / desktopCapturer / CDP 各种抓法都能拿到内容；视觉上只是对话区背后的壁纸不再被模糊（前面还有桌面底板灰纱），顶栏/左栏/侧栏的小块模糊保留。**坑**：直接写 `backdrop-filter: none` 会被构建期 CSS 压缩器当成默认值丢掉（产出一条空规则），必须写成变量覆盖 `--glass-blur: none`；也因此验证时要看 computed style，不能只看规则是否存在。
+- 退出时按 pid 树杀服务子进程；下载目录统一收进 `browserDownloadsDir`。
 - **打包**（`scripts/package.mjs`）：自动设 `PI_WEB_DIST_DIR=.next-pkg` 与国内镜像（electron-builder-binaries / electron），GitHub 不可达时不卡下载；`electron-builder.yml` 用 `asar: false`（内置服务要读真实文件路径）、`npmRebuild: false`（原生依赖均为预编译产物）。命令：`pack:dir` / `pack:portable` / `pack:nsis` / `pack:msi` / `pack`。
 
 ## 浏览器控制桥（Semantic Browser V2）
@@ -151,6 +153,16 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 ## bash 输出临时文件
 - 大命令输出由 pi 写到系统 tmpdir 的 `pi-bash-*.log`，`/api/agent/[id]/bash-output` 提供读取（内联显示限 5MB，下载走流式）。路径必须位于 tmpdir 根且文件名匹配白名单（`lib/bash-output.ts`），`O_NOFOLLOW` 打开防符号链接，且必须被该会话真实引用（`lib/session-file-references.ts` 扫会话条目）。
 - 这些文件在系统 Temp 里不随会话结束自动清理，属已知行为；定期清空 `%TEMP%` 下 `pi-bash-*`、`univer-view-*`、`pi-web-*`、`pi-cdp-*`、`piweb-cdp-*` 前缀文件即可（详见「Temp 目录卫生」）。
+
+## 发送按钮「一分三」动效（LiquidSendFx）
+用户连续七轮反馈“不搭配 / 像涂了一层颜料 / 一个变三个效果差”，逐帧截图定量排查后定稿为
+**纯按钮自身形变**（不再往按钮上运液体）。三条硬约束（每条都是实测踩出来的，改参数前先看）：
+- **圆钮必须画在用户点的那一颗旗下**：空会话发第一条消息时 ChatWindow 切分支，composer 整体下移（实测 y 477 → 800）。用点击瞬间量到的 `anchor` 会画出飘在对话区中部、与三颗按钮差 300px 的孤球；因此 `split()` 里改成**播放时重新量一次「停止」按钮**（发送钮的同位继任者），量不到（宽高 < 16px）才退回 anchor。
+- **圆钮里同时只能出现一种按钮**：蓝（发送克隆）先缩没（`MORPH_CROSS_MS=170`），红（停止克隆）才长出来（`MORPH_TARGET_DELAY_MS` **必须 >= 蓝的时长**）。旧值蓝 240ms / 红 170ms 起步 → 重叠期两色相加是紫，实测 t≈120ms 圆钮发紫。叠放顺序是红在下、蓝在上。
+- **另两颗按钮飞行途中要先隐形**：三颗都从圆钮出发（FLIP），可见地飞会在半空叠成重影（实测 t≈240ms「引导」与「后续消息」完全叠字）。关键帧 offset `0`/`0.36` 恒 `opacity:0`，`0.62` 才凝出；`MORPH_STAGGER_MS=110` 保证前一颗基本就位后一颗才现身。
+- **分裂期间压掉「液态泵」**：`.pi-liquid` 主球比按钮大一圈、尾巴探到左侧，与 ghost 抢同一格就是“大蓝球裹红环”。`split()` 挂 `.pi-liquid-root.pi-morphing`（`globals.css` 里把 `.pi-liquid` 压成 opacity 0，**只压泵、不动 `.pi-flow-text` 文字流光**），cleanup 摘掉。该规则必须写在 `.pi-flow .pi-liquid` 之后（同特异度靠源码顺序取胜）。
+- **composer 改中性玻璃**：`--bg-panel 62%` 在浅色主题就是“一块白”，叠在同色页面上就是“涂了层白颜料”，改成 42% + 一层 2.5% accent 冷调；强调色全部交给 `border-beam`。
+- 验证手段：puppeteer 里把 `.pi-liquid-root` 上的 `pi-morphing` 与动画都暂停，用 `Animation.currentTime` 做**假时钟 seek** 逐帧截图（真实 rAF 截图会拍到 6.5× 慢放的内部状态，看不出问题）；断言项：圆钮与三按钮同格（偏差 ≤ 8px）、圆钮区域紫色像素为 0、按钮无残留行内 opacity、结束后 `pi-morphing` 已摘、输入框 opacity 归 1。
 
 ## 性能与稳定性
 - **undici dispatcher**（`lib/http-dispatcher.ts`）：`instrumentation.ts` 启动时调 `configureHttpDispatcher()`，全局 fetch 走带 300s 空闲超时（`DEFAULT_HTTP_IDLE_TIMEOUT_MS`）的 Client，并吞掉终止响应体时的内部 Client error（否则 EventEmitter error 直接打死 Next 进程）。超时是 `configureHttpDispatcher(timeoutMs)` 的代码级参数（`0` 禁用），非环境变量。

@@ -29,13 +29,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-interface BlobVars {
-  /** 相对根容器右下角的偏移与按钮尺寸 */
-  right: number;
-  bottom: number;
-  size: number;
-}
-
 /** 文字流光最多逐字搬运这么多光字（避免一次挂几百个动画节点、拖慢渲染） */
 const MAX_FLOW_CHARS = 100;
 /**
@@ -49,36 +42,90 @@ const MAX_FLOW_CHARS = 100;
  * 用户看到的就是「飘的位置差距很大」。
  *
  * 现在改成**两个互相解耦的相对动效**，完全不需要知道气泡在哪：
- *   ① 输入框里的字符 → 变成光字，整体**向右飘出**并淡出；
- *   ② 对话区的用户气泡 → 在同一时间段内**从左侧滑入**。
- * 两者时间上衔接（气泡在光字飘到一半时进场），读起来就是
- * 「输入的内容被化成一束光送到右边，落成一条消息」，但不再有任何定位问题。
+ *   ① 输入框里的字符 → 变成**发光文字**（保留字形 + accent 辉光），
+ *      沿波浪轨迹**向右飘出**、逐渐虚化消散；
+ *   ② 对话区的用户气泡 → 等光字飘过大半之后，从**右侧**滑入。
+ * 两者时间上刻意错开，读起来就是
+ * 「输入的内容化成一束光飞到右边，再从右边卷回来落成一条消息」，且不再有任何定位问题。
+ * （该节奏与用户提供的参考 demo 保持一致：文字流 ~1.0s，消息在水流将尽时落定。）
  */
-/** 单颗光字向右飘出的时长（ms） */
-const DRIFT_MS = 640;
+/** 单颗光字向右飘出的时长（ms）——与参考 demo 的 1.0s 对齐 */
+const DRIFT_MS = 1000;
 /** 相邻光字的出发间隔（ms）——错峰形成“一束流光”而不是整块一起动 */
 const DRIFT_STAGGER_MS = 18;
 /** 整束光流的最大额外滞后（ms）：字数多时压住总时长，避免拖太久 */
-const DRIFT_MAX_LAG_MS = 260;
+const DRIFT_MAX_LAG_MS = 240;
 /** 光字向右飘出的最小距离（px）；实际取 max(它, 输入框宽度 × DRIFT_RATIO) */
-const DRIFT_MIN_PX = 120;
+const DRIFT_MIN_PX = 220;
 /**
- * 飘出距离占输入框宽度的比例。
- * 取 0.85 是为了让光字**明显离开输入框**、朝着对话区方向去——
- * 太小（如 0.5）时只在框内滑一小段，读不出“被送到右边”；
- * 太大则会在右侧空白处飞太久。
+ * 飘出距离占输入框宽度的比例（要 **明显飞出去**：demo 里横向飞了大半屏）。
+ * 上限 DRIFT_MAX_PX 防止超宽屏时飞出视口、读不出“被送走”的落点。
  */
-const DRIFT_RATIO = 0.85;
-/** 气泡延迟多久开始从左侧滑入（ms）——与光字飘到一半的时刻对齐 */
-const BUBBLE_DELAY_MS = 240;
+const DRIFT_RATIO = 1.15;
+const DRIFT_MAX_PX = 620;
+/** 后字比前字多飞一点，不让整行字在终点叠成一个点（demo 也有这个 1.3px/字 的散开） */
+const DRIFT_SPREAD_PER_CHAR = 1.6;
+const DRIFT_SPREAD_MAX = 40;
+/** 气泡延迟多久开始从右侧滑入（ms）——与光字飘到“大半程”的时刻对齐 */
+const BUBBLE_DELAY_MS = 780;
+/**
+ * 气泡被晚插入时，发现它之后至少再等这么久才放它进场（ms）。
+ * 留一点“落定”的余地，避免最后一刻才被找到、直接就弹出来。
+ */
+const BUBBLE_SETTLE_MS = 140;
 /** 液态抽水相位总时长（与 globals.css 的 0.9s 关键帧对齐） */
 const FLOW_MS = 900;
 /** chip 吸附时长（与 pi-chip-absorb 关键帧对齐） */
 const CHIP_MS = 620;
-/** 发送按钮分裂时长（与 pi-split-* 关键帧对齐） */
-const SPLIT_MS = 720;
-/** goo 融合距离上限（≤ stdDeviation）：液柱上的小球必须比这更密才能融成一条液体 */
-const VEIN_MAX_GAP = 9;
+/**
+ * ── 发送按钮「一分三」（第八版 · 当前定稿）────────────────────────────
+ * 前六版都在往按钮上“运液体”（液柱 / 水珠 / 蓝色光点），用户始终觉得
+ * 「不搭配、像在按钮上涂了一层颜料」。原因很清楚：**分裂动作的主角不是液体，
+ * 而是按钮本身**。液体飞过按钮所在的整片区域，颜色再准也和按钮的材质无关。
+ *
+ * 分裂只做**按钮自己的形变**，不引入任何新颜色。三条硬约束（每条都是实测踩出来的）：
+ *   ① 圆钮必须在**用户点的那一颗**旗下 —— 空会话发第一条消息时 composer 会整体
+ *      下移（y 477 → 800），用点击瞬间的旧坐标会画出一个孤零零飘在对话区中部
+ *      的蓝球，与真正落位的三颗按钮差 300px（这就是“分裂很怪”的主因）。
+ *   ② 圆钮里同时只允许出现**一种**按钮：蓝（发送）缩没之后红（停止）才长出来。
+ *      蓝 240ms / 红 170ms 就起步时，重叠期两色相加 = 紫，正是“像涂了颜料”。
+ *   ③ 另外两颗按钮飞行途中必须**先隐形**：三颗都从圆钮出发，可见地飞就会在
+ *      半空叠成重影（实测 t≈240ms「引导」与「后续消息」完全叠字）。
+ *
+ * 时间轴（可对着逐帧截图核对）：
+ *   t=0          圆钮轻吞一下（ghost 缩放脉冲 + 一圈 accent 涟漪）
+ *   t=0~170ms    蓝向内缩成小点淡出（始终在最上层）
+ *   t=170~290ms  红从中心长到满格 —— 蓝已走干净，不会叠出紫
+ *   t=40ms 起    引导 / 后续消息 从圆钮底下被抽出（起点位移 = 自己到圆钮中心的
+ *                距离，FLIP）；offset 0~0.36 恒 opacity 0，飞过大半才凝出
+ *   t=+530ms     全部落位，flushSplit 解锁交互（与 splitTotalMs 共用常量）
+ * ghost 是发送/停止按钮的**真实 DOM 克隆**（真实底色、边框、图标、阴影），
+ * 所以任何主题下都和界面严丝合缝——这是“不搭配”的根治办法。
+ * 液体层只保留输入框文字流光那部分（pi-flow）。
+ */
+/** 单颗按钮“抽出/落位”的时长（ms） */
+const MORPH_MS = 300;
+/**
+ * 相邻按钮抽出的间隔（ms）—— 错峰才有“一颗一颗分离”的队列感。
+ * ★ 必须大到“前一颗基本就位、后一颗才现身”：三颗按钮都从圆钮出发，
+ *   间隔太小时两颗会在半空中叠在一起，文字糊成一团（75ms + 360ms 的旧参数，
+ *   实测 t≈240ms 一帧里「引导」和「后续消息」完全重叠）。
+ */
+const MORPH_STAGGER_MS = 110;
+/** 点击之后先让圆钮吞一下，再抽第一颗按钮（ms） */
+const MORPH_LEAD_MS = 40;
+/** 圆钮里的颜色交替（蓝→红）：蓝必须**先走干净** */
+const MORPH_CROSS_MS = 170;
+/**
+ * 红顶上来晚一点：**必须 >= MORPH_CROSS_MS**。
+ * 早于它就会出现“蓝还在、红已起”的重叠期，两色相加是紫 —— 旧值 170ms 起步、
+ * 蓝要 240ms 才结束，实测 t≈120ms 圆钮是紫的（用户原话“像涂了一层颜料”）。
+ */
+const MORPH_TARGET_DELAY_MS = 170;
+/** 红长满的时长（ms）：稍慢于蓝的收缩，收尾才不仓促 */
+const MORPH_TARGET_MS = 120;
+/** 全部落位后 ghost 多留一帧再摘掉（ms），避免与真实按钮交接时闪一下 */
+const MORPH_HOLD_MS = 120;
 /** 根容器向外扩一圈，给 goo 滤镜的 blur 留扩散空间 */
 const GOO_PAD = 30;
 const RESPECT_REDUCED_MOTION = false;
@@ -103,8 +150,8 @@ type FxRegistry = {
     composer: HTMLElement | null,
     anchor: { x: number; y: number } | null,
     buttonSize: number,
-    leftTarget: HTMLElement | null,
-    rightTarget: HTMLElement | null,
+    /** 点击那一刻发送按钮的 DOM 克隆——圆钮形变的「蓝」那一半（真实底色/图标） */
+    originVisual?: HTMLElement | null,
   ) => boolean;
 };
 
@@ -137,30 +184,41 @@ export function absorbToSend(chip: HTMLElement | null, button: HTMLElement | nul
 }
 
 /**
- * 发送按钮分裂：一团液体从发送按钮向左右渗出，分别落到「引导」与「停止」按钮上。
+ * 发送按钮分裂（视觉）：圆钮原地形变（蓝→红）+ 其余按钮从圆钮底下被抽出来。
  * 只做视觉，不改变任何按钮行为（新按钮由 React 同步渲染，动画纯装饰）。
+ *
+ * @param originVisual 点击那一刻发送按钮的克隆。**必须在点击回调里同步克隆**——
+ *   流式态一翻转，真实发送按钮就被 React 卸载了（这是本项目踩过的坑）。
  */
 export function splitToTargets(
   composer: HTMLElement | null,
   anchor: { x: number; y: number } | null,
   buttonSize: number,
-  leftTarget: HTMLElement | null,
-  rightTarget: HTMLElement | null,
+  originVisual?: HTMLElement | null,
 ): boolean {
   try {
-    return fxRegistry().split?.(composer, anchor, buttonSize, leftTarget, rightTarget) ?? false;
+    return fxRegistry().split?.(composer, anchor, buttonSize, originVisual) ?? false;
   } catch {
     return false;
   }
+}
+
+/**
+ * 分裂动画整体锁定时长（占位态多久后放开交互）。
+ * ★ 与 registry.split 里“最后一颗按钮落位 + ghost 摘除”的时刻**共用同一套常量**，
+ *   否则按钮会在动画中途被解成正常态（上一版两套时间轴各写各的，踩过）。
+ */
+export function splitTotalMs(total: number): number {
+  const n = Math.max(1, total);
+  return MORPH_LEAD_MS + (n - 1) * MORPH_STAGGER_MS + MORPH_MS + MORPH_HOLD_MS;
 }
 
 export function LiquidSendFxHost() {
   const rootRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const holderRef = useRef<HTMLDivElement>(null);
-  /** 分裂液柱层：挂在 .pi-liquid 内部，所以自带 goo 滤镜且以 root 为原点。
-   * 挂这里（而不是独立 fixed 层）才能与主球、水滴融成同一条液体。 */
-  const veinRef = useRef<HTMLDivElement>(null);
+  /** 按钮分裂舞台（见 .pi-morph-layer）：跟 root 同级，但 z-index 高一层 */
+  const morphRef = useRef<HTMLDivElement>(null);
   /**
    * 必须等挂载后再 portal：SSR 阶段没有 document，直接 createPortal(document.body)
    * 会抛 “document is not defined” 把整页渲染打挂（曾因此让页面变成 __next_error__）。
@@ -176,8 +234,8 @@ export function LiquidSendFxHost() {
     const root = rootRef.current;
     const overlay = overlayRef.current;
     const holder = holderRef.current;
-    const veinLayer = veinRef.current;
-    if (!root || !overlay || !holder) return;
+    const morphLayer = morphRef.current;
+    if (!root || !overlay || !holder || !morphLayer) return;
     const D = window as unknown as Record<string, unknown>;
     D.__fxHostReady = true;
 
@@ -187,7 +245,7 @@ export function LiquidSendFxHost() {
      * 发送按钮那一团液体收尾后不会消失（实测 t2600 时 blob 还挂在按钮上）。
      */
     const phaseTimers = new Map<string, number>();
-    /** 上一次分裂留下的液柱清理函数（连发时先把上一批液柱拆干净） */
+    /** 上一轮分裂的水珠清理函数（连发时先把上一批水珠拆干净） */
     let splitCleanup: (() => void) | null = null;
     /** 上一次“气泡等水流到位再显形”的清理函数 */
     let bubbleReveal: (() => void) | null = null;
@@ -260,13 +318,12 @@ export function LiquidSendFxHost() {
       return { x: c.right - rel.right - rel.width / 2, y: c.bottom - rel.bottom - rel.width / 2 };
     };
 
-    /** 播放一个动画相位：先摘旧类、强制回流，保证连点也能从头播 */
     /**
      * 播放一个动画相位：先摘旧类、强制回流，保证连点也能从头播。
-     * 只摘同名类（不再清掉其他相位）——发送时 pi-flow（文字流）与 pi-split（按钮分裂）
+     * 只摘同名类（不再清掉其他相位）——发送时 pi-flow（文字流）与 pi-morphing
      * 是同一帧开始的，之前把所有类一起清掉会把刚起的文字流直接抹掉。
      */
-    const runPhase = (cls: "pi-flow" | "pi-chip-flow" | "pi-split", ms: number) => {
+    const runPhase = (cls: "pi-flow" | "pi-chip-flow", ms: number) => {
       root.classList.remove(cls);
       // 强制回流：连续触发时保证关键帧从头跑，而不是被浏览器合并
       void root.offsetWidth;
@@ -277,6 +334,15 @@ export function LiquidSendFxHost() {
         root.classList.remove(cls);
         phaseTimers.delete(cls);
       }, ms));
+    };
+
+    /**
+     * 按钮分裂期间给根层挂 pi-morphing：只为了把「液态泵」(.pi-liquid) 压掉。
+     * 泵和 ghost 里的按钮克隆抢同一格（发送钮），同时出现就是一团大蓝球裹着
+     * 红环 —— 用户形容的“像涂了一层颜料”。光字层 .pi-flow-text 不受影响。
+     */
+    const setMorphing = (on: boolean) => {
+      root.classList.toggle("pi-morphing", on);
     };
 
     /**
@@ -294,7 +360,6 @@ export function LiquidSendFxHost() {
       composer: HTMLElement,
       textarea: HTMLElement,
       button: HTMLElement | null,
-      spans: HTMLElement[],
     ) => {
       // 游离节点防御：composer/textarea 被 React 卸载（首条消息切分支）时 rect 全 0
       if (!composer.isConnected || !textarea.isConnected) return false;
@@ -322,39 +387,22 @@ export function LiquidSendFxHost() {
         textAlign: cs.textAlign,
         display: "block",
       });
-      // 光字直径 = 行高的 1.05 倍：看得清，又不至于盖满整行
-      const moteSize = Math.max(11, Math.min(28, Math.round(tRect.height * 1.05)));
-      holder.style.setProperty("--pi-mote-size", `${moteSize}px`);
-      holder.style.lineHeight = `${tRect.height}px`;
-      spans.forEach((span) => {
-        // 静态排版位置只量一次并缓存：重贴时 span 带着 transform，
-        // 再测 getBoundingClientRect 会把位移算进去。
-        let ox = span.dataset.ox;
-        let oy = span.dataset.oy;
-        if (ox === undefined || oy === undefined) {
-          const r = span.getBoundingClientRect();
-          ox = String(r.left + r.width / 2 - tRect.left);
-          oy = String(r.top + r.height / 2 - tRect.top);
-          span.dataset.ox = ox;
-          span.dataset.oy = oy;
-        }
-      });
+      holder.style.lineHeight = cs.lineHeight;
       holder.dataset.width = String(tRect.width);
       return true;
     };
 
     /**
-     * 逐帧驱动「光字向右飘出」。
+     * 逐帧驱动「发光文字向右飘出」。
      *
-     * ★ 为什么这次不用绝对坐标：见 MAX_FLOW_CHARS 上方那段设计说明。
-     *   光字只沿「右侧 + 轻微上浮」这条相对路径飘走并淡出，
+     * ★ 所有位移都是**相对**的：光字沿「右侧 + 波浪起伏」向外飞，
      *   不需要知道对话区气泡在哪，因此**永远不会飘错位置**。
      *
-     * 运动构成（让“一束光”而不是“一排平移的圆点”）：
-     *   · 位移：向右 Dx（越长越远）+ 向上 Dy（轻微，像热气上升）
+     * 运动构成（借参考 demo 的波浪参数，让“一束光”而不是“一排平移的字”）：
+     *   · 横向：Dx × ease（越长越远）+ 每字递增的散开量（终点不叠成一团）
+     *   · 纵向：sin 波浪（相位逐字推进，形成上下游动的光带）
      *   · 错峰：每颗延迟 i * DRIFT_STAGGER_MS，形成流水般的队列
-     *   · 尺寸：先鼓一下再收细（被抽走的体积感）
-     *   · 透明度：后半段淡出
+     *   · 消散：中后段淡出 + blur 加深（文字“化掉”而不是“被切断”）
      */
     const driveFlow = (spans: HTMLElement[], startAt: number) => {
       const total = Math.max(1, spans.length);
@@ -362,12 +410,14 @@ export function LiquidSendFxHost() {
       const stagger = Math.min(DRIFT_STAGGER_MS, DRIFT_MAX_LAG_MS / total);
       const lastStart = stagger * total;
       const totalTime = DRIFT_MS + lastStart + 80;
-      // 飘出距离：取输入框宽度的固定比例与下限的较大值。
+      // 飘出距离：取输入框宽度的固定比例，并夹在 [DRIFT_MIN_PX, DRIFT_MAX_PX] 之间。
       // ★ 始终是**相对**距离，不依赖任何绝对坐标 —— 所以永远不会“飘错位置”。
       const boxWidth = Number(holder.dataset.width ?? 0);
-      const Dx = Math.max(DRIFT_MIN_PX, boxWidth * DRIFT_RATIO);
-      // 上浮幅度：略向上并随字序递增，形成一道向右上方斜掠的光束
-      const riseFor = (i: number) => 8 + (i % 6) * 6;
+      const Dx = Math.min(DRIFT_MAX_PX, Math.max(DRIFT_MIN_PX, boxWidth * DRIFT_RATIO));
+      // 后字多飞一点：否则右边界对齐的文字会在终点叠成一团（demo 的 i*1.3 同义）
+      const spreadFor = (i: number) => Math.min(DRIFT_SPREAD_MAX, i * DRIFT_SPREAD_PER_CHAR);
+      // 纵向波浪：与 demo 完全同一套，相位沿字序推进出“流动感”
+      const wavePhaseFor = (i: number) => (i / total) * Math.PI * 5;
       let raf = 0;
 
       const ease = (t: number) => 1 - Math.pow(1 - t, 2.6);
@@ -383,19 +433,26 @@ export function LiquidSendFxHost() {
           if (local <= 0) {
             // 还没轮到：原位不可见（避免一开始所有光字同时亮起）
             span.style.opacity = "0";
-            span.style.transform = "translate(0px, 0px) scale(0.5)";
+            span.style.transform = "translate(0px, 0px)";
+            span.style.filter = "none";
             continue;
           }
           const t = Math.min(1, local);
           const e = ease(t);
-          const dx = Dx * e;
-          const dy = -riseFor(i) * e;
-          // 尺寸：先鼓（0.5→1.15）再收（→0.35）
-          const scale = t < 0.22 ? 0.5 + (t / 0.22) * 0.65 : 1.15 - ((t - 0.22) / 0.78) * 0.8;
-          // 透明度：入流时快速显现，尾段淡出
-          const op = t < 0.12 ? t / 0.12 : Math.max(0, 1 - Math.max(0, (t - 0.5) / 0.5) * 1.05);
+          const phase = wavePhaseFor(i);
+          // 横向：主行程 + 逐字散开，早期额外冲一下（像被“抽”出去）
+          const dx = Dx * e + spreadFor(i) * e + Math.sin(phase) * 12 * Math.min(1, t * 3);
+          // 纵向：两端各一次大起伏，形成波浪光带
+          const wave = Math.sin(phase) * 22 * Math.sin(Math.PI * Math.min(1, t * 1.1));
+          const dy = wave + Math.sin(phase + 0.8) * 10 * e;
+          // 尺寸：先鼓一下（被拉走）再收细
+          const scale = t < 0.18 ? 1 + (t / 0.18) * 0.14 : 1.14 - ((t - 0.18) / 0.82) * 0.42;
+          // 透明度：入流迅速显现 → 中后段化开消失（与 blur 同步，避免“硬切断”）
+          const op = t < 0.1 ? t / 0.1 : Math.max(0, 1 - Math.pow(Math.max(0, (t - 0.35) / 0.65), 1.3));
+          const blur = t < 0.4 ? 0 : ((t - 0.4) / 0.6) * 6;
           span.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(${scale.toFixed(3)})`;
           span.style.opacity = String(Math.max(0, Math.min(1, op)).toFixed(3));
+          span.style.filter = blur <= 0.05 ? "none" : `blur(${blur.toFixed(2)}px)`;
         }
         raf = requestAnimationFrame(step);
       };
@@ -404,11 +461,13 @@ export function LiquidSendFxHost() {
     };
 
     /**
-     * 让新出现的用户气泡**延迟一点、从左侧滑入**（替代旧的“等流光汇到位”）。
+     * 让新出现的用户气泡**延迟足够久、从右侧滑入**（替代旧的“等流光汇到位”）。
      *
      * 为什么改成这样：气泡的目标位置无法在点击时可靠得知（React 异步插入 + 列表滚动），
-     * 所以不再让光字去追气泡，而是反过来——**气泡自己从左侧进来**，
-     * 与光字向右飘出在时间上衔接，形成“左边进、右边出”的完整叙事。
+     * 所以不再让光字去追气泡，而是反过来——**气泡自己在光字飞出去之后再从右边进来**，
+     * 与光字向右飘出在时间上错开，形成“内容先出去、消息后回来”的完整叙事。
+     * ★ 关键是**绝对截止时刻**（deadline）：气泡插入得早也不能提前进场，
+     *   否则就成了“字还没离开输入框，消息已经出来了”。
      *
      * 实现仍用 MutationObserver：它的回调是**微任务**，在 React 提交 MutationRecord 之后、
      * 浏览器下一次渲染之前同步执行，所以在这里写 opacity:0 / 起点位移仍来得及——
@@ -419,6 +478,8 @@ export function LiquidSendFxHost() {
      */
     const holdBubbleUntilArrival = (delayMs: number) => {
       bubbleReveal?.();
+      /** 绝对截止时刻：气泡无论何时被插入，都不能早于这个时间点进场 */
+      const deadline = performance.now() + delayMs;
       const found = new Set<HTMLElement>();
       let revealed = false;
       let observer: MutationObserver | null = null;
@@ -431,7 +492,7 @@ export function LiquidSendFxHost() {
         if (found.has(el) || revealed) return;
         found.add(el);
         el.style.opacity = "0";
-        el.classList.add("pi-bubble-in-left-pending");
+        el.classList.add("pi-bubble-in-right-pending");
       };
       const collect = () => {
         for (const el of document.querySelectorAll<HTMLElement>("[data-pi-user-msg]")) {
@@ -449,9 +510,9 @@ export function LiquidSendFxHost() {
         found.forEach((el) => {
           if (!el.isConnected) return;
           el.style.opacity = "";
-          el.classList.remove("pi-bubble-in-left-pending");
-          el.classList.add("pi-bubble-in-left");
-          window.setTimeout(() => el.classList.remove("pi-bubble-in-left"), 620);
+          el.classList.remove("pi-bubble-in-right-pending");
+          el.classList.add("pi-bubble-in-right");
+          window.setTimeout(() => el.classList.remove("pi-bubble-in-right"), 660);
         });
         found.clear();
         bubbleReveal = null;
@@ -460,10 +521,14 @@ export function LiquidSendFxHost() {
       collect();
       observer = new MutationObserver(() => {
         collect();
-        // 气泡一到就立刻安排入场（不必等满 delayMs），让节奏更跟手
+        // 气泡一到就按**绝对截止时刻**安排入场：早到了就等够 deadline（光字先飞出去），
+        // 晚到了也要再缓一下 settle，绝不与点击同帧冒出来。
         if (!revealed && found.size) {
           window.clearTimeout(startTimer);
-          startTimer = window.setTimeout(reveal, Math.max(60, delayMs - 180));
+          startTimer = window.setTimeout(
+            reveal,
+            Math.max(BUBBLE_SETTLE_MS, deadline - performance.now()),
+          );
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
@@ -478,7 +543,7 @@ export function LiquidSendFxHost() {
       const composer = textarea?.closest(".chat-composer") as HTMLElement | null;
       if (!composer || !textarea) return false;
 
-      // 气泡从左侧滑入（与光字向右飘出衔接）
+      // 气泡延迟从右侧滑入（光字先向右飘出去，气泡再进场）
       holdBubbleUntilArrival(BUBBLE_DELAY_MS);
 
       // 逐字生成光字（上限 MAX_FLOW_CHARS，避免一次挂太多动画节点）
@@ -486,15 +551,12 @@ export function LiquidSendFxHost() {
       const chars = [...text].slice(0, MAX_FLOW_CHARS);
       const frag = document.createDocumentFragment();
       const spans: HTMLElement[] = [];
-      chars.forEach((ch, i) => {
+      chars.forEach((ch) => {
         const span = document.createElement("span");
         span.className = "pi-flow-char";
-        // 空白不产光字（否则一束光里夹空洞），但仍占位保持排版一致
+        // 空白不产辉光（否则一束光里夹空洞），但仍占位保持排版一致
         span.textContent = ch === " " ? " " : ch;
         span.dataset.blank = ch === " " ? "1" : "0";
-        // 逐字尺寸抖动（确定性伪随机）：让光字大小错落、有节奏
-        const jitter = 0.62 + (((i * 37 + 13) % 57) / 100);
-        span.style.setProperty("--pi-mote-scale", jitter.toFixed(2));
         spans.push(span);
         frag.appendChild(span);
       });
@@ -533,7 +595,7 @@ export function LiquidSendFxHost() {
         if (live) live.id = flowTextareaId;
         return live;
       };
-      if (!layoutFlow(composer, textarea, button, spans)) return false;
+      if (!layoutFlow(composer, textarea, button)) return false;
       const follow = () => {
         // 首条消息时父级会把整个 composer 区块重建，启动时缓存的节点会变成游离节点：
         // rect 全 0 → 液态层被写到视口外。所以动画期间每帧重新解析一次当前节点。
@@ -562,7 +624,7 @@ export function LiquidSendFxHost() {
             const key = `${Math.round(c.left)},${Math.round(c.top)},${Math.round(c.width)},${Math.round(c.height)}`;
             if (key !== followKey) {
               followKey = key;
-              layoutFlow(composerNow, textareaNow, buttonNow, spans);
+              layoutFlow(composerNow, textareaNow, buttonNow);
             }
           }
         }
@@ -573,7 +635,7 @@ export function LiquidSendFxHost() {
       window.setTimeout(() => {
         document.getElementById(flowTextareaId)?.removeAttribute("id");
         document.getElementById(flowButtonId)?.removeAttribute("id");
-      }, FLOW_MS + 500);
+      }, FLOW_MS + 700);
 
       runPhase("pi-flow", FLOW_MS);
       // 文字可见性由本层独占（不走 React state）：
@@ -586,12 +648,15 @@ export function LiquidSendFxHost() {
       driveStop = driveFlow(spans, performance.now());
 
       if (flowTimer) window.clearTimeout(flowTimer);
+      const flowTotal = DRIFT_MS + DRIFT_MAX_LAG_MS;
+      // 收尾等整体时长 + 一点余量再清场（与 driveFlow 的 totalTime 同量级）
+      const cleanupAfter = flowTotal + 200;
       flowTimer = window.setTimeout(() => {
         holder.textContent = "";
         overlay.style.display = "none";
-      }, DRIFT_MS + DRIFT_MAX_LAG_MS + 160);
+      }, cleanupAfter);
       if (restoreTimer) window.clearTimeout(restoreTimer);
-      restoreTimer = window.setTimeout(restoreTextarea, DRIFT_MS + DRIFT_MAX_LAG_MS + 160);
+      restoreTimer = window.setTimeout(restoreTextarea, cleanupAfter);
       return true;
     };
 
@@ -621,111 +686,189 @@ export function LiquidSendFxHost() {
     };
 
     /**
-     * 在 .pi-liquid（**以 root 为原点**、自带 goo 滤镜）里铺一条从 (x1,y1) 到 (x2,y2)
-     * 的液柱：沿直线撒一串圆形小球，相邻球心间距 < 融合半径，整条被融成连续液体。
-     * 调用方传入的必须是 **root 相对坐标**（见 registry.split 里的换算说明）。
-     */
-    const buildVein = (
-      container: HTMLElement,
-      x1: number,
-      y1: number,
-      x2: number,
-      y2: number,
-      thick: number,
-    ): HTMLElement[] => {
-      const len = Math.hypot(x2 - x1, y2 - y1);
-      if (len < 1) return [];
-      const count = Math.min(48, Math.max(3, Math.ceil(len / Math.max(2, Math.min(thick * 0.5, VEIN_MAX_GAP)))));
-      const nodes: HTMLElement[] = [];
-      for (let i = 0; i <= count; i += 1) {
-        const k = i / count;
-        // ★ 由粗到细收束（源头 100% → 末端 42%）：等粗的柱子读起来像管道，
-        //   收束之后才是“水被抽成一条丝拉过去”。goo 融合会把这串变径球抹成平滑锥形。
-        const size = thick * (1 - 0.58 * k);
-        const dot = document.createElement("span");
-        dot.className = "pi-vein-dot";
-        dot.style.left = `${(x1 + (x2 - x1) * k - size / 2).toFixed(1)}px`;
-        dot.style.top = `${(y1 + (y2 - y1) * k - size / 2).toFixed(1)}px`;
-        dot.style.width = `${size.toFixed(1)}px`;
-        dot.style.height = `${size.toFixed(1)}px`;
-        container.appendChild(dot);
-        nodes.push(dot);
-      }
-      return nodes;
-    };
-
-    /**
-     * 发送按钮分裂：主球在发送按钮上鼓一下，同时向左右目标按钮各“拉”出一条液柱，
-     * 水真的沿柱流过去，末端凝成新按钮的位置。
+     * 发送按钮「一分三」（第七版：按钮本体形变，不再有任何液体）。
      *
-     * ★ 为何不能只挪一滴水（旧实现就是）：goo 的融合半径只有 stdDeviation 量级
-     *   （实测 stdDeviation=8 时上限 ~12px）。主球中心到引导按钮中心 60px+，
-     *   水滴一路飞过去全程与主球脱离 → 没有桥、没有拉丝，观感只是“小圆点飘走”。
-     *   铺一条液柱把这段路填满，两端始终与主球/落点交融，才是“水分流”。
+     * 设计说明见文件头部 MORPH_* 常量处的长注释。要点：
+     *   ① 圆钮坑位做**同位置形变**：发送按钮的真实克隆（蓝）向内化开，
+     *      停止按钮的真实克隆（红）顶上来 —— 两层叠在同一个 32px 圆里，
+     *      所以读作“同一个按钮在变色”，而不是“别的东西飞过来”。
+     *   ② 其余按钮用 FLIP：起点位移 = 自己到圆钮中心的距离，于是它们
+     *      看起来是**从按钮底下被抽出来**的（不是从别处飘过来）。
+     *   ③ 全程不引入新颜色：ghost 就是真实按钮的克隆，主题一变它跟着变。
      */
-    registry.split = (composer, anchor, buttonSize, leftTarget, rightTarget) => {
-      if (prefersReducedMotion() || !composer || !anchor) return false;
-      const center = anchor;
-
-      const targetCenter = (target: HTMLElement | null) => {
-        if (!target) return null;
-        const r = target.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      };
-
-      const left = targetCenter(leftTarget);
-      const right = targetCenter(rightTarget);
-      const dxTo = (t: { x: number; y: number } | null, fallback: number) =>
-        t ? Math.round(t.x - center.x) : fallback;
-      const thick = Math.max(6, buttonSize * 0.36);
-
-      // ★ 坐标系换算：液柱挂在 .pi-liquid 里（以 root 原点为基准，且带 goo 滤镜），
-      //   所以要把“视口坐标”减掉 root 自己的左上角。同时主球在**本层内部**的
-      //   真实中心是 anchorTo 返回的视口坐标减 root 原点（它比按钮大一圈且偏了
-      //   bleed/off，直接用按钮中心会让液柱与主球错开）。
-      const rRect = root.getBoundingClientRect();
-      const toLocal = (p: { x: number; y: number }) => ({ x: p.x - rRect.left, y: p.y - rRect.top });
-      const origin = toLocal(center);
-      const dots: HTMLElement[] = [];
-      if (veinLayer && left) {
-        const t = toLocal(left);
-        dots.push(...buildVein(veinLayer, origin.x, origin.y, t.x, t.y, thick));
-      }
-      if (veinLayer && right) {
-        const t = toLocal(right);
-        dots.push(...buildVein(veinLayer, origin.x, origin.y, t.x, t.y, thick));
-      }
-      // 液柱生命周期与 pi-split 相位一致；提前开始收缩，让水体“凝”到按钮上
-      const shrinkAt = window.setTimeout(() => {
-        dots.forEach((dot) => {
-          dot.style.transform = "scale(0.18)";
-          dot.style.opacity = "0";
+    registry.split = (_composer, anchor, buttonSize, originVisual) => {
+      if (prefersReducedMotion() || !anchor) return false;
+      const btns = [...document.querySelectorAll<HTMLElement>("[data-pi-split]")]
+        .filter((el) => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
         });
-      }, SPLIT_MS * 0.62);
-      const cleanup = window.setTimeout(() => {
-        window.clearTimeout(shrinkAt);
-        dots.forEach((dot) => dot.remove());
-      }, SPLIT_MS + 60);
+      if (!btns.length) return false;
+
       if (splitCleanup) splitCleanup();
-      splitCleanup = () => {
-        window.clearTimeout(shrinkAt);
-        window.clearTimeout(cleanup);
-        dots.forEach((dot) => dot.remove());
+      const timers: number[] = [];
+      const anims: Animation[] = [];
+
+      /**
+       * ── ① 圆钮坑位：优先用**当下重新量一次**「停止」按钮的位置 ──
+       * ★ 不能用点击那一刻量到的 anchor：空会话发第一条消息时 ChatWindow 会切分支，
+       *   composer 会整体下移（实测 y 477 → 800），拿旧坐标画出来的变色圆钮会孤零零
+       *   飘在对话区中部，和真正落位的三颗按钮差 300px —— 这就是“分裂效果很怪”的主因。
+       *   停止按钮是发送按钮的**同位继任者**（就在原来那个坑里），播放时刻量它才是
+       *   用户眼里“同一个按钮”的位置。只有量不到时（节点没渲染出来）才退回 anchor。
+       */
+      const stopEl = btns.find((b) => b.dataset.piSplit === "stop") ?? null;
+      const sr = stopEl?.getBoundingClientRect();
+      const measured = sr && sr.width >= 16 && sr.height >= 16;
+      const size = Math.max(24, Math.round((measured ? sr.width : 0) || buttonSize || 32));
+      const cx = measured ? sr.left + sr.width / 2 : anchor.x;
+      const cy = measured ? sr.top + sr.height / 2 : anchor.y;
+
+      const ghost = document.createElement("div");
+      ghost.className = "pi-morph-ghost";
+      Object.assign(ghost.style, {
+        left: `${(cx - size / 2).toFixed(1)}px`,
+        top: `${(cy - size / 2).toFixed(1)}px`,
+        width: `${size.toFixed(1)}px`,
+        height: `${size.toFixed(1)}px`,
+      });
+      /**
+       * 克隆体统一成“贴满 ghost 的一层”：
+       * ★ 必须在 JS 里写行内样式，不能只靠 CSS 类 —— 原按钮自带**行内**
+       *   width/height/padding（实测 32px + 1px 边框），CSS 类的 width:100% 压不住
+       *   行内声明，克隆会胖一圈变成“红圈包蓝球”。行内赋值是同一属性声明覆盖，才是稳的。
+       */
+      const fitClone = (el: HTMLElement) => {
+        el.classList.remove("pi-morph-pending");
+        el.removeAttribute("data-pi-split"); // 克隆体不参与任何选择器/埋点
+        Object.assign(el.style, {
+          position: "absolute",
+          left: "0",
+          top: "0",
+          width: "100%",
+          height: "100%",
+          padding: "0",
+          margin: "0",
+          boxSizing: "border-box",
+          transformOrigin: "center",
+          pointerEvents: "none",
+        });
       };
-      // 液柱出现时的“注水”感：小球从 0.55 弹到 1，避免整条柱子瞬间出现
-      dots.forEach((dot) => {
-        dot.animate(
-          [{ transform: "scale(0.55)" }, { transform: "scale(1)" }],
-          { duration: SPLIT_MS * 0.3, easing: "ease-out", fill: "both" },
-        );
+      // 红的先挂（在下层）：蓝化开时正好从中间露出来
+      const toVisual = stopEl ? (stopEl.cloneNode(true) as HTMLElement) : null;
+      if (toVisual) {
+        toVisual.className = "pi-morph-target";
+        fitClone(toVisual);
+        ghost.appendChild(toVisual);
+      }
+      if (originVisual) {
+        originVisual.className = "pi-morph-origin";
+        fitClone(originVisual);
+        ghost.appendChild(originVisual);
+      }
+      const ring = document.createElement("span");
+      ring.className = "pi-morph-ring";
+      ghost.appendChild(ring);
+      morphLayer.appendChild(ghost);
+
+      // 圆钮整体轻吞一下 + 一圈 accent 涟漪（只借主题色，不画新色块）
+      anims.push(ghost.animate([
+        { transform: "scale(1)" },
+        { transform: "scale(1.06)", offset: 0.3 },
+        { transform: "scale(1)" },
+      ], { duration: MORPH_MS, easing: "cubic-bezier(0.3, 0.7, 0.3, 1)" }));
+      anims.push(ring.animate([
+        { opacity: 0.38, transform: "scale(1)" },
+        { opacity: 0, transform: "scale(1.45)" },
+      ], { duration: 420, delay: 60, easing: "cubic-bezier(0.22, 0.9, 0.24, 1)", fill: "both" }));
+      if (originVisual) {
+        // 蓝：向内缩成一个小点后被“吸走”。
+        // ★ fill 必须是 both：用 backwards 的话动画一结束元素就回到自身 style
+        //   （opacity 1），蓝箭头会在红按钮上闪回来 —— 实测 t≈320ms 闪现。
+        // ★ 必须在 红 进场前把蓝清完：两者叠加会变成紫色一大块（实测 t≈170ms）。
+        anims.push(originVisual.animate([
+          { opacity: 1, transform: "scale(1)", offset: 0 },
+          { opacity: 0.8, transform: "scale(0.8)", offset: 0.3 },
+          { opacity: 0.2, transform: "scale(0.42)", offset: 0.66 },
+          { opacity: 0, transform: "scale(0.3)", offset: 1 },
+        ], { duration: MORPH_CROSS_MS, easing: "cubic-bezier(0.4, 0, 0.25, 1)", fill: "both" }));
+      }
+      if (toVisual) {
+        // 红：等蓝彻底退干净（delay = MORPH_TARGET_DELAY_MS >= MORPH_CROSS_MS）才现身，
+        // 只做一小段 scale 落位（0.9 → 1）。
+        // ★ 不用“从 0.5 放大到 1”：那是往圆钮里塞一个会胀大的球，观感就是“一团球”。
+        // ★ 叠放顺序是 红在下、蓝在上（先 append 红），重叠期的少量叠加色也是蓝压红，
+        //   不会混出紫色。
+        anims.push(toVisual.animate([
+          { opacity: 0, transform: "scale(0.9)" },
+          { opacity: 1, transform: "scale(1.03)", offset: 0.7 },
+          { opacity: 1, transform: "scale(1)" },
+        ], {
+          duration: MORPH_TARGET_MS,
+          delay: MORPH_TARGET_DELAY_MS,
+          easing: "cubic-bezier(0.22, 0.9, 0.24, 1)",
+          fill: "both",
+        }));
+      }
+
+      /* ── ② 其余按钮：离圆钮近的先被抽出来（队列感来自距离）── */
+      const ordered = btns
+        .map((el) => {
+          const r = el.getBoundingClientRect();
+          return { el, r, d: Math.hypot(r.left + r.width / 2 - cx, r.top + r.height / 2 - cy) };
+        })
+        .sort((a, b) => a.d - b.d);
+
+      ordered.forEach(({ el, r }, i) => {
+        // ★ 起点：把按钮“收缩回圆钮里”。用 transform-origin: right center，
+        //   位移取「自己的右缘 → 圆钮中心」，缩到 0.5 时它就是一个趴在圆钮上的小胶囊，
+        //   然后右缘归位 + 放大到 1 → 读作「从按钮底下被抽出来」，且因为一路都小，
+        //   错峰时两个胶囊的文字重叠面积远小于整宽平移（实测那种写法会糊成重影）。
+        const dx = cx - r.right;
+        const dy = cy - (r.top + r.height / 2);
+        const delay = MORPH_LEAD_MS + i * MORPH_STAGGER_MS;
+        // 摘掉 React 给的占位类（opacity:0）——下面 WAAPI 的 backwards fill
+        // 会在延迟期间继续提供 opacity:0，所以不会闪一下
+        el.classList.remove("pi-morph-pending");
+        el.style.opacity = "";
+        el.style.animationDelay = "";
+        el.style.transformOrigin = "right center";
+        anims.push(el.animate([
+          // ★ 飞行前半程**保持不可见**：三颗都从圆钮出发，若一出发就 opacity 1，
+          //   它们会在同一片区域重叠成重影（实测 t≈240ms「引导」与「后续消息」叠字）。
+          //   先隐形飞过大半，再在自己坑位附近凝出 → 只读作“一颗一颗长出来”。
+          { transform: `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px) scale(0.5)`, opacity: 0, offset: 0 },
+          { transform: `translate(${(dx * 0.34).toFixed(1)}px, ${(dy * 0.34).toFixed(1)}px) scale(0.68)`, opacity: 0, offset: 0.36 },
+          { transform: `translate(${(dx * 0.08).toFixed(1)}px, ${(dy * 0.08).toFixed(1)}px) scale(0.94)`, opacity: 1, offset: 0.62 },
+          { transform: "translate(-1.2px, 0px) scale(1.012)", opacity: 1, offset: 0.86 },
+          { transform: "translate(0px, 0px) scale(1)", opacity: 1, offset: 1 },
+        ], {
+          duration: MORPH_MS,
+          delay,
+          // 快出慢入，末端一点回弹：读作被“抽”出来然后卡进位
+          easing: "cubic-bezier(0.22, 0.9, 0.24, 1)",
+          fill: "backwards",
+        }));
       });
 
-      root.style.setProperty("--split-a-dx", `${dxTo(left, -60)}px`);
-      root.style.setProperty("--split-b-dx", `${dxTo(right, 60)}px`);
-      // 水滴起点落在主球外沿，避免与主球重叠（仅在融合半径内小幅度渗出）
-      root.style.setProperty("--pi-goo-split", `${Math.max(18, buttonSize * 0.8).toFixed(0)}px`);
-
-      runPhase("pi-split", SPLIT_MS);
+      const total = MORPH_LEAD_MS + (ordered.length - 1) * MORPH_STAGGER_MS + MORPH_MS + MORPH_HOLD_MS;
+      const cleanup = () => {
+        anims.forEach((a) => { try { a.cancel(); } catch { /* 动画已随节点移除，忽略 */ } });
+        ghost.remove();
+        setMorphing(false);
+        // 把可能残留的行内占位抹掉：React 在流式期间重渲染会重新写回
+        // opacity:0（flushSplit 仍为 true），不抹就会“动画跑完按钮还隐着”。
+        ordered.forEach(({ el }) => {
+          el.style.opacity = "";
+          el.style.transformOrigin = "";
+          el.classList.remove("pi-morph-pending");
+        });
+        timers.forEach((id) => window.clearTimeout(id));
+        splitCleanup = null;
+      };
+      splitCleanup = cleanup;
+      setMorphing(true);
+      timers.push(window.setTimeout(cleanup, total));
       return true;
     };
 
@@ -735,7 +878,6 @@ export function LiquidSendFxHost() {
       registry.split = undefined;
       if (splitCleanup) splitCleanup();
       if (bubbleReveal) bubbleReveal();
-      splitCleanup = null;
       bubbleReveal = null;
       phaseTimers.forEach((id) => window.clearTimeout(id));
       phaseTimers.clear();
@@ -754,14 +896,11 @@ export function LiquidSendFxHost() {
     // 纯静态骨架：挂载后 React 不再碰它（动画全部由上面的 effect 命令式驱动）
     <div className="pi-liquid-root" ref={rootRef} aria-hidden="true">
       <div className="pi-liquid">
-        <div className="pi-vein-layer" ref={veinRef} />
         <span className="pi-liquid-tail" />
         <span className="pi-liquid-drop-b" />
         <span className="pi-liquid-drop-a" />
         <span className="pi-liquid-main" />
         <span className="pi-liquid-ghost" />
-        <span className="pi-liquid-split-a" />
-        <span className="pi-liquid-split-b" />
         <span className="pi-liquid-chip" />
       </div>
       {/* 水珠流：**不放进 .pi-liquid**。水珠各自带高光/投影，进 goo 滤镜会被模糊
@@ -771,6 +910,8 @@ export function LiquidSendFxHost() {
       <div className="pi-flow-text" ref={overlayRef}>
         <div ref={holderRef} />
       </div>
+      {/* 按钮分裂舞台：装的是真实按钮的克隆（见 registry.split），不放任何自画色块 */}
+      <div className="pi-morph-layer" ref={morphRef} />
     </div>,
     document.body,
   );

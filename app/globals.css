@@ -894,6 +894,20 @@ pre, code {
   pointer-events: none;
 }
 
+/* ★ 对话区（中间那张 .glass-card）**故意不用 backdrop 模糊**（2026-09-12）：
+   大块 backdrop-filter 会把整块对话区提升成一个独立合成层（CDP LayerTree 里是
+   `1528x1308 [BackdropFilter,OverflowScrolling,RootScroller]`），第三方截图工具
+   的「窗口截图」路径（实测 Snipaste，鼠标停在对话区里必现）读不到这一层，
+   读不到的部分按透明处理 —— 表现为「截图/贴图里对话区空白、直接透出桌面壁纸」。
+   关掉后背景仍是同一套半透明玻璃（前面还有桌面底板灰纱），只是壁纸不再被模糊，
+   视觉几乎无差；换来的是对话区回到窗口根合成层，任何截图方式都能抓到内容。
+   顶栏/左栏/侧栏那些小块模糊不受影响（不触发该问题），保持原样。 */
+.chat-glass-flat {
+  /* 用变量关掉 ::before 的 backdrop-filter（直接写 backdrop-filter: none 会被
+     构建期 CSS 压缩器当成默认值丢掉，写成空规则）。 */
+  --glass-blur: none;
+}
+
 .app-region-drag {
   -webkit-app-region: drag;
   user-select: none;
@@ -1731,96 +1745,93 @@ html.dark {
   border-color: color-mix(in srgb, var(--accent) 48%, transparent);
 }
 
-/* ── Chat 输入框：Composer 卡片结构 + iMessage 玻璃水滴材质（与 .percho-user-bubble 同配方）──
+/* ── Chat 输入框：中性玻璃卡片（主题适配）+ 边框光束（border beam）──
+   ★ 不再给 composer 铺 accent 渐变 + 顶部高光涂层：那层蓝色调在浅色主题下
+     一下就把输入框从整个界面里“挑”出来（用户反馈“对话框太明显了”）。
+     改成中性玻璃底（只借 bg-panel + border 推导），强调色改由**边框上走的光束**给，
+     随 --accent 联动，所以任何主题下都协调。
    注意不能设 overflow:hidden：slash/@/历史菜单和 thinking/tool 下拉要从卡内向上弹出 */
 .chat-composer {
   position: relative;
+  /* 中性玻璃：不再是“一块白”。62% 的 --bg-panel（浅色主题就是 62% 白）叠在
+     同样接近白的页面上，肉眼就是“涂了一层白颜料”（用户反馈）。改成
+     面板色只占四成 + 一层极淡的冷调，靠 backdrop-filter 去吃背景，
+     卡片靠 border 与阴影与页面分层。强调色全部交给 border beam。 */
   background:
-    linear-gradient(
-      160deg,
-      color-mix(in srgb, var(--accent) 9%, transparent) 0%,
-      color-mix(in srgb, var(--accent) 3%, transparent) 38%,
-      transparent 68%
-    ),
-    color-mix(in srgb, var(--bg-panel) 72%, transparent);
-  backdrop-filter: blur(22px) saturate(1.55);
-  border: 1px solid color-mix(in srgb, var(--border) 45%, color-mix(in srgb, var(--accent) 22%, transparent));
+    linear-gradient(color-mix(in srgb, var(--accent) 2.5%, transparent), color-mix(in srgb, var(--accent) 2.5%, transparent)),
+    color-mix(in srgb, var(--bg-panel) 42%, transparent);
+  backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
   border-radius: 20px;
   box-shadow:
-    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
     0 1px 2px rgba(15, 23, 42, 0.05),
-    0 12px 32px -16px rgba(15, 23, 42, 0.18);
+    0 14px 40px -22px rgba(15, 23, 42, 0.24);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
-/* 顶部玻璃反光高光涂层（glass sheen，光泽随主题色 accent，铺在内容之下） */
-.chat-composer::before {
-  content: "";
+
+/* ── 边框光束
+   做法：一个铺满卡片的绝对定位层，背景是一段 conic-gradient 的**窄弧**；
+   用 mask 的两层 xor（padding-box 与 border-box）把中间掏空，只剩 2px 的
+   “环”是可见的 → 那段彩色弧就沿边框滑动，形成流光。
+   旋转用 @property 注册的 <angle> 自定义属性驱动（纯 CSS，无需 JS 逐帧）。
+   ★ 颜色只用 var(--accent) + 一点紫，跟着主题变色。 */
+@property --pi-beam-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+.chat-composer-beam {
   position: absolute;
-  inset: 0;
-  border-radius: inherit;
+  /* 外扩 1px：让光环贴在卡片**外沿**，不压住内部文字/按钮 */
+  inset: -1px;
+  border-radius: 21px;
   pointer-events: none;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 11%, transparent) 0%,
-    color-mix(in srgb, var(--accent) 4%, transparent) 30%,
-    transparent 55%
+  padding: 2px;
+  background: conic-gradient(
+    from var(--pi-beam-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--accent) 92%, transparent) 42deg,
+    color-mix(in srgb, var(--accent) 55%, #a78bfa) 74deg,
+    transparent 118deg,
+    transparent 360deg
   );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  /* 静息（既不在对话中、也没聚焦）：完全不显示 —— 用户要的“没有在对话中的时候光圈不显示” */
+  opacity: 0;
+  animation: pi-beam-spin 7s linear infinite;
+  transition: opacity 0.4s ease, filter 0.4s ease;
 }
-.chat-composer:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  box-shadow:
-    inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent),
-    0 1px 2px rgba(15, 23, 42, 0.05),
-    0 12px 32px -16px rgba(15, 23, 42, 0.2);
+@keyframes pi-beam-spin {
+  to { --pi-beam-angle: 360deg; }
 }
-/* 流式态：accent 细呼吸光晕，表达「agent 工作中」（替代原来的脏黄边框） */
-.chat-composer.chat-composer-streaming {
-  animation: composer-breathe 2.6s ease-in-out infinite;
+/* ── 光圈三种状态，三套观感（用户要求“对话结束和对话中的光圈效果不一样”）──
+   ① 静息（不在对话中、未聚焦）：完全不显示（上面的 opacity:0）
+   ② 聚焦 · 对话已结束、正在输入：淡而慢的一圈，只有一圈“在等你”的微光
+   ③ 对话中（agent 正在工作）：整圈更亮、转得明显更快，并叠一层呼吸与外发光 */
+.chat-composer:focus-within:not(.chat-composer-streaming) .chat-composer-beam {
+  opacity: 0.5;
 }
-@keyframes composer-breathe {
-  0%,
-  100% {
-    border-color: color-mix(in srgb, var(--accent) 32%, transparent);
-    box-shadow:
-      inset 0 1px 0 0 color-mix(in srgb, var(--accent) 26%, transparent),
-      0 0 0 3px color-mix(in srgb, var(--accent) 7%, transparent),
-      0 12px 32px -16px rgba(15, 23, 42, 0.18);
-  }
-  50% {
-    border-color: color-mix(in srgb, var(--accent) 58%, transparent);
-    box-shadow:
-      inset 0 1px 0 0 color-mix(in srgb, var(--accent) 30%, transparent),
-      0 0 0 4px color-mix(in srgb, var(--accent) 14%, transparent),
-      0 12px 32px -16px rgba(15, 23, 42, 0.18);
-  }
+.chat-composer.chat-composer-streaming .chat-composer-beam {
+  opacity: 1;
+  animation:
+    pi-beam-spin 1.9s linear infinite,
+    pi-beam-breathe 2.4s ease-in-out infinite;
+  filter: drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 78%, transparent));
 }
-@media (prefers-reduced-motion: reduce) {
-  .chat-composer.chat-composer-streaming {
-    animation: none;
-  }
+@keyframes pi-beam-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
-/* 流体链：在任意两点间铺一串相互重叠的小球，让它们被 goo 滤镜融成**一条连续的液柱**。
-   为什么必须这么做：goo 的融合距离上限 ≈ stdDeviation（实测 blur=8 时 12px 是上限）。
-   直接把一滴水从发送按钮挪到 60px 外的引导按钮，全程没有任何“桥”，看上去只是
-   一个小圆点自己飘过去（这就是之前效果不对的原因）。液柱把这段路填满后，
-   水流真的从按钮“拉”到新按钮上——分裂才真的像水分流。
+/* 流体链（已废弃）：旧实现靠 goo 把一串小球融成**连续液柱**，在发送按钮与 60px 外的
+   新按钮之间来回扭动，观感是一团抢眼的蓝色水波（用户反馈“效果还不行”）。
+   现在改成**按钮本体的形变**（不再有任何液体：见下方 .pi-morph-* 与 LiquidSendFx 的 registry.split）。
+   保留此说明是因为“goo 融合距离上限 ≈ stdDeviation（blur=8 时约 12px）”这条结论
+   对文字流光仍有参考价值。 */
 
-   ★ 坐标系：这些小球被挂进 .pi-liquid 内部（那是**以 root 为原点**的定位层，
-   而且带 filter:url(#pi-goo)）。所以 JS 写进来的必须是 **root 相对坐标**，
-   直接传 getBoundingClientRect 的视口坐标会整条偏掉（实测偏到视口外）。 */
-.pi-vein-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-.pi-vein-dot {
-  position: absolute;
-  border-radius: 9999px;
-  background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 72%, #55d8ff), var(--accent));
-  transition: transform 0.26s cubic-bezier(0.4, 0, 0.7, 0.2), opacity 0.26s ease;
-}
 /* placeholder 对比度：从 UA 默认（≈text-dim，浅色玻璃底上不可读）提到 muted */
 .chat-composer textarea::placeholder {
   color: var(--text-muted);
@@ -1860,9 +1871,18 @@ html.dark {
    （handleSend 里 playLiquidSend 要求有文字，beginSplit 却总是调用）
    只有 pi-split 相位 → .pi-liquid 停在 opacity:0，整个分裂动画肉眼完全看不到。 */
 .pi-liquid-root.pi-flow .pi-liquid,
-.pi-liquid-root.pi-split .pi-liquid,
 .pi-liquid-root.pi-chip-flow .pi-liquid {
   opacity: 1;
+}
+/* 按钮分裂进行中：把「液态泵」压掉。
+   ★ 两者抢的是同一格（发送钮）：.pi-morph-ghost 里的真实克隆本来就画在
+     发送钮原位，而 .pi-liquid 的主球比按钮大一圈、还带着尾巴探到左侧，
+     同时出现就是“一颗大蓝球裹着红环”—— 用户形容为“像涂了一层颜料”。
+     分裂的视觉主角是按钮本身（见 LiquidSendFx.tsx 文件头），泵就退场。
+   ★ 只压 .pi-liquid，**不动 .pi-flow-text**：文字流光照常飞。
+   ★ 必须写在上面那条 .pi-flow 规则之后：两者特异度相同，靠源码顺序取胜。 */
+.pi-liquid-root.pi-morphing .pi-liquid {
+  opacity: 0;
 }
 /* 水块公共部分：只放定位与形状。**背景不在这里给** —— 这条选择器带子组合器
    （.pi-liquid > span 特异度 0,1,1）会盖过 .pi-liquid-main / .pi-liquid-tail 的
@@ -2014,85 +2034,82 @@ html.dark {
   100% { opacity: 0; transform: scaleX(0.15); }
 }
 
-/* 发送按钮分裂：主球向右滑出，左右各“渗出”一滴喂给新的 引导 / 停止 按钮 */
-.pi-liquid-split-a,
-.pi-liquid-split-b {
-  width: calc(var(--pi-goo-size, 32px) * 0.78);
-  height: calc(var(--pi-goo-size, 32px) * 0.78);
-  bottom: calc(var(--pi-goo-b, 9px) + var(--pi-goo-size, 32px) * 0.11);
-  background: linear-gradient(140deg, color-mix(in srgb, var(--accent) 70%, #55d8ff), var(--accent));
+/* ── 发送按钮「一分三」（第七版 · 定稿）────────────────────────────────
+   整个分裂只做**按钮自己的形变**，不引入任何新颜色/新材质：
+   · .pi-morph-ghost 是圆钮坑位的临时舞台：发送按钮与停止按钮的**真实克隆**
+     叠在同一个圆里，颜色交接就在原位发生，读作“同一个按钮在变”，
+     而不是“有东西飞过来”（前六版的液柱/水珠就是死在这里：液体和按钮材质无关，
+     颜色再准也像在按钮上涂了一层颜料）。
+   · 其余按钮走 FLIP：起点位移 = 自己到圆钮中心的距离，于是它们是从圆钮底下
+     被**抽出来**的，不是从别处飘过来。
+   · 所有位移/缩放/透明度由 WAAPI（LiquidSendFx.splitToTargets）逐元素驱动，
+     这里只提供舞台与静息态。 */
+.pi-morph-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  /* 夹在卡片控件（卡片自己的层叠上下文，z-index 0 量级）与文字流光层（.pi-flow-text，
+     z-index 4000）之间：分裂必须盖住 composer 自己的边框，但绝不能被飞过的光字
+     把按钮涂掉；固定弹窗在 9999，仍然在上。 */
+  z-index: 4500;
+}
+.pi-morph-ghost {
+  position: absolute;
+  border-radius: 9999px;
+  /* 不给底色：ghost 里装的是真实按钮的克隆，任何自画背景都会变成“颜料” */
+  isolation: isolate;
+}
+/* 克隆的按钮：干掉自身定位与交互，就是一层会呼吸的贴图。
+   ★ 绝对不能碰 border/background/color —— 那正是“跟界面搭配”的来源 */
+.pi-morph-ghost > .pi-morph-origin,
+.pi-morph-ghost > .pi-morph-target {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* ★ box-sizing 必须写：克隆体带着原按钮的 padding（胶囊按钮是 0 12px），
+     content-box 下 100% + padding 会超宽，两个克隆就会并排成“半个红半个蓝”（实测） */
+  box-sizing: border-box;
+  pointer-events: none;
+}
+/* 圆钮涟漪：只借主题 accent 的一圈细边，扩散时自己淡掉 */
+.pi-morph-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--accent) 62%, transparent);
   opacity: 0;
 }
-/* ★ 水滴的落点必须落在**融合半径内**：起点先放在主球边缘再往外一点（--pi-goo-split），
-   实际终点由 JS 写入 --split-a-dx / --split-b-dx，但 CSS 这一层只负责“沿着液柱方向
-   做小幅渗流”，真正把水送到目标按钮的是 .pi-liquid-vein。
-   之前把水滴一路挪到 60px 外，超出融合半径 → 全程无桥，改成“先粘连再断开”。 */
-.pi-liquid-split-a {
-  right: calc(var(--pi-goo-r, 21px) + var(--pi-goo-size, 32px) + var(--pi-goo-split, 60px));
-}
-.pi-liquid-split-b {
-  right: calc(var(--pi-goo-r, 21px) - var(--pi-goo-split, 60px));
-}
-.pi-liquid-root.pi-split .pi-liquid-main {
-  animation: pi-split-main 0.72s cubic-bezier(0.25, 0.9, 0.25, 1) both;
-}
-.pi-liquid-root.pi-split .pi-liquid-split-a {
-  animation: pi-split-drop-a 0.72s cubic-bezier(0.3, 0.8, 0.3, 1) both;
-}
-.pi-liquid-root.pi-split .pi-liquid-split-b {
-  animation: pi-split-drop-b 0.72s cubic-bezier(0.3, 0.8, 0.3, 1) both;
-}
-@keyframes pi-split-main {
-  0% { transform: scale(1); }
-  26% { transform: scale(1.24); }
-  62% { transform: scale(0.86); }
-  100% { transform: scale(1); }
-}
-/* 向左渗出（终点由 --split-a-dx 实测，负值） */
-@keyframes pi-split-drop-a {
-  0% { transform: translate(0, 0) scale(0.2); opacity: 0; }
-  30% { opacity: 0.95; }
-  62% { transform: translate(calc(var(--split-a-dx, -60px) * 0.55), -3px) scale(1.05); opacity: 0.9; }
-  100% { transform: translate(var(--split-a-dx, -60px), 0) scale(0.14); opacity: 0; }
-}
-@keyframes pi-split-drop-b {
-  0% { transform: translate(0, 0) scale(0.2); opacity: 0; }
-  30% { opacity: 0.95; }
-  62% { transform: translate(calc(var(--split-b-dx, 60px) * 0.55), 3px) scale(1.05); opacity: 0.9; }
-  100% { transform: translate(var(--split-b-dx, 60px), 0) scale(0.14); opacity: 0; }
+/* 新按钮的静息态：React 渲染的占位（无过渡；位移交给 WAAPI 的 backwards fill，
+   所以延迟期间稳稳停在 opacity:0，不会先闪一帧） */
+.pi-morph-pending {
+  opacity: 0;
 }
 
-/* 新按钮“长出来”：从 0.6 缩放弹入（与上方水滴落点同帧） */
-.pi-split-in {
-  animation: pi-split-in 0.42s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-@keyframes pi-split-in {
-  0% { transform: scale(0.55); opacity: 0; }
-  60% { opacity: 1; }
-  100% { transform: scale(1); opacity: 1; }
-}
-
-/* 新用户气泡「从左侧滑入」。
-   ★ 为什么不再让它“等光字汇到位”：气泡位置无法在点击时可靠得知（React 异步插入 +
-     消息列表滚动），光字去追气泡必然飘错（用户实测“飘的位置差距很大”）。
-     改成两个解耦的相对动效：光字向右飘出、气泡从左侧进场，时间上衔接即可。
+/* 新用户气泡「从右侧滑入」。
+   ★ 方向与光字一致：光字向右飘出、气泡从右侧滑入，读作「内容先被送出去，
+     再从右边卷回来凝成一条消息」。
+   ★ 为什么不让光字去追气泡：气泡位置无法在点击时可靠得知（React 异步插入 +
+     消息列表滚动），光字追气泡必然飘错（用户实测“飘的位置差距很大”）。
+     所以做成两个解耦的相对动效，只在**时间**上衔接 —— 气泡必须等光字飘出大半
+     之后才进场（见 LiquidSendFx.tsx 的 BUBBLE_DELAY_MS），绝不能跟点击同帧冒出来。
 
    实现要点：
-     · .pi-bubble-in-left-pending 是入场**前**的静息态（不可见 + 左移），
+     · .pi-bubble-in-right-pending 是入场**前**的静息态（不可见 + 右移），
        由 MutationObserver 在微任务里加上，早于下一帧渲染，所以不会先闪一帧。
-     · .pi-bubble-in-left 是入场动画；两者都只动 transform / opacity，
+     · .pi-bubble-in-right 是入场动画；两者都只动 transform / opacity，
        绝不碰布局属性（不引发重排、不推挤列表）。 */
-.pi-bubble-in-left-pending {
+.pi-bubble-in-right-pending {
   opacity: 0;
-  transform: translateX(-26px) scale(0.97);
+  transform: translateX(34px) scale(0.96);
 }
-.pi-bubble-in-left {
-  animation: pi-bubble-in-left 0.52s cubic-bezier(0.22, 1, 0.36, 1) both;
-  transform-origin: left center;
+.pi-bubble-in-right {
+  animation: pi-bubble-in-right 0.56s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: right center;
 }
-@keyframes pi-bubble-in-left {
-  0% { opacity: 0; transform: translateX(-26px) scale(0.97); }
-  55% { opacity: 1; transform: translateX(3px) scale(1); }
+@keyframes pi-bubble-in-right {
+  0% { opacity: 0; transform: translateX(34px) scale(0.96); }
+  55% { opacity: 1; transform: translateX(-3px) scale(1.005); }
   100% { opacity: 1; transform: translateX(0) scale(1); }
 }
 /* ★ 发送液态效果**故意不遵从** prefers-reduced-motion：见 components/LiquidSendFx.tsx
@@ -2151,79 +2168,33 @@ html.dark {
 .pi-flow-text > div {
   white-space: pre-wrap;
 }
-/* 字符 → 流光星点：文字本体隐去（font-size:0 + color:transparent），改画一颗光点。
+/* 字符 → **发光文字**（与参考 demo 一致）：文字本身变成蓝紫色辉光，
+   向右飘出时逐渐虚化消散。
 
-   为什么从“玻璃水球”换成“星光”：水球要四层光影 + inset 高光 + 投影才能在浅色底上
-   立起来，观感偏“重”，体积大、颗数多时容易散成好几团（用户反馈“像三股水流”）。
-   星光只有一层柔光晕，更轻、更连贯，也天然适合连成一条流。
-
-   ★ 不发散成多股的关键：每颗字符**只有一个**光点（不再挂卫星子珠）。
-   ★ 位移由 driveFlow 逐帧写 transform（光字只做**相对**向右飘移，不依赖任何
-     绝对坐标——见 LiquidSendFx.tsx 里 MAX_FLOW_CHARS 上方的设计说明），
-     所以这里**不能**再写 CSS 动画。
-
-   ★ 渲染上踩过的坑（都表现为“看着像甜甜圈而不是光点”），实测对比后确定：
-     ① **不要在内层放白色核心**。曾经试过「蓝色光晕 + 居中小白核」，
-        在 11~20px 这个真实尺寸下必然读成一圈蓝环（白核把光晕挤成了边）。
-        实测「纯蓝柔光晕，中心最实、向外单调衰减到 0」才是最像光点的方案。
-     ② 外发光**不要**用 filter:drop-shadow —— 它跟随 alpha 轮廓，会在外面描出一圈硬边。
-     ③ 颜色用 rgba(var(--accent-rgb), α)，不用 color-mix(...,transparent)：
-        后者在部分渲染路径下会把外层折叠成全透明，柔光直接消失。
-     ④ 不做十字星芒：两条渐变线交叉在浅底上会渲染出“方框”感。 */
+   ★ 为什么不做成“光点圆球”：纯圆点读不出「我刚敲的字被送走了」这层语义，
+     保留真实字形 + glow 才既有信息量又有流动感（用户参照 demo 的反馈）。
+   ★ 位移由 driveFlow 逐帧写 transform / opacity / filter（只做**相对**向右飘移，
+     不依赖任何绝对坐标——见 LiquidSendFx.tsx 里 MAX_FLOW_CHARS 上方的设计说明），
+     所以这里**不能**再写 CSS 动画。 */
 .pi-flow-char {
   position: relative;
   display: inline-block;
   white-space: pre;
-  font-size: 0;
-  color: transparent;
-  /* 直径 = 基准 × 逐字抖动系数（JS 写入），让光点大小错落、有节奏 */
-  width: calc(var(--pi-mote-size, 18px) * var(--pi-mote-scale, 1));
-  height: calc(var(--pi-mote-size, 18px) * var(--pi-mote-scale, 1));
-  margin: 0 -1px;
-  vertical-align: middle;
-  border-radius: 50%;
-  /* 单层柔光晕：中心最实，一路单调衰减到全透明（①） */
-  background: radial-gradient(
-    circle,
-    rgba(var(--accent-rgb), 0.95) 0%,
-    rgba(var(--accent-rgb), 0.82) 30%,
-    rgba(var(--accent-rgb), 0.45) 58%,
-    rgba(var(--accent-rgb), 0) 100%
-  );
-  will-change: transform, opacity;
+  color: var(--accent);
+  text-shadow:
+    0 0 8px rgba(var(--accent-rgb), 0.75),
+    0 0 18px rgba(var(--accent-rgb), 0.45);
+  will-change: transform, opacity, filter;
   opacity: 0;
 }
-/* 空白字符不发光点（仍占位，保证逐字排版位置与真实文字一致） */
+/* 空白字符不发光（仍占位，保证逐字排版位置与真实文字一致） */
 .pi-flow-char[data-blank="1"] {
-  background: none;
+  color: transparent;
+  text-shadow: none;
 }
 
-
-
-/* 字符 → 流光星点：文字本体隐去（font-size:0 + color:transparent），改画一颗
-   带柔光的亮点。
-
-   为什么从“玻璃水球”换成“星光”：水球要四层光影 + inset 高光 + 投影才能在浅色底上
-   立起来，观感偏“重”，体积大、颗数多时容易散成好几团（用户反馈“像三股水流”）。
-   星光只有「白热核 + 柔光晕」两层，更轻、更连贯，也天然适合连成一条流。
-
-   ★ 不发散成多股的关键：每颗字符**只有一个**光点（不再挂卫星子珠）。
-   ★ 位移由 driveFlow 逐帧写 transform（终点要跟着列表滚动/气泡出现实时改），
-     所以这里**不能**再写 CSS 动画。
-
-   ★ 渲染上踩过的两个坑（都表现为“看着像甜甜圈而不是光点”）：
-     ① alpha 必须**单调递减**。曾经写成 white(1) → accent(0.55) → accent(0.9)，
-        中间先降后升，于是在 58% 处形成一圈更实的高饱和环 —— 就是那个“甜甜圈”。
-        正确做法：核心最亮，向外一路衰减到 0。
-     ② 不要用 border-radius + 实心背景去画圆：外层渐变会被硬裁成环。
-        纯 radial-gradient 自己衰减到 transparent，边缘天然是柔的。
-        （border-radius 保留也无妨，但不要依赖它成形。）
-     ③ 外发光用 box-shadow，**不要用 filter:drop-shadow** —— 后者跟随 alpha 轮廓，
-        会在圆外描出一圈硬边“光环”。
-
-
-/* 说明：液态效果（.pi-liquid* / .pi-flow-* / .pi-split-* / .pi-bubble-in-left* /
-   .pi-vein-*）**故意不在这里关闭**，原因见 LiquidSendFx.tsx 的 RESPECT_REDUCED_MOTION。 */
+/* 液态效果（.pi-liquid* / .pi-flow-* / .pi-morph-* / .pi-bubble-in-right*）
+   **故意不在这里关闭**，原因见 LiquidSendFx.tsx 的 RESPECT_REDUCED_MOTION。 */
 
 /* <details> 内容区抽屉式展开/折叠动画 */
 .drawer-details::details-content {

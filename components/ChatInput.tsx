@@ -18,7 +18,7 @@ import {
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/hooks/useI18n";
-import { absorbToSend, playLiquidSend, splitToTargets } from "./LiquidSendFx";
+import { absorbToSend, playLiquidSend, splitToTargets, splitTotalMs } from "./LiquidSendFx";
 
 export interface AttachedImage {
   data: string;   // base64, no prefix
@@ -732,27 +732,31 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, []);
 
   /**
-   * 点击发送的一瞬间触发「按钮分裂」：先让引导/后续/停止按钮以占位态出现（同一帧），
-   * 再把两滴液体从发送按钮渗到它们身上，动画结束才真正放开交互。
-   * 必须在调用方（父级）把 isStreaming 置 true 之前同步调用。
+   * 点击发送的一瞬间触发「按钮分裂」：必须在调用方（父级）把 isStreaming
+   * 置 true 之前**同步克隆**发送按钮，再交给 LiquidSendFx 播放。
+   *
+   * ★ 舞台上放的是按钮的**真实 DOM 克隆**，所以分裂完全不引入自画颜色/
+   *   材质——这正是“像在按钮上涂了一层颜料”的根治办法（见文件头 MORPH_* 注释）。
    *
    * ★ 为何不只用 React 状态驱动：空会话发第一条消息时 ChatWindow 会切分支，
    *   ChatInput 整块卸载重建，新实例的 flushSplit 是 false，分裂就丢了（实测）。
    *   所以真正跑动画的是一个**与组件生命周期无关的 DOM 轮询**：等引导/后续/停止
-   *   按钮真出现在 DOM 里，再拿实测坐标开跑（此实现在首条消息与后续消息行为一致）。
+   *   按钮真出现在 DOM 里，再拿实测坐标开跑（首条消息与后续消息行为一致）。
    */
-  const armSplit = useCallback(() => {
-    const start = performance.now();
-    const step = () => {
+  const armSplit = useCallback((originVisual: HTMLElement | null) => {
+    const reveal = () => {
       const composer = document.querySelector<HTMLElement>(".chat-composer");
       const anchor = splitAnchorRef.current;
-      const steer = document.querySelector<HTMLElement>('[data-pi-split="steer"]');
-      const follow = document.querySelector<HTMLElement>('[data-pi-split="followup"]');
-      const stop = document.querySelector<HTMLElement>('[data-pi-split="stop"]');
-      if (composer && anchor && (steer || follow || stop)) {
-        splitToTargets(composer, { x: anchor.x, y: anchor.y }, anchor.size, steer, follow);
-        return;
-      }
+      if (!composer || !anchor) return false;
+      const btns = [...document.querySelectorAll<HTMLElement>("[data-pi-split]")]
+        .filter((b) => b.isConnected);
+      if (!btns.length) return false;
+      // 只有舞台真的开演了才算成功（composer 可能已卸载、节点游离）
+      return splitToTargets(composer, { x: anchor.x, y: anchor.y }, anchor.size, originVisual);
+    };
+    const start = performance.now();
+    const step = () => {
+      if (reveal()) return;
       // 按钮最多滞后一两帧（isStreaming 翻转后同步渲染）；400ms 还没等到就放弃。
       if (performance.now() - start < 400) requestAnimationFrame(step);
     };
@@ -767,13 +771,32 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     } else {
       splitAnchorRef.current = null;
     }
+    // ★ 必须**同步**克隆：下一帧 isStreaming 一翻转，真实发送按钮就被 React 卸载了。
+    //   CSS 用 class（不是 id）打标：按钮上有其它按 id 差分的逻辑，改 id 会破坏它们。
+    let originVisual: HTMLElement | null = null;
+    if (btn) {
+      try {
+        originVisual = btn.cloneNode(true) as HTMLElement;
+        originVisual.classList.add("pi-morph-origin");
+        originVisual.classList.remove("pi-morph-pending");
+      } catch {
+        originVisual = null;
+      }
+    }
     setFlushSplit(true);
     if (splitTimerRef.current) window.clearTimeout(splitTimerRef.current);
+    // 必须盖过“最后一颗按钮落位 + ghost 摘除”，否则按钮会在动画中途被解成正常态
     splitTimerRef.current = window.setTimeout(() => {
+      // 兜底：把上一轮可能残留的占位样式全部抹平
+      document.querySelectorAll<HTMLElement>("[data-pi-split]").forEach((b) => {
+        b.style.animationDelay = "";
+        b.style.opacity = "";
+        b.classList.remove("pi-morph-pending");
+      });
       setFlushSplit(false);
       splitTimerRef.current = null;
-    }, 760);
-    armSplit();
+    }, splitTotalMs(3));
+    armSplit(originVisual);
   }, [armSplit]);
 
   const handleSend = useCallback(async () => {
@@ -1412,9 +1435,9 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
    */
   const controlsOpen = isMobile ? controlsMenuOpen || flushSplit : true;
 
-  // 引导/后续消息 chip（流式态）：桌面放在工具行右侧，移动端（compact）放在输入行尾部。
-  // 取代旧版占满输入行的大按钮 —— 保留键盘行为不变（Enter 默认引导）。
-  const renderQueueChip = (mode: "steer" | "followup", compact: boolean) => {
+  // 引导/后续消息 chip（流式态，仅移动端）：取代旧版占满输入行的大按钮，
+  // 保留键盘行为不变（Enter 默认引导）。
+  const renderQueueChip = (mode: "steer" | "followup") => {
     const isSteer = mode === "steer";
     const enabled = canQueueStreamingMessage;
     const queueTitle = attachedImages.length
@@ -1704,8 +1727,11 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
             {compactError}
           </div>
         )}
-        {/* Glass composer 卡片（A+B 融合：Composer 卡片结构 + iMessage 玻璃水滴材质，与用户气泡同配方） */}
+        {/* Glass composer 卡片（中性玻璃（主题适配）+ border beam 边框光束） */}
         <div ref={composerRef} className={`chat-composer${isStreaming ? " chat-composer-streaming" : ""}`} data-pifx="v2">
+        {/* 边框光束（border beam）：一层沿卡沿滑动的 accent 弧光。
+            纯装饰、不接事件；绝对定位且 pointer-events:none，不影响卡内布局。 */}
+        <span className="chat-composer-beam" aria-hidden="true" />
         {/* Image previews（收进卡内顶部） */}
         {attachedImages.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "10px 12px 0" }}>
@@ -2189,8 +2215,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           {isMobile && isStreaming && (onSteer || onFollowUp) && (
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-              {onSteer && renderQueueChip("steer", true)}
-              {onFollowUp && renderQueueChip("followup", true)}
+              {onSteer && renderQueueChip("steer")}
+              {onFollowUp && renderQueueChip("followup")}
             </div>
           )}
         </div>
@@ -2948,7 +2974,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     data-pi-split="steer"
                     onClick={() => sendQueued("steer")}
                     disabled={!canQueueStreamingMessage}
-                    className={flushSplit ? "pi-split-in" : undefined}
+                    className={flushSplit ? "pi-morph-pending" : undefined}
                     title={t("chat.steer")}
                     aria-label={t("chat.steer")}
                     style={{
@@ -2961,7 +2987,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
                       fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
                       pointerEvents: flushSplit ? "none" : "auto",
-                      opacity: flushSplit ? 0.4 : 1,
+                      opacity: flushSplit ? 0 : 1,
                       transition: "background 0.12s, color 0.12s, border-color 0.12s",
                     }}
                     onMouseEnter={(e) => {
@@ -2985,7 +3011,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     data-pi-split="followup"
                     onClick={() => sendQueued("followup")}
                     disabled={!canQueueStreamingMessage}
-                    className={flushSplit ? "pi-split-in" : undefined}
+                    className={flushSplit ? "pi-morph-pending" : undefined}
                     title={t("chat.followUp")}
                     aria-label={t("chat.followUp")}
                     style={{
@@ -2998,7 +3024,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       cursor: canQueueStreamingMessage ? "pointer" : "not-allowed",
                       fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
                       pointerEvents: flushSplit ? "none" : "auto",
-                      opacity: flushSplit ? 0.4 : 1,
+                      opacity: flushSplit ? 0 : 1,
                       transition: "background 0.12s, color 0.12s",
                     }}
                     onMouseEnter={(e) => {
@@ -3022,7 +3048,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   data-pi-split="stop"
                   onClick={isStreaming ? onAbort : undefined}
                   disabled={flushSplit || !isStreaming}
-                  className={flushSplit ? "pi-split-in" : undefined}
+                  className={flushSplit ? "pi-morph-pending" : undefined}
                   title={t("chat.stopAgent")}
                   aria-label={t("chat.stopAgent")}
                   style={{
@@ -3034,7 +3060,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     border: "1px solid rgba(239,68,68,0.35)",
                     color: "#ef4444",
                     pointerEvents: flushSplit ? "none" : "auto",
-                    opacity: flushSplit ? 0.4 : 1,
+                    opacity: flushSplit ? 0 : 1,
                     cursor: "pointer",
                     transition: "background 0.15s",
                   }}

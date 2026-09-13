@@ -23,11 +23,9 @@
  */
 import { spawnSync } from "child_process";
 import { readFileSync, existsSync, statSync } from "fs";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
+import { resolve } from "path";
 
 const root = process.cwd();
-const _dir = dirname(fileURLToPath(import.meta.url));
 
 const pkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 const VERSION = pkg.version;
@@ -121,10 +119,6 @@ if (needPack && !notesOnly) {
 }
 
 // ---- 5. 生成 release notes（基于 git 历史）----
-function currentBranch() {
-  const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root, encoding: "utf8" });
-  return r.stdout.trim();
-}
 // 上一个版本 tag（若无则以 HEAD~ 起算）
 function prevTag() {
   const r = spawnSync("git", ["describe", "--tags", "--abbrev=0", `${TAG}^`], {
@@ -145,7 +139,7 @@ const commits = spawnSync(
 
 const feat = [], fix = [], chore = [];
 for (const c of commits) {
-  const [hash, ...rest] = c.split(/\s+/, 2);
+  const [hash] = c.split(/\s+/, 2);
   const msg = c.replace(/^[a-f0-9]{7,}\s*/, "");
   if (/^feat|^fix|^chore|^build|^docs|^refactor|^perf|^test|^style/i.test(msg)) {
     const type = msg.split(":")[0].toLowerCase();

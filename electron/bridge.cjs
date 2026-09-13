@@ -815,7 +815,8 @@ function waitForNav(wc, trigger, { timeoutMs = LOAD_TIMEOUT_MS, beforeUrl = null
       if (settled) return;
       settled = true;
       cleanup();
-      err ? reject(err) : resolve();
+      if (err) reject(err);
+      else resolve();
     };
     const timer = setTimeout(() => {
       const err = new Error("Page load timed out");
@@ -855,53 +856,6 @@ function waitForNav(wc, trigger, { timeoutMs = LOAD_TIMEOUT_MS, beforeUrl = null
       }
     };
     poll();
-    try {
-      trigger();
-    } catch (err) {
-      cleanup();
-      reject(err);
-    }
-  });
-}
-
-/**
- * dom-ready 即返回（不等图片/iframe/analytics/WebSocket）。
- * 对 MAS/MOM 这类页面，框架先出、几十个接口后到，dom-ready 远早于 did-finish-load。
- */
-function waitForDomReady(wc, trigger, timeoutMs = LOAD_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      const err = new Error("DOM ready timed out");
-      err.status = 504;
-      reject(err);
-    }, timeoutMs);
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      wc.removeListener("dom-ready", onReady);
-      wc.removeListener("did-fail-load", onFail);
-    };
-    const onReady = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-    const onFail = (_event, code, description, _url, isMainFrame) => {
-      if (!isMainFrame || settled) return;
-      settled = true;
-      cleanup();
-      const err = new Error(`Page load failed: ${description} (${code})`);
-      err.status = 504;
-      reject(err);
-    };
-
-    wc.once("dom-ready", onReady);
-    wc.once("did-fail-load", onFail);
     try {
       trigger();
     } catch (err) {

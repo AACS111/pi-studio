@@ -28,8 +28,10 @@
 - 每个改动必须过 `tsc --noEmit` + `pnpm run lint` 再交付；Univer 改动还要 headless 浏览器往返验证。
 - **禁止在 Windows/Git Bash 下执行 `find /`、`find ~`、`grep -rn` 扫全盘/家目录。** 本机 C 盘遍历一次要 28 分钟以上（2026-09-03 实测把一整轮对话拖死）。要搜就限定到具体子目录（`lib`/`app`/`components`/`hooks`/`electron`），或明确目录（会话文件固定在 `~/.pi/agent/sessions/<cwdKey>/*.jsonl`）；确需可能长耗时的命令一律带 `timeout 30` / bash 工具 `timeout` 参数。#坑
 - **验证耗时收敛（改动任务的最大时间黑洞在这里）**：所有编辑**一次性做完后**只跑一次 `tsc --noEmit` + 一次 lint，不许改一段验一段。确认「是改动文件报错还是既有基线」时，用 `node_modules/.bin/eslint <改动文件>`（配合 `git diff --name-only` 拿清单）**定向 lint**，只有要核对全量基线才跑 `pnpm run lint`。lint/tsc 输出用 `2>&1 | tee /tmp/verify.txt` 存下来再 `grep` 那个文件，**绝不重复重跑命令去过滤**（重跑一次=白付一轮全量）。#约定
+- **工具调用要批量并行（减少往返就是减少耗时）**：互不依赖的探测/读取/查询必须合并成**同一条消息里的多个 toolCall** 一起发出；互不依赖的 bash 检查合成一条（`;` / `&&` / heredoc 一个脚本跑完），禁止「write 临时文件 → 再单独跑一条命令读它」的两段式，禁止重复 read 同一文件、重复跑同一条命令。实测单个 turn 跑到 100+ 次往返时，一半墙钟时间花在往返本身，且上下文每轮全量重发，单次延迟从 2s 涨到 20s。**注意**：同一会话内的往返是串行依赖链（第 N+1 次必须带第 N 次工具结果），账号并发数再高也压不下来，唯一杠杆就是「一轮多调用」。#约定
 - **搜索/定位用 `rg -l` 限目录 + 按需读片段**：全项目找引用一律 `rg -l "<词>" components app lib hooks electron`（限定目录，永不扫 node_modules/.next/.next-pkg/release）；命中后用 `read` 读**相关片段**而非整文件。优先 `rg -l` 一次命中，替代「多次 grep + 大段 read」的来回试探。#约定
 - **排查性能问题先量化再动手**：第一步用 node / puppeteer 打时间戳，确认瓶颈在服务端还是客户端，再改代码；不许在读完代码后直接猜瓶颈下手。#约定
+- **测试会话用完必须清理**：验证/调试时用脚本或 `POST /api/agent/new` 造出的会话（puppeteer 点发送键、临时 cwd、固定测试文本）**必须在同一轮任务结束前删掉**，不得留在 `~/.pi/agent/sessions/{<cwdKey>}/*.jsonl` 里污染侧栏。典型特征：cwd 在 `%TEMP%` 下、首条消息是「ABCDEF」「热身」「测试…」这类无业务含义的固定文本、体积仅 1–3KB 且消息数 ≤ 8。**删除前先移到 `~/.pi/agent/sessions-removed-<日期>/` 并写 `manifest.json`**（记原路径/id/首条消息），确认后再彻底删——直接 `rm` 弄错就没救了。2026-09-13 一次就积累出 80 个测试会话（14.7MB）。#约定 #坑
 
 ---
 

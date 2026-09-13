@@ -45,7 +45,25 @@ export interface SessionStatsInfo {
     total: number;
   };
   cost: number;
+  /** 费用币种：provider 账单为 USD，按内置人民币价目表估算为 CNY */
+  costCurrency?: "CNY" | "USD";
+  /** 费用口径：true = 按内置人民币价目表估算（provider 未回传账单时的兜底） */
+  costEstimated?: boolean;
+  /** 估算依据：高峰/空闲档、单价、各部分金额 */
+  costMeta?: SessionCostMeta;
   contextUsage?: ContextUsage;
+}
+
+/** 按价目表估算费用时的依据（用于在面板上解释金额怎么来的） */
+export interface SessionCostMeta {
+  /** 高峰/空闲；跨时段累计为 mixed */
+  tier?: "peak" | "offPeak" | "mixed";
+  /** 元 / 百万 token（估算所用单价；mixed 时给高峰档） */
+  unit?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** 各部分金额（元） */
+  breakdown: { input: number; cacheRead: number; cacheWrite: number; output: number };
+  /** 计价所用模型名 */
+  label?: string;
 }
 
 interface PromptTemplateLike {

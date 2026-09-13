@@ -295,8 +295,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   const [visibleCount, setVisibleCount] = useState(VISIBLE_PAGE_SIZE);
   const [msgFollowing, setMsgFollowing] = useState(true);
   // percho 消息流默认只渲染最近 N 行（历史窗口化）；跳转/搜索前先展开全部，否则目标行未挂载。
+  // 真正的触发点在下面的搜索/跳转逻辑里直接 setPerchoRevealAllNonce((n) => n + 1)。
   const [perchoRevealAllNonce, setPerchoRevealAllNonce] = useState(0);
-  const revealAllPerchoRows = useCallback(() => setPerchoRevealAllNonce((n) => n + 1), []);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const prevScrollDistanceRef = useRef<number | null>(null);
   const handledJumpNonceRef = useRef<number | null>(null);
@@ -380,6 +380,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
       sessionStats.tokens.cacheWrite,
       sessionStats.tokens.total,
       sessionStats.cost ?? 0,
+      sessionStats.costCurrency ?? "",
+      sessionStats.costEstimated ? "1" : "",
     ].join("|")
     : null;
   const sessionStatsRef = useRef(sessionStats);
@@ -1556,7 +1558,11 @@ function SessionStatusChip({ session, sessionStats, contextUsage, running, t, fu
   const tokens = sessionStats?.tokens;
   const c = sessionStats?.cost ?? 0;
   const fmt = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(0)}k` : String(n);
-  const costStr = c > 0 ? (c >= 0.01 ? `$${c.toFixed(2)}` : `<$0.01`) : null;
+  const costStr = c > 0
+    ? (sessionStats?.costCurrency === "CNY"
+      ? (c >= 0.01 ? `¥${c.toFixed(2)}` : "<¥0.01")
+      : (c >= 0.01 ? `$${c.toFixed(2)}` : "<$0.01"))
+    : null;
   let ctxStr: string | null = null;
   let ctxColor = "var(--text-muted)";
   if (contextUsage?.contextWindow) {

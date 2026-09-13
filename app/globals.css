@@ -134,6 +134,310 @@ html.dark {
   --glass-card-shadow: 0 20px 52px rgba(0, 0, 0, 0.46), 0 2px 10px rgba(0, 0, 0, 0.34);
 }
 
+/* ── 会话信息浮窗（SessionInfoModal）────────────────────────────────
+   深度定制色只在必要时本地化：告警色 + 进度轨道，其余全走主题变量，
+   所以浅色/深色（以及用户自定义 accent）都能自动跟上。 */
+.session-info-modal {
+  --si-warn: #b45309;
+  --si-danger: #dc2626;
+  --si-track: rgba(15, 23, 42, 0.09);
+  --si-row: rgba(15, 23, 42, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+html.dark .session-info-modal {
+  --si-warn: #fbbf24;
+  --si-danger: #f87171;
+  --si-track: rgba(255, 255, 255, 0.11);
+  --si-row: rgba(255, 255, 255, 0.035);
+}
+.session-info-modal .si-empty {
+  padding: 28px 8px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+/* ① 会话标识 */
+.session-info-modal .si-identity {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--si-row);
+  padding: 10px 12px;
+}
+.session-info-modal .si-identity-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-info-modal .si-identity-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.session-info-modal .si-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.session-info-modal .si-identity-key {
+  flex: 0 0 46px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.session-info-modal .si-identity-val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.session-info-modal .si-copy,
+.session-info-modal .si-copy-spacer {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+}
+.session-info-modal .si-copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.session-info-modal .si-copy:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+.session-info-modal .si-copy-done {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* ② KPI 卡片 */
+.session-info-modal .si-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 8px;
+}
+.session-info-modal .si-kpi {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--si-row);
+  padding: 9px 11px 10px;
+  min-width: 0;
+}
+.session-info-modal .si-kpi-label {
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-info-modal .si-kpi-value {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-info-modal .si-kpi-sub {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-info-modal .si-ctx-track {
+  margin-top: 7px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--si-track);
+  overflow: hidden;
+}
+.session-info-modal .si-ctx-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+/* ③ 明细面板 */
+.session-info-modal .si-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 620px) {
+  .session-info-modal .si-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.session-info-modal .si-panel {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--si-row);
+  padding: 10px 12px 12px;
+  min-width: 0;
+}
+.session-info-modal .si-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 9px;
+}
+.session-info-modal .si-panel-empty {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  padding: 6px 0;
+}
+
+/* Token 占比条 */
+.session-info-modal .si-stack {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--si-track);
+}
+.session-info-modal .si-stack-seg {
+  height: 100%;
+  min-width: 2px;
+}
+.session-info-modal .si-stack-seg + .si-stack-seg {
+  box-shadow: inset 1px 0 0 var(--bg-panel);
+}
+.session-info-modal .si-legend {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.session-info-modal .si-legend-row {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+.session-info-modal .si-legend-total {
+  margin-top: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+  font-weight: 600;
+}
+.session-info-modal .si-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+.session-info-modal .si-swatch-none {
+  background: none;
+}
+.session-info-modal .si-legend-label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-info-modal .si-legend-value {
+  color: var(--text);
+}
+.session-info-modal .si-legend-pct {
+  min-width: 46px;
+  text-align: right;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* 消息构成条形 */
+.session-info-modal .si-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.session-info-modal .si-bar-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-variant-numeric: tabular-nums;
+}
+.session-info-modal .si-bar-label {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-info-modal .si-bar-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--si-track);
+  overflow: hidden;
+}
+.session-info-modal .si-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.45), var(--accent));
+}
+.session-info-modal .si-bar-value {
+  min-width: 46px;
+  text-align: right;
+  color: var(--text);
+}
+
+/* 费用估算明细：让「费用」卡里的数字能被解释，而不是一个凭空出现的金额 */
+.session-info-modal .si-cost-detail {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.session-info-modal .si-cost-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--text-muted);
+}
+.session-info-modal .si-cost-unit {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
 /* percho chat 移植：todo 面板呼吸灯 / 对勾描边 / 极细滚动条 */
 .todo-breath-dot {
   width: 7px;

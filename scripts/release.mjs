@@ -99,11 +99,25 @@ const needPack = !alreadyReleased;
 
 const setupExe = resolve(root, "release", `${PRODUCT}-${VERSION}-setup.exe`);
 const portableExe = resolve(root, "release", `${PRODUCT}-${VERSION}-portable.exe`);
-const artifactsBuilt = existsSync(setupExe) && existsSync(portableExe);
+
+/**
+ * 产物有效性下限（10MB）。
+ *
+ * 为什么不能只判 existsSync：NSIS 打包在本机曾多次中途失败（makensis 崩在
+ * `RegisterWaitForSingleObject`），但会在 release/ 留下一个 **0.6MB 的残缺
+ * setup.exe**——文件存在、实际没嵌 payload。若只判存在，脚本会把这个 0.6MB
+ * 的废包当成正常安装包传上 GitHub Release，用户下载后无法安装。
+ * 正常产物约 200MB+，任何小于该下限的一律视为无效。
+ */
+const MIN_ASSET_BYTES = 10 * 1024 * 1024;
+const isValidArtifact = (p) => existsSync(p) && statSync(p).size >= MIN_ASSET_BYTES;
+
+const validArtifacts = [setupExe, portableExe].filter(isValidArtifact);
+const artifactsBuilt = validArtifacts.length > 0;
 
 if (needPack && !notesOnly) {
   if (!artifactsBuilt && !skipPack) {
-    console.log("[release] 新版本 & 无现成 exe → 重新打包 `pnpm run pack`（耗时较长）...");
+    console.log("[release] 新版本 & 无有效 exe → 重新打包 `pnpm run pack`（耗时较长）...");
     const pack = spawnSync("pnpm", ["run", "pack"], { cwd: root, stdio: "inherit", timeout: 3600000 });
     if (pack.status !== 0) {
       console.error("[release] 打包失败，中止。可用 --skip-pack 改用已有产物。");
@@ -111,7 +125,7 @@ if (needPack && !notesOnly) {
     }
     console.log("[release] 打包完成。");
   } else if (!artifactsBuilt) {
-    console.error(`[release] 未找到 exe: ${setupExe} 或 ${portableExe}。请先打包或用 --skip-pack 谨慎跳过。`);
+    console.error(`[release] 未找到有效 exe: ${setupExe} 或 ${portableExe}。请先打包或用 --skip-pack 谨慎跳过。`);
     process.exit(1);
   }
 } else if (alreadyReleased) {
@@ -207,8 +221,18 @@ if (!release) {
   console.log(`[release] notes 已更新 → ${release.html_url}`);
 }
 
-if (!alreadyReleased) {
-  // 上传 assets（仅新版本时上传/覆盖 exe）
+// 该 Release 已经传过哪些资产（名字 + 体积），用于判断是否需要补传。
+// 为什么要比对体积：上传中途断掉会在 Release 上留下 state=starter/体积不对的半成品，
+// 只看名字会误以为「已传过」而跳过，用户下载到的是坏包。
+const existingAssets = new Map(
+  (existingRelease?.assets ?? []).map((a) => [a.name, a.size]),
+);
+
+{
+  // 逐个产物独立判断：缺哪个就跳过哪个，不因为安装包没打出来就整个发布流程中止
+  // （用户可能只要便携版）。已在 Release 上且体积一致的不重传，仅补传缺失/残缺的
+  // —— 所以这里**不能**再限制为 `if (!alreadyReleased)`：Release 已创建但当时打包
+  // 中断（资产为 0 或只有半成品）是最常见的需要补传场景。
   const uploadUrl = `${release.upload_url.replace("{?name,label}", "")}`;
   for (const f of [setupExe, portableExe]) {
     if (!existsSync(f)) {
@@ -217,7 +241,21 @@ if (!alreadyReleased) {
     }
     const size = statSync(f).size;
     const name = f.split(/[\\/]/).pop();
+    if (size < MIN_ASSET_BYTES) {
+      console.warn(`[release] 跳过上传(体积异常 ${(size / 1048576).toFixed(2)} MB < ${MIN_ASSET_BYTES / 1048576} MB，疑似打包中断的残缺产物): ${name}`);
+      continue;
+    }
     console.log(`[release] 上传 ${name} (${(size / 1048576).toFixed(1)} MB)...`);
+    // 同名资产已存在时先删除再传（GitHub 不允许重名，直接 POST 会 422）。
+    // 覆盖条件：体积不一致（上次传的是残缺包）或此前就是 starter 状态。
+    const prior = (existingRelease?.assets ?? []).find((a) => a.name === name);
+    if (prior && prior.size !== size) {
+      console.log(`[release] 删除旧资产 ${name} (${(prior.size / 1048576).toFixed(1)} MB) 后重传...`);
+      gh("DELETE", `${API_BASE}/releases/assets/${prior.id}`);
+    } else if (prior) {
+      console.log(`[release] 同名资产已存在且体积一致，跳过: ${name}`);
+      continue;
+    }
     const up = spawnSync(
       "curl",
       [

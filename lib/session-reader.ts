@@ -342,7 +342,7 @@ function replaceBase64ImagesWithRefs(message: AgentMessage, entryId: string): Ag
   return replaced > 0 ? ({ ...message, content } as AgentMessage) : message;
 }
 
-// Convert a session entry on the active branch into a UI message.
+// Convert a session entry on the active branch into a UI message. [nudge-filter-v1]
 // Returns null for entries that do not map to chat history (metadata, non-message types).
 function entryToUiMessage(
   entry: SessionEntry,
@@ -355,32 +355,43 @@ function entryToUiMessage(
   // normalizeToolCalls is a secondary guard (returns non-assistant messages as-is).
   switch (entry.type) {
     case "message": {
-      let message = normalizeToolCalls(entry.message);
+      const message = normalizeToolCalls(entry.message);
+      /**
+       * 宿主自己注入的隐藏消息（如收尾守卫的 turn-nudge）不还原成聊天记录。
+       *
+       * ★ 为什么会有 `display:false` 的 **user** 消息：turn-nudge 必须用 user 角色
+       *   才能被 provider 转换器发出（`role:"custom"` 会被 openai-completions 整条
+       *   丢弃，实测无效），而 user 消息又会被 hooks/useAgentSession 的 message_end
+       *   分支当成普通用户气泡渲染。约定：带 `display:false` 的 user 消息一律不在
+       *   UI 出现（实时流与历史回放两侧都过滤，否则刷新会话就“露馅”）。
+       */
+      if (message.role === "user" && message.display === false) return null;
+      let out = message;
       if (options.deferToolResultImages) {
         // 工具结果图：保持旧的「丢弃 + 文字占位」。
-        if (message.role === "toolResult") {
-          message = omitToolResultBase64Images(message);
+        if (out.role === "toolResult") {
+          out = omitToolResultBase64Images(out);
         } else if (options.deferAllImages) {
           // 用户/助手侧图片：换按需引用桩（`deferAllImages`，路由把 deferMedia=1 映射过来）。
           // 历史回放不该内联几 MB base64；滚到/展开才按需拉。
-          message = replaceBase64ImagesWithRefs(message, entry.id);
+          out = replaceBase64ImagesWithRefs(out, entry.id);
         }
       }
       // 本轮「完成」时刻 = 条目落盘时刻。assistant 自带的 timestamp 是生成起点，
       // 拿它当完成时间会把每轮耗时算成 0s（对话区时间节点 / 耗时展示用）。
       const endTimestamp = parseEntryTimestamp(entry.timestamp);
-      if (endTimestamp !== undefined && message.endTimestamp === undefined) {
-        message = { ...message, endTimestamp } as AgentMessage;
+      if (endTimestamp !== undefined && out.endTimestamp === undefined) {
+        out = { ...out, endTimestamp } as AgentMessage;
       }
-      if (!options.deferThinking || message.role !== "assistant") return message;
+      if (!options.deferThinking || out.role !== "assistant") return out;
       return {
-        ...message,
-        content: message.content.map((block) => (
+        ...out,
+        content: out.content.map((block) => (
           block.type === "thinking" && block.thinking.trim() !== ""
             ? { ...block, thinking: "", deferred: true }
             : block
         )),
-      };
+      } as AgentMessage;
     }
     case "compaction":
       return {

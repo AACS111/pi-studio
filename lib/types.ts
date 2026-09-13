@@ -63,6 +63,16 @@ export interface UserMessage {
   timestamp?: number;
   /** 条目落盘时刻（历史回放补齐；用户消息与 timestamp 相同） */
   endTimestamp?: number;
+  /**
+   * `false` = 宿主注入的隐藏指令（如收尾守卫 turn-nudge），**不在对话区渲染**。
+   *
+   * 为什么隐藏消息会是 user 角色：`role:"custom"` 的消息在 pi-ai 的
+   * openai-completions 转换链里会被整条丢弃（convertMessages 只处理
+   * system/user/assistant/toolResult），所以给模型的提醒必须走 user 角色下发；
+   * 靠这个字段把两类“假用户消息”从 UI 上区分出去。
+   * 实时流（useAgentSession 的 message_end）与历史回放（session-reader）两侧都要过滤。
+   */
+  display?: boolean;
 }
 
 export interface AssistantMessage {

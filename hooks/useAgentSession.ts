@@ -28,7 +28,8 @@ import { bridgePerchoEvent } from "@/lib/percho-bridge";
 import { fetchJsonShared } from "@/lib/fetch-shared";
 import { agentMessagesToPerchoUiMessages } from "@/lib/percho/adapter";
 import { useTranscriptStore } from "@/lib/percho-store";
-import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { SessionCostMeta, SessionStatsInfo } from "@/lib/pi-types";
+import { computeMessageCost } from "@/lib/model-pricing";
 
 const PLAN_MODE_STORAGE_PREFIX = "pi-web-plan-mode:";
 const PLAN_MODE_TOOLS_STORAGE_PREFIX = "pi-web-plan-mode-tools:";
@@ -524,9 +525,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const displayModel = isNew ? (newSessionModel ?? newSessionDefaultModel) : currentModel;
 
   const sessionStats = useMemo(() => {
-    if (sessionStatsOverride) return sessionStatsOverride;
     const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
     let cost = 0;
+    let costEstimated = false;
+    let costCurrency: "CNY" | "USD" = "USD";
+    const tiers = new Set<"peak" | "offPeak">();
+    const costBreakdown = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+    let costUnit: SessionCostMeta["unit"] | undefined;
+    let costLabel: string | undefined;
     let userMessages = 0;
     let assistantMessages = 0;
     let toolResults = 0;
@@ -536,18 +542,35 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (msg.role === "toolResult") toolResults += 1;
       if (msg.role !== "assistant") continue;
       assistantMessages += 1;
-      const u = (msg as import("@/lib/types").AssistantMessage).usage;
-      toolCalls += (msg as import("@/lib/types").AssistantMessage).content.filter((c) => c.type === "toolCall").length;
+      const am = msg as import("@/lib/types").AssistantMessage;
+      const u = am.usage;
+      toolCalls += am.content.filter((c) => c.type === "toolCall").length;
       if (!u) continue;
       tokens.input += u.input ?? 0;
       tokens.output += u.output ?? 0;
       tokens.cacheRead += u.cacheRead ?? 0;
       tokens.cacheWrite += u.cacheWrite ?? 0;
-      cost += u.cost?.total ?? 0;
+      // 费用：provider 账单优先；全 0（DeepSeek 等不回传计费）时按内置人民币价目表估算。
+      const msgCost = computeMessageCost(am.provider, am.model, u, am.timestamp);
+      if (!msgCost) continue;
+      cost += msgCost.amount;
+      if (msgCost.estimated) {
+        costEstimated = true;
+        costCurrency = "CNY";
+        if (msgCost.tier) tiers.add(msgCost.tier);
+        if (msgCost.breakdown) {
+          costBreakdown.input += msgCost.breakdown.input;
+          costBreakdown.cacheRead += msgCost.breakdown.cacheRead;
+          costBreakdown.cacheWrite += msgCost.breakdown.cacheWrite;
+          costBreakdown.output += msgCost.breakdown.output;
+        }
+        costUnit = msgCost.unit ?? costUnit;
+        costLabel = msgCost.label ?? costLabel;
+      }
     }
     tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
     if (tokens.total === 0 && messages.length === 0) return null;
-    return {
+    const local = {
       sessionFile: data?.filePath || undefined,
       sessionId: sessionIdRef.current ?? session?.id ?? "",
       sessionName: session?.name,
@@ -558,8 +581,35 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       totalMessages: messages.length,
       tokens,
       cost,
+      costCurrency,
+      costEstimated,
+      ...(costEstimated
+        ? {
+            costMeta: {
+              tier: tiers.size > 1 ? "mixed" : tiers.size === 1 ? [...tiers][0] : undefined,
+              ...(costUnit ? { unit: costUnit } : {}),
+              breakdown: costBreakdown,
+              ...(costLabel ? { label: costLabel } : {}),
+            },
+          }
+        : {}),
       ...(contextUsage ? { contextUsage } : {}),
     } satisfies SessionStatsInfo;
+
+    // `/session` 命令的服务器快照（get_session_stats）只有裸 cost，不带币种/估算依据。
+    // provider 不回传计费时它是 0，直接采用会让面板退回「$0.00」——所以并入本地
+    // 人民币估算的金额与依据，只保留服务器快照里的消息/Token 计数。
+    if (sessionStatsOverride) {
+      if ((sessionStatsOverride.cost ?? 0) > 0) return sessionStatsOverride;
+      return {
+        ...sessionStatsOverride,
+        cost: local.cost,
+        ...(local.costEstimated
+          ? { costEstimated: true, costCurrency: local.costCurrency, costMeta: local.costMeta }
+          : {}),
+      } satisfies SessionStatsInfo;
+    }
+    return local;
   }, [messages, sessionStatsOverride, contextUsage, data?.filePath, session?.id, session?.name]);
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
@@ -1277,6 +1327,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         // appending it again would duplicate it.
         if (!agentRunningRef.current) break;
         const completed = event.message as AgentMessage | undefined;
+        // 宿主注入的隐藏指令（收尾守卫 turn-nudge，display:false）不渲染成用户气泡。
+        // ★ 必须在这里拦：它走的是 user 角色（custom 角色会被 provider 转换器丢掉，
+        //   见 lib/turn-nudge.ts 的说明），不拦就会在对话区突然冒出一条
+        //   「你已经连续 8 个回合只调用工具…」。历史回放侧同理（lib/session-reader.ts）。
+        if (completed && completed.role === "user" && (completed as { display?: boolean }).display === false) {
+          break;
+        }
         if (completed && completed.role === "user") {
           // Delivered steering/follow-up messages surface here as user
           // messages. The run's initial prompt also emits one, but handleSend

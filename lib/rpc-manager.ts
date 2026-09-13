@@ -18,6 +18,12 @@ import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem, Sess
 import { createHeadlessCustomUiTui, DEFAULT_CUSTOM_UI_COLUMNS } from "./custom-ui-terminal";
 import { createPlanTools, type AskUserRequest, type PlanToolBridge } from "./plan-tool";
 import { PLAN_MODE_CUSTOM_TOOL_NAMES } from "./plan-mode";
+import {
+  TURN_NUDGE_CUSTOM_TYPE,
+  TurnNudgeTracker,
+  readTurnNudgeThreshold,
+  turnNudgeInstruction,
+} from "./turn-nudge";
 import { readCompactionSettings, writeCompactionSettings, recommendedCompactionForWindow, COMPACTION_TRIGGER_RATIO_DEFAULT, type CompactionSettings } from "./compaction-settings";
 
 // ============================================================================
@@ -189,6 +195,11 @@ export class AgentSessionWrapper {
   // 回合且不自动续跑——任务静默卡死（2026-08-28 实测：PPT 创建会话空转 9 分钟）。
   private lastAssistantStopReason: string | null = null;
   private lengthAutoContinues = 0;
+  /**
+   * 回合收尾守卫：连续「只调工具、零正文」到阈值就插一条隐藏提醒，逼模型给结论。
+   * 见 lib/turn-nudge.ts 的长注释（真实会话：82 回合里 79 个纯工具回合）。
+   */
+  private turnNudge = new TurnNudgeTracker(readTurnNudgeThreshold());
 
   constructor(inner: AgentSessionLike) {
     this.inner = inner;
@@ -225,12 +236,64 @@ export class AgentSessionWrapper {
           this.lastAssistantStopReason = entry.message.stopReason ?? null;
         }
       }
+      // ★ 收尾守卫与 stopReason 的取数分开：
+      //   `entry_appended` 只在扩展调 appendEntry 时才发（实测 pi 0.84），
+      //   靠它读 assistant 内容会永远拿不到数据。`message_end` 才是每回合必发的。
+      if (event.type === "message_end") {
+        const message = event.message as
+          | { role?: string; stopReason?: string; content?: unknown }
+          | undefined;
+        if (message?.role === "assistant") {
+          this.lastAssistantStopReason = message.stopReason ?? this.lastAssistantStopReason;
+          this.trackToolOnlyTurns(message.content);
+        }
+      }
       if (IDLE_RESET_EVENT_TYPES.has(event.type)) this.resetIdleTimer();
       this.emit(event);
       if (RUNNING_STATE_EVENT_TYPES.has(event.type)) notifyRunningChange();
     });
     this.resetIdleTimer();
     notifyRunningChange();
+  }
+
+  /**
+   * 收尾守卫：喂入 assistant 回合内容，连续「纯工具回合」到阈值就往**当前这一轮**
+   * 里插一条提醒，逼模型停下来给结论。
+   *
+   * ★ 为什么用 `agent.steer()` 投一个 user 角色消息，而不是
+   *   `sendCustomMessage({display:false})`（最初就是这么写的，实测**完全无效**）：
+   *   `role: "custom"` 的消息在 pi-ai 的 openai-completions 转换链里会被**整条丢掉**——
+   *   `convertMessages` 只处理 system / user / assistant / toolResult，custom 落进
+   *   最后的 `else`；`transformMessages` 的 second pass 同理，custom 不触发
+   *   `insertSyntheticToolResults()`。结果就是：提醒落了盘、日志也打了，但模型根本
+   *   没见过它（2026-09-13 真实会话 01a09953 实测：插了 3 条，模型无视，连续 26 个
+   *   纯工具回合）。
+   *   `agent.steer(msg)` 接受任意 AgentMessage，投进去的是普通 user 消息，
+   *   在下一次模型请求里正常出现，且 display:false 保证 UI 不渲染成卡片。
+   *
+   * 失败（老版本 SDK 没这个字段 / 已结束）只记日志，绝不影响主流程。
+   */
+  private trackToolOnlyTurns(content: unknown): void {
+    if (!this.turnNudge.observe(content)) return;
+    const streak = readTurnNudgeThreshold();
+    const instruction = turnNudgeInstruction(streak);
+    const agent = this.inner.agent as { steer?: (message: unknown) => void } | undefined;
+    if (typeof agent?.steer !== "function") return;
+    try {
+      agent.steer({
+        role: "user",
+        content: [{ type: "text", text: instruction }],
+        // 不落盘、不在 UI 上渲染成用户气泡（UI 只认 display !== false 的 user 消息）
+        display: false,
+        customType: TURN_NUDGE_CUSTOM_TYPE,
+        timestamp: Date.now(),
+      });
+      console.log(`[pi-studio] turn-nudge: 连续纯工具回合达到 ${streak}，已要求模型收尾`);
+    } catch (error) {
+      console.log(
+        `[pi-studio] turn-nudge 插入失败（忽略）: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -434,6 +497,9 @@ export class AgentSessionWrapper {
         const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
         this.promptRunning = true;
         this.lengthAutoContinues = 0; // 每个用户 prompt 重置自动续跑预算
+        // 收尾守卫的计数也按「每次用户 prompt」重置：新任务重新给预算，
+        // 不把上一个任务的连续纯工具回合算进来。
+        this.turnNudge.reset();
         notifyRunningChange();
         this.inner.prompt(command.message as string, {
           ...(promptImages?.length ? { images: promptImages } : {}),

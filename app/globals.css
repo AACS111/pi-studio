@@ -16,6 +16,10 @@
   --color-assistant-bg: var(--assistant-bg);
   --color-tool-bg: var(--tool-bg);
   --color-bg-subtle: var(--bg-subtle);
+  --color-rate-fast: var(--rate-fast);
+  --color-rate-ok: var(--rate-ok);
+  --color-rate-slow: var(--rate-slow);
+  --color-rate-idle: var(--rate-idle);
   --font-mono-font: var(--font-mono);
   /* percho chat 移植 token（语义别名，映射到 pi-web 现有变量） */
   --color-canvas: var(--bg);
@@ -61,6 +65,19 @@
   --tool-bg: rgba(15, 23, 42, 0.035);
   --bg-subtle: rgba(15, 23, 42, 0.04);
   --shadow-pop: 0 12px 32px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.06);
+
+  /* ── 输出速率语义色（--rate-*）── 档位色是**药丸底色**，字色走 --rate-on。
+     为什么不用「彩色文字」：浅色主题下 11px 小字要过 4.5:1，绿色只能选到 #38650f
+     那种暗橄榄——实测在玻璃底上读起来就是黑色（用户反馈「有时显示黑色」的根因之一）。
+     反色药丸能同时拿到鲜艳色相与可读字色：白字对 fast/ok/slow = 5.02 / 5.02 / 4.83。
+     阈值按「字符/秒」标定（中文 1 字≈1 token）：≥80 快 / 40–80 一般 / <40 慢。 */
+  --rate-fast: #15803d;
+  --rate-ok: #b45309;
+  --rate-slow: #dc2626;
+  --rate-on: #ffffff;
+  /* 空闲态（工具执行中 / 本轮已结束）不画药丸，退回真正的石板灰。
+     不能用 --text-dim：本项目为保证小字可读把它压到 #242B3B（9.3:1），当「灰」用会看着是黑的。 */
+  --rate-idle: #4b5563;
 
   /* ── Radius scale ── 统一 6/8/10/14/18，替代散落的 5/7/9 魔法数字 */
   --radius-xs: 6px;
@@ -122,6 +139,13 @@ html.dark {
   --tool-bg: rgba(255, 255, 255, 0.04);
   --bg-subtle: rgba(255, 255, 255, 0.045);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.50), 0 2px 8px rgba(0, 0, 0, 0.35);
+
+  /* 深色反向：亮底 + 深字（对 #0B1220 = 10.74 / 11.22 / 6.77） */
+  --rate-fast: #4ade80;
+  --rate-ok: #fbbf24;
+  --rate-slow: #f87171;
+  --rate-on: #0b1220;
+  --rate-idle: #8b95a5;
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.40);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.30);
@@ -1338,6 +1362,44 @@ pre, code {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+/* 右侧文件查看器内容区滚动条。
+   全局 ::-webkit-scrollbar 只有 4px 且用描边色 --border（仅 10% 不透明），
+   在 Windows/Electron 上几乎不可见，几千行的源码文件看起来就像「没有滚动条、滚不动」。
+   这里给内容区一套可辨识的：10px 轨道 + 内缩胶囊滑块，滚动时可见、静止时不抢视觉。 */
+.file-viewer-content::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.file-viewer-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.file-viewer-content::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 32%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+.file-viewer-content::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 58%, transparent);
+  background-clip: padding-box;
+}
+.file-viewer-content::-webkit-scrollbar-thumb:active {
+  background: color-mix(in srgb, var(--text-muted) 75%, transparent);
+  background-clip: padding-box;
+}
+.file-viewer-content::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox 专用：不支持 ::-webkit-scrollbar，走标准属性。
+   不能与上面共存于 Chromium——设了 scrollbar-width 会让 Chromium 忽略整套 ::-webkit-scrollbar 自定义。 */
+@supports not selector(::-webkit-scrollbar) {
+  .file-viewer-content {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-muted) 38%, transparent) transparent;
+  }
+}
+
 @media (max-width: 640px) {
   .file-viewer-meta {
     display: none;
@@ -1353,6 +1415,22 @@ pre, code {
   .file-viewer-mode-button {
     padding-inline: 6px;
   }
+}
+
+/* 大文件只预览了开头一段时的顶部提示条（贴在滚动区顶部，不遮挡阅读）。 */
+.file-preview-note {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* File viewer markdown preview — larger headings */

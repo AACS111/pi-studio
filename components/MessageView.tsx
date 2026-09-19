@@ -4,6 +4,7 @@ import { memo, useState, useRef, useEffect, useMemo } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
+import { useStreamRate, rateTier, RATE_TIER_VAR, type RateTier } from "@/lib/stream-rate";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
@@ -70,6 +71,28 @@ interface Props {
   showTimestamp?: boolean;
   prevTimestamp?: number;
   sessionId?: string;
+}
+
+/* ── 流式输出速率：测量逻辑在 lib/stream-rate.ts（旧视图与 percho 消息流共用），
+   此处 re-export 保持既有调用点与单测导入不变。 */
+export {
+  computeStreamRate,
+  smoothRate,
+  rateTier,
+  RATE_SAMPLE_WINDOW_MS,
+  RATE_FAST_MIN,
+  RATE_OK_MIN,
+} from "@/lib/stream-rate";
+
+/** 已到达的原始字符数（text + thinking + 工具入参），测速与 token 估算共用一次遍历 */
+function countStreamChars(blocks: AssistantContentBlock[]): number {
+  let chars = 0;
+  for (const b of blocks) {
+    if (b.type === "text") chars += (b as TextContent).text?.length ?? 0;
+    else if (b.type === "thinking") chars += (b as ThinkingContent).thinking?.length ?? 0;
+    else if (b.type === "toolCall") chars += JSON.stringify((b as ToolCallContent).input ?? {}).length;
+  }
+  return chars;
 }
 
 function formatTime(ts?: number): string | null {
@@ -375,11 +398,11 @@ function AssistantMessageView({
     .map((block, originalIndex) => ({ block, originalIndex }))
     .filter(({ block }) => !isEmptyThinkingBlock(block, { isStreaming }));
   const blocks = blockItems.map(({ block }) => block);
+  const streamChars = countStreamChars(blocks);
   const providerError = getAssistantErrorMessage(message, { isStreaming });
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
-  const streamStartRef = useRef<number | null>(null);
-  const [tps, setTps] = useState<number | null>(null);
+  const rate = useStreamRate(Boolean(isStreaming), streamChars);
   const blockItemsRef = useRef(blockItems);
   blockItemsRef.current = blockItems;
 
@@ -433,13 +456,10 @@ function AssistantMessageView({
         }
         return next;
       });
-      streamStartRef.current = null;
-      setTps(null);
       return;
     }
     const tick = () => {
       const items = blockItemsRef.current;
-      const bs = items.map(({ block }) => block);
       const now = Date.now();
 
       // Record start time for each block the first time we see it
@@ -464,16 +484,6 @@ function AssistantMessageView({
         return changed ? next : prev;
       });
 
-      let chars = 0;
-      for (const b of bs) {
-        if (b.type === "text") chars += (b as TextContent).text?.length ?? 0;
-        else if (b.type === "thinking") chars += (b as ThinkingContent).thinking?.length ?? 0;
-        else if (b.type === "toolCall") chars += JSON.stringify((b as ToolCallContent).input ?? {}).length;
-      }
-      if (chars === 0) return;
-      if (streamStartRef.current === null) streamStartRef.current = now;
-      const elapsed = (now - streamStartRef.current) / 1000;
-      if (elapsed > 0.5) setTps(chars / 4 / elapsed);
     };
     const id = setInterval(tick, 300);
     return () => clearInterval(id);
@@ -501,33 +511,43 @@ function AssistantMessageView({
         {message.provider && (
           <span>{modelNames?.[`${message.provider}:${message.model}`] ?? modelNames?.[message.model] ?? message.model}</span>
         )}
-        {isStreaming && (() => {
-          let chars = 0;
-          for (const b of blocks) {
-            if (b.type === "text") chars += (b as TextContent).text?.length ?? 0;
-            else if (b.type === "thinking") chars += (b as ThinkingContent).thinking?.length ?? 0;
-            else if (b.type === "toolCall") chars += JSON.stringify((b as ToolCallContent).input ?? {}).length;
-          }
-          const est = Math.round(chars / 4);
+        {(() => {
+          const est = Math.round(streamChars / 4);
+          const showEst = isStreaming && est > 0;
+          /* 速率：流式结束后定格最后一个值并转灰（--rate-idle），历史消息无值则整块不渲染。
+             颜色同时走三个通道：色点 + 字色 + 慢速时字重 700，色弱情冴下不靠「只辨颜色」。 */
+          const tier = rate === null ? null : rateTier(rate);
+          // 流结束后定格最后数值但转灰：颜色只服务「现在快不快」，不给历史消息留告警色
+          const live = isStreaming && rate !== null;
+          const rateBg = live ? RATE_TIER_VAR[tier as RateTier] : "transparent";
           return (
             <>
-
-              {est > 0 && (
-                <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--text)" }} title={t("i18n.estimatedTokens")}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 2, fontSize: 11, fontWeight: 400 }}>
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" />
-                    </svg>
-                    {est}
-                  </span>
-                  {tps !== null && (() => {
-                    const bg = tps >= 50 ? "#53b3cb" : tps >= 30 ? "#9bc53d" : tps >= 15 ? "#f9c22e" : "#e01a4f";
-                    return (
-                      <span style={{ marginLeft: 6, padding: "1px 6px", borderRadius: 4, background: bg, color: "#fff", fontSize: 11, fontWeight: 400 }}>
-                        {tps.toFixed(1)} t/s
-                      </span>
-                    );
-                  })()}
+              {showEst && (
+                <span style={{ display: "flex", alignItems: "center", gap: 2, color: "var(--text)", fontSize: 11, fontWeight: 400 }} title={t("i18n.estimatedTokens")}>
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="5" y1="1.5" x2="5" y2="8.5" /><polyline points="2 6 5 8.5 8 6" />
+                  </svg>
+                  {est}
+                </span>
+              )}
+              {rate !== null && (
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    marginLeft: showEst ? 0 : 2,
+                    padding: live ? "1px 6px" : 0,
+                    borderRadius: "var(--radius-pill)",
+                    background: rateBg,
+                    color: live ? "var(--rate-on)" : "var(--rate-idle)",
+                    fontSize: 11,
+                    fontWeight: live && tier === "slow" ? 700 : 400,
+                    fontFamily: "var(--font-mono)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                  title={t("i18n.streamRate")}
+                >
+                  {rate.toFixed(1)} t/s
                 </span>
               )}
             </>

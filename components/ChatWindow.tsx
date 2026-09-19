@@ -509,6 +509,12 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
 
   const messageCwd = session?.cwd ?? newSessionCwd ?? undefined;
 
+  // percho 消息流不渲染消息头部，模型名改挂到「此刻 · 进行中」那一行末尾。
+  // 命名口径与旧 MessageView 头部一致：先查 provider:model 全名，再查 model 短名，最后退回 id。
+  const perchoModelLabel = displayModelValue
+    ? (modelNames[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? modelNames[displayModelValue.modelId] ?? displayModelValue.modelId)
+    : null;
+
   const availableThinkingLevels = displayModelValue
     ? (modelThinkingLevels[`${displayModelValue.provider}:${displayModelValue.modelId}`] ?? null)
     : null;
@@ -772,6 +778,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                 following={msgFollowing}
                 onFollowingChange={setMsgFollowing}
                 revealAllNonce={perchoRevealAllNonce}
+                modelLabel={perchoModelLabel}
               />
             ) : (
               <>

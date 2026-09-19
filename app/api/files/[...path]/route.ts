@@ -11,7 +11,6 @@ import {
 import {
   DOCX_PREVIEW_MAX_BYTES,
   IMAGE_PREVIEW_MAX_BYTES,
-  TEXT_PREVIEW_MAX_BYTES,
   documentPreviewKind,
   getAudioMime,
   getDocumentMime,
@@ -44,6 +43,41 @@ const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_UPLOAD_TOTAL_BYTES = 100 * 1024 * 1024;
 // Multipart boundaries and headers are not file bytes, but must be bounded too.
 const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024;
+
+/**
+ * 文本预览窗口。不再按文件大小「拒开」（旧值 256KB 会直接 413），
+ * 而是只读文件开头这一段：几百 MB 的日志若整读进内存并逐行高亮，
+ * 会把服务端和浏览器一起冻死，所以保留一个足够宽的工作窗口。
+ */
+const TEXT_PREVIEW_WINDOW_BYTES = 1024 * 1024;
+/** 判定「非文本」的前缀采样长度（出现 NUL 即视为二进制）。 */
+const BINARY_SNIFF_BYTES = 8 * 1024;
+
+function readTextPreviewWindow(
+  filePath: string,
+  size: number,
+  maxBytes: number,
+): { content: string; truncated: boolean; bytes: number; binary: boolean } {
+  const readLen = Math.min(size, maxBytes);
+  const buf = Buffer.allocUnsafe(Math.max(readLen, 1));
+  let bytesRead = 0;
+  const fd = fs.openSync(filePath, "r");
+  try {
+    if (readLen > 0) bytesRead = fs.readSync(fd, buf, 0, readLen, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const head = buf.subarray(0, bytesRead);
+  const binary = head.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+  if (bytesRead >= size) {
+    return { content: head.toString("utf-8"), truncated: false, bytes: bytesRead, binary };
+  }
+  // 窗口没盖住整个文件：回退到最后一个换行，丢掉被切断的尾行/半个 UTF-8 字符。
+  let cut = bytesRead;
+  while (cut > 0 && buf[cut - 1] !== 0x0a) cut--;
+  if (cut === 0) cut = bytesRead; // 整窗口无换行（超长单行）：只能按字节切
+  return { content: buf.subarray(0, cut).toString("utf-8"), truncated: true, bytes: cut, binary };
+}
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
   ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
@@ -502,12 +536,18 @@ export async function GET(
       if (documentMime) {
         return streamFile(filePath, stat, documentMime, request.headers.get("range"));
       }
-      if (stat.size > TEXT_PREVIEW_MAX_BYTES) {
-        return NextResponse.json({ error: "File too large for preview (>256KB)" }, { status: 413 });
+      const preview = readTextPreviewWindow(filePath, stat.size, TEXT_PREVIEW_WINDOW_BYTES);
+      if (preview.binary) {
+        return NextResponse.json({ error: "Binary file (not text) — use download" }, { status: 415 });
       }
-      const content = fs.readFileSync(filePath, "utf-8");
       const language = getLanguage(filePath);
-      return NextResponse.json({ content, language, size: stat.size });
+      return NextResponse.json({
+        content: preview.content,
+        language,
+        size: stat.size,
+        truncated: preview.truncated,
+        previewBytes: preview.bytes,
+      });
     }
 
     if (type === "download") {

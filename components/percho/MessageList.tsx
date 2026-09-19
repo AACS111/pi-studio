@@ -35,6 +35,7 @@ import { RetryNote } from "./RetryNote";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { TurnDiffChip } from "./TurnDiffChip";
 import { LiveTurnLabel, TurnEndLabel } from "./TurnTiming";
+import { StreamRateChip } from "./StreamRateChip";
 import { useI18n } from "@/hooks/useI18n";
 
 const BOTTOM_THRESHOLD = 48;
@@ -53,6 +54,7 @@ export function MessageList({
 	onOpenFile,
 	onOpenWebUrl,
 	following,
+	modelLabel = null,
 	onFollowingChange,
 	fullWidth = false,
 	revealAllNonce = 0,
@@ -72,6 +74,8 @@ export function MessageList({
 	onFollowingChange?: (value: boolean) => void;
 	/** 变化时展开全部历史行（内容搜索/目录跳转到未渲染的消息前先调用） */
 	revealAllNonce?: number;
+	/** 当前模型显示名（percho 视图本来不渲染消息头部，用户要求输出时可见） */
+	modelLabel?: string | null;
 }) {
 	const { t } = useI18n();
 	const transcript = useTranscriptStore((s) => selectTranscript(s, sessionId));
@@ -211,6 +215,26 @@ export function MessageList({
 
 	const { startIndex, hasMore } = getVisibleRenderWindow(rows.length, visibleRows);
 
+	/* 输出速率：必须数**原始到达**字符（transcript.streaming 的 text/thinking/tools.args），
+	   不能数 Markdown 平滑插值后的显示文本——那测出来的是打字机速度而不是模型速度。
+	   工具执行期间模型不吐字，此时传 streaming=false，chip 定格最后数值并转灰而不是归零报「慢」。 */
+	const live = transcript.streaming;
+	const liveChars = live
+		? live.text.length + live.thinking.length + live.tools.reduce((sum, tool) => sum + tool.args.length, 0)
+		: 0;
+	const toolRunning = Boolean(live?.tools.some((tool) => tool.state === "running"));
+	const liveExtra =
+		modelLabel || (live && liveChars > 0) ? (
+			<>
+				{modelLabel && (
+					<span className="shrink-0 select-none text-[11px] leading-none opacity-70">{modelLabel}</span>
+				)}
+				{live && liveChars > 0 && (
+					<StreamRateChip chars={liveChars} streaming={transcript.phase === "streaming" && !toolRunning} />
+				)}
+			</>
+		) : undefined;
+
 	const items: React.ReactNode[] = [];
 	for (let rowIdx = startIndex; rowIdx < rows.length; rowIdx++) {
 		const row = rows[rowIdx];
@@ -274,7 +298,7 @@ export function MessageList({
 					</div>
 				)}
 				{items}
-				{rowLabels.openTurn && <LiveTurnLabel startTs={rowLabels.openTurn.startTs} />}
+				{rowLabels.openTurn && <LiveTurnLabel startTs={rowLabels.openTurn.startTs} extra={liveExtra} />}
 				{transcript.retrying && <RetryNote info={transcript.retrying} />}
 			</div>
 		</div>

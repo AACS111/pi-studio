@@ -47,6 +47,10 @@ interface FileData {
   content: string;
   language: string;
   size: number;
+  /** 文件超过预览窗口，仅返回了开头部分 */
+  truncated?: boolean;
+  /** 实际返回的字节数（未裁切时等于 size） */
+  previewBytes?: number;
 }
 
 type DisplayMode = "source" | "preview" | "diff";
@@ -929,6 +933,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
 
     try {
       const params = new URLSearchParams({ cwd, path: targetPath });
+      if (sourceSessionId) params.set("sessionId", sourceSessionId);
       const response = await fetch(`/api/git/diff?${params.toString()}`);
       const next = await response.json() as GitFileDiffResponse & { error?: string };
       if (requestId !== gitDiffRequestRef.current) return;
@@ -938,7 +943,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     } finally {
       if (requestId === gitDiffRequestRef.current) setGitDiffLoading(false);
     }
-  }, [cwd]);
+  }, [cwd, sourceSessionId]);
 
   // Initial load + SSE watch setup
   useEffect(() => {
@@ -1287,6 +1292,17 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
 
       {/* Content area */}
       <div ref={contentRef} className="file-viewer-content" style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
+        {data?.truncated && (
+          <div className="file-preview-note">
+            <span>
+              {t("files.previewTruncated", {
+                preview: formatSize(data.previewBytes ?? 0),
+                total: formatSize(data.size),
+              })}
+            </span>
+            <DownloadLink filePath={filePath} sourceSessionId={sourceSessionId} />
+          </div>
+        )}
         {effectiveDisplayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
         ) : isHtml && effectiveDisplayMode === "preview" ? (

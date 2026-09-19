@@ -5,6 +5,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, rmSy
 import { join } from "path";
 import { getInternalDir } from "./storage-config";
 import { getFileExt } from "./file-types";
+import { decryptTsdToPlainFile, isTsdEncrypted } from "./tsd-decrypt";
 
 /**
  * 加密 .xlsx 的 KET（WPS 表格）COM 解冻桥。
@@ -198,13 +199,36 @@ export function decryptViaKet(sourcePath: string, options?: { password?: string 
 }
 
 async function doDecrypt(sourcePath: string, outPath: string, password: string): Promise<KetDecryptResult> {
-  if (existsSync(outPath) && statSync(outPath).size > 0 && isPlainXlsx(outPath)) {
-    return { ok: true, outPath };
+  /*
+   * 缓存复用必须确认**产物自身仍是明文**：驱动可能把旧版（KET SaveAs 产出）的
+   * 解密产物重新卷成 %TSD% 容器，直接当 xlsx 发给前端就是
+   * 「End-of-central-directory signature not found」。缓存坏了删掉重解。
+   */
+  if (existsSync(outPath)) {
+    if (statSync(outPath).size > 0 && isPlainXlsx(outPath)) {
+      return { ok: true, outPath };
+    }
+    try {
+      rmSync(outPath, { force: true });
+    } catch {
+      /* ignore */
+    }
   }
-  try {
-    rmSync(outPath, { force: true });
-  } catch {
-    /* ignore */
+
+  // 快速通道：本机 TSD（亿赛通/IP-guard 类）透明加密 —— 用「可信进程镜像名」把明文
+  // 读进内存，再由本进程写盘（父进程写盘不会被驱动再加密）。毫秒级、无 GUI、
+  // 不依赖 WPS/Java，且比 KET COM 保真（SaveAs 会丢 sharedStrings / 多表 / 图片）。
+  // 拿不到明文（驱动策略变更、非本机 TSD 容器）则继续走下面的 KET COM。
+  if (isTsdEncrypted(sourcePath)) {
+    const tsd = await decryptTsdToPlainFile(sourcePath, outPath, isPlainXlsx);
+    if (tsd.ok) {
+      return { ok: true, outPath };
+    }
+    // 剥掉 TSD 外壳后仍是加密工作簿 = 真的带打开密码；未输密码时不必再走 COM
+    // （COM 没密码也打不开），直接把密码需求回给查看器弹框。
+    if (tsd.needPassword && !password) {
+      return { ok: false, code: "KET_PASSWORD_REQUIRED", error: "文件受打开密码保护，请输入密码" };
+    }
   }
 
   const scriptPath = join(ketCacheDir(), `ket-bridge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.ps1`);

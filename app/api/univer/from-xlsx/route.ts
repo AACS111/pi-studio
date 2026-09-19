@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { existsSync } from "fs";
 import { basename } from "path";
 import { getAllowedFileRoots, isFilePathAllowed } from "@/lib/file-access";
+import { detectSpreadsheetKind } from "@/lib/ket-bridge";
+import { resolveWorkbookPath } from "@/lib/univer-workbook-path";
 import { compactUniverFile } from "@/lib/univer-compact";
 import { runUniver } from "@/lib/univer-cli";
 import { bridgeRegistryKey, rememberBridgeTarget, resolveReusedBridge } from "@/lib/univer-office-bridge";
@@ -58,8 +60,9 @@ const inFlightConversions = new Map<string, Promise<NextResponse>>();
 
 export async function POST(request: NextRequest) {
   try {
-    const body = (await request.json().catch(() => null)) as { file?: unknown } | null;
+    const body = (await request.json().catch(() => null)) as { file?: unknown; password?: unknown } | null;
     const rawFile = typeof body?.file === "string" ? body.file.trim() : "";
+    const password = typeof body?.password === "string" ? body.password : undefined;
     const file = rawFile.replace(/\\/g, "/");
 
     if (!SOURCE_PATTERN.test(file)) {
@@ -69,7 +72,7 @@ export async function POST(request: NextRequest) {
     const key = bridgeRegistryKey(file);
     let pipeline = inFlightConversions.get(key);
     if (!pipeline) {
-      pipeline = convertOnce(file).finally(() => {
+      pipeline = convertOnce(file, password).finally(() => {
         inFlightConversions.delete(key);
       });
       inFlightConversions.set(key, pipeline);
@@ -81,7 +84,7 @@ export async function POST(request: NextRequest) {
 }
 
 /** One full conversion for a validated source path. */
-async function convertOnce(file: string): Promise<NextResponse> {
+async function convertOnce(file: string, password?: string): Promise<NextResponse> {
   const allowedRoots = await getAllowedFileRoots();
   if (!isFilePathAllowed(file, allowedRoots)) {
     return NextResponse.json({ error: "Access denied" }, { status: 403 });
@@ -104,12 +107,31 @@ async function convertOnce(file: string): Promise<NextResponse> {
   const sourceBase = basename(file).replace(SOURCE_PATTERN, "");
   const target = reserveUploadPath(`${sourceBase}-ai-edit.univer`).path;
 
+  // 加密源（TSD 透明加密 / 带打开密码）先解成明文临时文件：univer CLI 是普通
+  // 进程，在驱动的非可信名单里，直接读只会拿到 %TSD-Header-###% 密文并报
+  // 「End-of-central-directory signature not found」。bridge 映射仍按**原始
+  // 路径**注册，所以写回照旧落到原件。
+  let sourceFile = file;
+  if (detectSpreadsheetKind(file) === "encrypted") {
+    const resolved = await resolveWorkbookPath(file, password);
+    if (!resolved.decrypted) {
+      return NextResponse.json(
+        {
+          error: resolved.error ?? "无法解密该文件",
+          code: resolved.needPassword ? "KET_PASSWORD_REQUIRED" : "DECRYPT_FAILED",
+        },
+        { status: resolved.needPassword ? 400 : 500 },
+      );
+    }
+    sourceFile = resolved.path;
+  }
+
   // `univer import` creates the .univer baseline (trunk) from the xlsx.
   // runUniver retries once on daemon cold-start races (self-healing).
   try {
     await runUniver([
       "import",
-      "--file", file,
+      "--file", sourceFile,
       target,
       "--formula-calculation", "forced",
       "--json",

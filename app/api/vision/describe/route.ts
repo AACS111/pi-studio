@@ -11,6 +11,27 @@ export const dynamic = "force-dynamic";
 const VISION_TIMEOUT_MS = 90_000;
 const VISION_MAX_TOKENS = 2048;
 /**
+ * 调用方可通过 body.maxTokens 提高输出预算（仅用于结构化产出场景，
+ * 如 `.agents/skills/ui-design` 的视觉评审：推理型多模态模型会把思考写进 content，
+ * 2048 会把 findings 直接削断）。默认值不变，聊天图片描述行为零影响。
+ */
+const VISION_MAX_TOKENS_LIMIT = 8192;
+/** 同理给输出预算配套的等待上限：默认 90s（聊天图片识别够用），
+ *  结构化长输出（视觉评审）可由调用方拉长，硬顶 300s，不开放无上限等待。 */
+const VISION_TIMEOUT_MS_LIMIT = 300_000;
+
+function resolveMaxTokens(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return VISION_MAX_TOKENS;
+  return Math.min(Math.max(Math.round(n), 256), VISION_MAX_TOKENS_LIMIT);
+}
+
+function resolveTimeoutMs(value: unknown): number {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return VISION_TIMEOUT_MS;
+  return Math.min(Math.max(Math.round(n), 10_000), VISION_TIMEOUT_MS_LIMIT);
+}
+/**
  * ModelScope 等免费推理的首次请求常因模型冷启动返回 200 + 空 choices，
  * 稍等重试一次可显著提高成功率。
  */
@@ -25,6 +46,8 @@ async function callVisionModel(
   vision: VisionModelInfo,
   promptText: string,
   imageList: Array<{ type: "image"; data: string; mimeType: string }>,
+  maxTokens: number,
+  timeoutMs: number,
 ): Promise<VisionResult> {
   const content: unknown[] = [{ type: "text", text: promptText }];
   for (const img of imageList) {
@@ -37,7 +60,7 @@ async function callVisionModel(
   const payload = JSON.stringify({
     model: vision.modelId,
     messages: [{ role: "user", content }],
-    max_tokens: VISION_MAX_TOKENS,
+    max_tokens: maxTokens,
     stream: false,
   });
   const headers = {
@@ -53,7 +76,7 @@ async function callVisionModel(
         method: "POST",
         headers,
         body: payload,
-        signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
       lastError = e instanceof Error && e.name === "TimeoutError"
@@ -109,10 +132,12 @@ export async function POST(req: Request) {
   if (!body || typeof body !== "object") {
     return NextResponse.json({ error: "请求体必须是 JSON" }, { status: 400 });
   }
-  const { text, images, model } = body as {
+  const { text, images, model, maxTokens, timeoutMs } = body as {
     text?: unknown;
     images?: unknown;
     model?: unknown;
+    maxTokens?: unknown;
+    timeoutMs?: unknown;
   };
 
   const imageError = validateAgentImages(images);
@@ -142,7 +167,13 @@ export async function POST(req: Request) {
   }
 
   const promptText = typeof text === "string" && text.trim() ? text.trim() : "请描述图片内容。";
-  const result = await callVisionModel(vision, promptText, imageList);
+  const result = await callVisionModel(
+    vision,
+    promptText,
+    imageList,
+    resolveMaxTokens(maxTokens),
+    resolveTimeoutMs(timeoutMs),
+  );
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 502 });
   }

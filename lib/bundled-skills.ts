@@ -52,12 +52,31 @@ export function ensureBuiltinSkillsSynced(): void {
 }
 
 /**
- * 向本进程（agent 会话的 bash 是它的子进程，继承环境变量）暴露两个
+ * skill 脚本的绝对根目录（app 内置副本）：<appRoot>/.agents/skills。
+ * 为什么必须导出而不是让 skill 自己拼相对路径：
+ * - 会话 cwd 是**用户自己的项目**，`.agents/skills/impeccable/scripts/...` 这种
+ *   仓库相对路径只在「本仓库开发时」成立，终端用户永远命不中；
+ * - 打包版 asar:false（见 electron-builder.yml），resources/app/.agents/skills
+ *   是磁盘真目录，node 子进程可直接读取；
+ * - 同步到 ~/.agents/skills 的副本也在，但那是「同步之后」才存在，且用户可覆盖。
+ * 所以两个都给：PI_STUDIO_SKILLS_DIR=app 内置（权威），PI_STUDIO_USER_SKILLS_DIR=全局。
+ */
+export function bundledSkillsRoot(): string {
+  return join(process.cwd(), ".agents", "skills").replace(/\\/g, "/");
+}
+
+export function userSkillsRoot(): string {
+  return join(homedir(), ".agents", "skills").replace(/\\/g, "/");
+}
+
+/**
+ * 向本进程（agent 会话的 bash 是它的子进程，继承环境变量）暴露若干
  * 打包版/开发版都稳定可用的路径：
  * - UNIVER_CLI：univer-cli 的绝对入口（打包版在 resources/app/node_modules，
  *   开发版在项目 node_modules）；skill 里用 `node "$UNIVER_CLI" ...` 调用。
  * - PI_WEB_PORT：Web API 端口（electron main 用 PI_WEB_PORT 传给 next，随机
  *   端口场景下子进程只能拿到 "0"，此时 skill 应改走 marker 文件直写，不依赖端口）。
+ * - PI_STUDIO_SKILLS_DIR / PI_STUDIO_USER_SKILLS_DIR：skill 脚本绝对根（见上）。
  */
 export function ensureAgentEnvExposed(): void {
   try {
@@ -71,6 +90,12 @@ export function ensureAgentEnvExposed(): void {
   try {
     const port = process.env.PI_WEB_PORT;
     if (!port || port === "0") process.env.PI_WEB_PORT = "10141";
+  } catch {
+    /* best-effort */
+  }
+  try {
+    process.env.PI_STUDIO_SKILLS_DIR = bundledSkillsRoot();
+    process.env.PI_STUDIO_USER_SKILLS_DIR = userSkillsRoot();
   } catch {
     /* best-effort */
   }

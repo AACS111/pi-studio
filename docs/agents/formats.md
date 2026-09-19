@@ -27,7 +27,7 @@
 
 | 变量 | 作用 |
 | --- | --- |
-| `PI_WEB_PORT` | Electron 内置服务固定端口（默认随机） |
+| `PI_WEB_PORT` | Electron 内置服务端口覆盖（默认：dev 10141 / 打包 10142；必须固定不漂移，否则 localStorage 的 UI 设置跨重启丢失） |
 | `PI_WEB_DIST_DIR` | Next 构建目录（默认 `.next`，打包用 `.next-pkg`） |
 | `PI_WEB_UPLOADS_DIR` | 数据目录（上传 + 内部状态），优先级最高 |
 | `PI_WEB_UPLOADS_MAX_BYTES` | 上传总量上限（默认 300MB） |

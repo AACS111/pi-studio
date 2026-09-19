@@ -128,7 +128,7 @@ pi 把 toolCall 块存成 `{type:"toolCall", id, name, arguments}`，而 `ToolCa
 `/api/sessions/[id]/export` 委托 pi 导出助手，再把生成 HTML 里的递归树 helper 补丁成迭代版本，避免极深线性会话把浏览器调用栈打爆。
 
 ## Electron 桌面壳
-- `main.cjs` 用 `ELECTRON_RUN_AS_NODE=1` 让 exe 扮演 node 启动 `next start`（随机端口 / `PI_WEB_PORT` 固定；dev 模式 `PI_WEB_SERVER_MODE=dev` 走 10141）。子进程（含 univer daemon）继承该 env。
+- `main.cjs` 用 `ELECTRON_RUN_AS_NODE=1` 让 exe 扮演 node 启动 `next start`（固定端口：打包 10142 / dev 10141，`PI_WEB_PORT` 可覆盖；固定是为了让按 origin 隔离的 localStorage 设置跨重启不丢）。子进程（含 univer daemon）继承该 env。
 - 打包后数据目录移到 `%APPDATA%/Pi Studio/pi-web-uploads`（Program Files 不可写）。
 - **dev 模式必须用独立 userData**：两者都 `app.setName("Pi Studio")`，userData 按 app 名惰性解析；若不重定向，dev 版会落到与 exe 版相同的 `%APPDATA%/Pi Studio`，导致单实例锁冲突（exe 在跑时 `dev:electron` 的 `requestSingleInstanceLock()` 返回 false → `app.quit()` 假死，窗口永远不出现）且数据目录互相污染。修复：`SERVER_MODE==="dev"` 时 `app.setPath("userData", ...)` 重定向到 `%APPDATA%/Pi Studio Dev`，**顺序必须是先 setName 再 setPath**（首次访问 `getPath` 会缓存路径，setName 会改写它）。
 - 右侧浏览器 = WebContentsView 池，每网页标签一个，仅一个可见；`bridge.cjs` 起 HTTP 桥暴露语义控制接口；CDP 端口 9222（`PI_WEB_CDP_PORT` 改/关，dev 脚本默认 9223 避开 exe）。

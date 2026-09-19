@@ -9,7 +9,7 @@
 ```bash
 npx @aacs111/pi-studio@latest      # 无需安装，直接运行（Node.js ≥ 22.19）
 ```
-
+![Pi Studio 界面截图 7](public/icons/7.png)
 ![Pi Studio 界面截图 1](public/icons/1.png)
 ![Pi Studio 界面截图 2](public/icons/2.png)
 ![Pi Studio 界面截图 3](public/icons/3.png)

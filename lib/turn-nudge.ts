@@ -21,15 +21,19 @@
  * 必须**在循环内部**提醒，才能让它在这一轮收口。
  *
  * ## 开关
- * 默认开启，阈值 8。环境变量 `PI_TURN_NUDGE_TOOL_ONLY=0` 可关闭，
+ * 默认开启，阈值 20。环境变量 `PI_TURN_NUDGE_TOOL_ONLY=0` 可关闭，
  * 设成其它正整数即改阈值（与项目里其它临时 A/B 开关一致）。
+ *
+ * ⚠️ 默认值必须落在**代码里**，不能只靠项目根目录的 `.env.local`：`electron-builder.yml`
+ * 的 files 白名单不含 `.env*`，打包版 `resources/app` 下没有该文件，运行时回退到默认值。
+ * 2026-09-14 曾把阈值写进 `.env.local` 而代码默认仍是 8，桌面版照旧 8 轮就打断。
  */
 
 /** 注入的隐藏消息类型（前端不渲染它，仅供排查） */
 export const TURN_NUDGE_CUSTOM_TYPE = "pi-studio-turn-nudge";
 
 /** 连续多少个「纯工具回合」后提醒一次 */
-export const TURN_NUDGE_DEFAULT_STREAK = 8;
+export const TURN_NUDGE_DEFAULT_STREAK = 20;
 
 /** 单次用户 prompt 最多提醒几次（防止把提醒本身变成新的循环） */
 export const TURN_NUDGE_MAX_PER_RUN = 3;

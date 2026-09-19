@@ -11,14 +11,14 @@ const { shouldPasteAsFile, pastedTextFileName } = await jiti.import("./ChatInput
 test("short pastes stay in the textarea", () => {
   assert.equal(shouldPasteAsFile(""), false);
   assert.equal(shouldPasteAsFile("hello world"), false);
-  assert.equal(shouldPasteAsFile("a".repeat(1199)), false);
-  assert.equal(shouldPasteAsFile(Array.from({ length: 23 }, () => "x").join("\n")), false);
+  assert.equal(shouldPasteAsFile("a".repeat(4999)), false);
+  assert.equal(shouldPasteAsFile(Array.from({ length: 99 }, () => "x").join("\n")), false);
 });
 
 test("long pastes become file attachments", () => {
-  assert.equal(shouldPasteAsFile("a".repeat(1200)), true);
-  // 24 行（23 个换行）刚好到阈值
-  assert.equal(shouldPasteAsFile(Array.from({ length: 24 }, () => "x").join("\n")), true);
+  assert.equal(shouldPasteAsFile("a".repeat(5000)), true);
+  // 100 行（99 个换行）刚好到阈值
+  assert.equal(shouldPasteAsFile(Array.from({ length: 100 }, () => "x").join("\n")), true);
 });
 
 test("pasted file names are readable and filesystem safe", () => {

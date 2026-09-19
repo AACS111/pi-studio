@@ -149,12 +149,12 @@ function persistImagesToUploads(files: File[]): void {
 
 /**
  * 长文本粘贴转附件（性能：超长文本落在被控 textarea 里，每敲一个字都要重渲染
- * 整棵 composer，几千字就开始掉帧）。超过下面任一阈值的一次性粘贴不走 textarea，
+ * 整棵 composer，万字左右就开始掉帧）。超过下面任一阈值的一次性粘贴不走 textarea，
  * 而是写成上传目录里的一个文本文件，输入框只留一张卡片。
  * 按住 Alt 粘贴可绕过（高级用户想要原文时）。
  */
-const PASTE_TO_FILE_CHARS = 1200;
-const PASTE_TO_FILE_LINES = 24;
+const PASTE_TO_FILE_CHARS = 5000;
+const PASTE_TO_FILE_LINES = 100;
 
 export function shouldPasteAsFile(text: string): boolean {
   if (text.length >= PASTE_TO_FILE_CHARS) return true;

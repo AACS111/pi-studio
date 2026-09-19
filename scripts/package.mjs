@@ -32,11 +32,25 @@ if (!existsSync(nextBin)) {
   process.exit(1);
 }
 
+// next build 子进程注入 preload：项目跨盘移动后，nft 文件追踪会枚举用户主目录
+// C:\Users\zheng，撞上 Windows 系统兼容 junction（My Documents 等）的 EPERM 并
+// 直接判编译失败。背景与机制见 scripts/next-build-preload.cjs 头注释。
+// 仅注入构建步骤；electron-builder 阶段不带（env 不动）。
+const preloadModule = resolve(root, "scripts", "next-build-preload.cjs");
+const buildNodeOptions = [
+  (process.env.NODE_OPTIONS || "").trim(),
+  `--require ${preloadModule}`,
+].filter(Boolean).join(" ");
+const buildEnv = {
+  ...env,
+  NODE_OPTIONS: buildNodeOptions,
+};
+
 // 桌面版使用独立构建目录，避免污染 npm run dev 的 .next。
 rmSync(resolve(root, ".next-pkg"), { recursive: true, force: true });
 const build = spawnSync(process.execPath, [nextBin, "build", "--webpack"], {
   cwd: root,
-  env,
+  env: buildEnv,
   stdio: "inherit",
 });
 if (build.status !== 0) process.exit(build.status ?? 1);

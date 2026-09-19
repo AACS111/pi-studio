@@ -59,6 +59,11 @@ files:
   # 运行时依赖排除项（见上方注释，运行时从 node_modules 加载）。
   - "!node_modules/@univerjs/presets/**"                            # 前端查看器，已打进 client chunk
   # ⚠️ 以下两个 @univerjs-pro native 包绝不能排除：univer-cli 的 import/export 运行时需要
+  # 两个都是 markstream-react 的可选依赖（D2 图 / InfoGraphic 图），而项目 UI 没有这两种
+  # 代码块的渲染入口，运行时永不触发 → 排除（已从 package.json 移除顶层声明）。
+  - "!node_modules/@terrastruct/d2/**"                               # D2 图 ~33MB，UI 无入口
+  - "!node_modules/@antv/infographic/**"                             # InfoGraphic 图 ~11MB，UI 无入口
+  # ⚠️ 以下两个 @univerjs-pro native 包绝不能排除：univer-cli 的 import/export 运行时需要
   # （@univerjs-pro/uexcli → uexcli-windows-x64 的 exe；doc 转换 → doc-typst-native-binding）。
   # 此前误排除导致 AI 编辑报 Cannot find module '@univerjs-pro/uexcli-windows-x64/uexcli-windows.exe'
   # 终端 PTY 只留 win32-x64 预编译二进制，其余平台的 @lydell/node-pty-* 无意义（可选依赖，装时按平台装，

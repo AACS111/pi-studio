@@ -12,9 +12,6 @@ importers:
 
   .:
     dependencies:
-      '@antv/infographic':
-        specifier: ^0.2.20
-        version: 0.2.20
       '@deepseek-ai/cordis':
         specifier: 4.0.1
         version: 4.0.1
@@ -23,7 +20,7 @@ importers:
         version: 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-ai':
         specifier: 0.84.2
-        version: 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+        version: 0.84.2(patch_hash=5876dce7ad25df90231392adccdbf0febe73791966cef080600de03a853ad93f)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.2
         version: 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
@@ -33,9 +30,6 @@ importers:
       '@lydell/node-pty':
         specifier: ^1.2.0-beta.15
         version: 1.2.0-beta.15
-      '@terrastruct/d2':
-        specifier: ^0.1.33
-        version: 0.1.33
       '@univerjs/presets':
         specifier: ^0.25.1
         version: 0.25.1(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(rxjs@7.8.2)
@@ -75,9 +69,6 @@ importers:
       stream-monaco:
         specifier: ^0.0.49
         version: 0.0.49(monaco-editor@0.55.1)
-      thinking-orbs:
-        specifier: ^0.3.1
-        version: 0.3.1(react@19.2.8)
       typebox:
         specifier: 1.3.7
         version: 1.3.7
@@ -92,7 +83,7 @@ importers:
         version: 0.18.5
       zustand:
         specifier: ^5.0.15
-        version: 5.0.15(@types/react@19.2.18)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8))
+        version: 5.0.15(@types/react@19.2.18)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8))
     devDependencies:
       '@lobehub/icons':
         specifier: ^5.16.0
@@ -6809,11 +6800,6 @@ packages:
     resolution: {integrity: sha512-yYrrsWnrXMcdsnu/7YMYAofM1ktpL5By7vZhf15CrXijWWrEYZks5AXBudalfSWJLlnen/QUJUB5aoB0kqZUGA==}
     engines: {node: '>=6.0.0'}
 
-  thinking-orbs@0.3.1:
-    resolution: {integrity: sha512-3BG1aeB1RUTxItCml/BBuIz5JRM4kZqGuyx+vouv0fXTtcR9ZNoKjWGneHPx94y74GxgArwJZ1qbJR5dt54kSw==}
-    peerDependencies:
-      react: '>=18.0.0'
-
   throttle-debounce@5.0.2:
     resolution: {integrity: sha512-B71/4oyj61iNH0KeCamLuE2rmKuTO5byTOSVwECM5FA7TiAiAW+UqTKZ9ERueC4qvgSttUhdmq1mXC3kJqGX7A==}
     engines: {node: '>=12.22'}
@@ -7058,6 +7044,11 @@ packages:
 
   use-sync-external-store@1.6.0:
     resolution: {integrity: sha512-Pp6GSwGP/NrPIrxVFAIkOQeyw8lFenOHijQWkUTrDvrF4ALqylP2C/KCkeS9dpUM3KvYRQhna5vt7IL95+ZQ9w==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  use-sync-external-store@1.7.0:
+    resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -7356,15 +7347,19 @@ snapshots:
     optionalDependencies:
       zod: 4.5.4
 
-  '@antv/event-emitter@0.1.3': {}
+  '@antv/event-emitter@0.1.3':
+    optional: true
 
-  '@antv/expr@1.0.2': {}
+  '@antv/expr@1.0.2':
+    optional: true
 
   '@antv/graphlib@2.0.4':
     dependencies:
       '@antv/event-emitter': 0.1.3
+    optional: true
 
-  '@antv/hierarchy@0.7.1': {}
+  '@antv/hierarchy@0.7.1':
+    optional: true
 
   '@antv/infographic@0.2.20':
     dependencies:
@@ -7383,6 +7378,7 @@ snapshots:
       tinycolor2: 1.6.0
     transitivePeerDependencies:
       - canvas
+    optional: true
 
   '@antv/layout@2.0.0':
     dependencies:
@@ -7398,12 +7394,14 @@ snapshots:
       dagre: 0.8.5
       ml-matrix: 6.15.0
       tslib: 2.8.1
+    optional: true
 
   '@antv/util@3.3.11':
     dependencies:
       fast-deep-equal: 3.1.3
       gl-matrix: 3.4.4
       tslib: 2.8.1
+    optional: true
 
   '@aws-crypto/sha256-browser@5.2.0':
     dependencies:
@@ -7731,7 +7729,7 @@ snapshots:
       '@floating-ui/utils': 0.2.12
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
-      use-sync-external-store: 1.6.0(react@19.2.8)
+      use-sync-external-store: 1.7.0(react@19.2.8)
     optionalDependencies:
       '@types/react': 19.2.18
 
@@ -7742,7 +7740,7 @@ snapshots:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)
       reselect: 5.3.0
-      use-sync-external-store: 1.6.0(react@19.2.8)
+      use-sync-external-store: 1.7.0(react@19.2.8)
     optionalDependencies:
       '@types/react': 19.2.18
 
@@ -7791,7 +7789,7 @@ snapshots:
 
   '@earendil-works/pi-agent-core@0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
-      '@earendil-works/pi-ai': 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-ai': 0.84.2(patch_hash=5876dce7ad25df90231392adccdbf0febe73791966cef080600de03a853ad93f)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-telemetry': 0.84.4
       diff: 8.0.4
       ignore: 7.0.5
@@ -7805,7 +7803,7 @@ snapshots:
       - ws
       - zod
 
-  '@earendil-works/pi-ai@0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
+  '@earendil-works/pi-ai@0.84.2(patch_hash=5876dce7ad25df90231392adccdbf0febe73791966cef080600de03a853ad93f)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.5.4)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
@@ -7833,7 +7831,7 @@ snapshots:
   '@earendil-works/pi-coding-agent@0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)':
     dependencies:
       '@earendil-works/pi-agent-core': 0.84.2(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-ai': 0.84.2(patch_hash=002c93fbc020ded5ce997b261540de3755413897dfd1b48fbeb6c1d8de7cea33)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
+      '@earendil-works/pi-ai': 0.84.2(patch_hash=5876dce7ad25df90231392adccdbf0febe73791966cef080600de03a853ad93f)(supports-color@7.2.0)(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-client': 0.84.2
       '@earendil-works/pi-protocol': 0.84.2
       '@earendil-works/pi-tui': 0.84.2
@@ -9714,7 +9712,8 @@ snapshots:
       postcss: 8.5.26
       tailwindcss: 4.3.3
 
-  '@terrastruct/d2@0.1.33': {}
+  '@terrastruct/d2@0.1.33':
+    optional: true
 
   '@tybys/wasm-util@0.10.3':
     dependencies:
@@ -11931,7 +11930,8 @@ snapshots:
 
   bluebird@3.7.2: {}
 
-  boolbase@2.0.0: {}
+  boolbase@2.0.0:
+    optional: true
 
   boolean@3.2.0:
     optional: true
@@ -12115,7 +12115,8 @@ snapshots:
     dependencies:
       delayed-stream: 1.0.0
 
-  comlink@4.4.2: {}
+  comlink@4.4.2:
+    optional: true
 
   comma-separated-tokens@2.0.3: {}
 
@@ -12176,14 +12177,18 @@ snapshots:
       domhandler: 6.0.1
       domutils: 4.0.2
       nth-check: 3.0.1
+    optional: true
 
-  css-what@8.0.0: {}
+  css-what@8.0.0:
+    optional: true
 
-  cssom@0.5.0: {}
+  cssom@0.5.0:
+    optional: true
 
   csstype@3.2.3: {}
 
-  culori@4.0.2: {}
+  culori@4.0.2:
+    optional: true
 
   cytoscape-cose-bilkent@4.1.0(cytoscape@3.34.2):
     dependencies:
@@ -12207,7 +12212,8 @@ snapshots:
 
   d3-axis@3.0.0: {}
 
-  d3-binarytree@1.0.2: {}
+  d3-binarytree@1.0.2:
+    optional: true
 
   d3-brush@3.0.0:
     dependencies:
@@ -12257,6 +12263,7 @@ snapshots:
       d3-octree: 1.1.0
       d3-quadtree: 3.0.1
       d3-timer: 3.0.1
+    optional: true
 
   d3-force@3.0.0:
     dependencies:
@@ -12276,7 +12283,8 @@ snapshots:
     dependencies:
       d3-color: 3.1.0
 
-  d3-octree@1.1.0: {}
+  d3-octree@1.1.0:
+    optional: true
 
   d3-path@1.0.9: {}
 
@@ -12385,6 +12393,7 @@ snapshots:
     dependencies:
       graphlib: 2.1.8
       lodash: 4.18.1
+    optional: true
 
   damerau-levenshtein@1.0.8: {}
 
@@ -12508,24 +12517,30 @@ snapshots:
       domelementtype: 2.3.0
       domhandler: 5.0.3
       entities: 4.5.0
+    optional: true
 
   dom-serializer@3.1.1:
     dependencies:
       domelementtype: 3.0.0
       domhandler: 6.0.1
       entities: 8.0.0
+    optional: true
 
-  domelementtype@2.3.0: {}
+  domelementtype@2.3.0:
+    optional: true
 
-  domelementtype@3.0.0: {}
+  domelementtype@3.0.0:
+    optional: true
 
   domhandler@5.0.3:
     dependencies:
       domelementtype: 2.3.0
+    optional: true
 
   domhandler@6.0.1:
     dependencies:
       domelementtype: 3.0.0
+    optional: true
 
   dompurify@3.2.7:
     optionalDependencies:
@@ -12540,12 +12555,14 @@ snapshots:
       dom-serializer: 2.0.0
       domelementtype: 2.3.0
       domhandler: 5.0.3
+    optional: true
 
   domutils@4.0.2:
     dependencies:
       dom-serializer: 3.1.1
       domelementtype: 3.0.0
       domhandler: 6.0.1
+    optional: true
 
   dotenv-expand@11.0.7:
     dependencies:
@@ -12655,7 +12672,8 @@ snapshots:
       graceful-fs: 4.2.11
       tapable: 2.3.3
 
-  entities@4.5.0: {}
+  entities@4.5.0:
+    optional: true
 
   entities@6.0.1: {}
 
@@ -13047,7 +13065,8 @@ snapshots:
 
   esutils@2.0.3: {}
 
-  eventemitter3@5.0.4: {}
+  eventemitter3@5.0.4:
+    optional: true
 
   exponential-backoff@3.1.3: {}
 
@@ -13137,7 +13156,8 @@ snapshots:
 
   flatted@3.4.4: {}
 
-  flru@1.0.2: {}
+  flru@1.0.2:
+    optional: true
 
   for-each@0.3.5:
     dependencies:
@@ -13294,7 +13314,8 @@ snapshots:
     dependencies:
       lit: 3.3.3
 
-  gl-matrix@3.4.4: {}
+  gl-matrix@3.4.4:
+    optional: true
 
   glob-parent@5.1.2:
     dependencies:
@@ -13374,6 +13395,7 @@ snapshots:
   graphlib@2.1.8:
     dependencies:
       lodash: 4.18.1
+    optional: true
 
   grok-mermaid@0.2.2: {}
 
@@ -13570,7 +13592,8 @@ snapshots:
     dependencies:
       lru-cache: 11.4.0
 
-  html-escaper@3.0.3: {}
+  html-escaper@3.0.3:
+    optional: true
 
   html-url-attributes@3.0.1: {}
 
@@ -13582,6 +13605,7 @@ snapshots:
       domhandler: 5.0.3
       domutils: 3.2.2
       entities: 7.0.1
+    optional: true
 
   http-cache-semantics@4.2.0: {}
 
@@ -13655,7 +13679,8 @@ snapshots:
       is-alphabetical: 2.0.1
       is-decimal: 2.0.1
 
-  is-any-array@3.0.0: {}
+  is-any-array@3.0.0:
+    optional: true
 
   is-array-buffer@3.0.5:
     dependencies:
@@ -14038,6 +14063,7 @@ snapshots:
       html-escaper: 3.0.3
       htmlparser2: 10.1.0
       uhyphen: 0.2.0
+    optional: true
 
   linkify-it@6.1.0:
     dependencies:
@@ -14387,7 +14413,8 @@ snapshots:
 
   mdurl@2.1.0: {}
 
-  measury@0.1.5: {}
+  measury@0.1.5:
+    optional: true
 
   merge-value@1.0.0:
     dependencies:
@@ -14775,21 +14802,25 @@ snapshots:
   ml-array-max@2.0.0:
     dependencies:
       is-any-array: 3.0.0
+    optional: true
 
   ml-array-min@2.0.0:
     dependencies:
       is-any-array: 3.0.0
+    optional: true
 
   ml-array-rescale@2.0.0:
     dependencies:
       is-any-array: 3.0.0
       ml-array-max: 2.0.0
       ml-array-min: 2.0.0
+    optional: true
 
   ml-matrix@6.15.0:
     dependencies:
       is-any-array: 3.0.0
       ml-array-rescale: 2.0.0
+    optional: true
 
   modern-tar@0.8.4: {}
 
@@ -14899,6 +14930,7 @@ snapshots:
   nth-check@3.0.1:
     dependencies:
       boolbase: 2.0.0
+    optional: true
 
   numeral@2.0.6: {}
 
@@ -15703,7 +15735,8 @@ snapshots:
       points-on-curve: 0.2.0
       points-on-path: 0.2.1
 
-  round-polygon@0.6.7: {}
+  round-polygon@0.6.7:
+    optional: true
 
   run-parallel@1.2.0:
     dependencies:
@@ -16104,7 +16137,7 @@ snapshots:
     dependencies:
       dequal: 2.0.3
       react: 19.2.8
-      use-sync-external-store: 1.6.0(react@19.2.8)
+      use-sync-external-store: 1.7.0(react@19.2.8)
 
   tabbable@6.5.0: {}
 
@@ -16132,17 +16165,14 @@ snapshots:
       mkdirp: 0.5.6
       rimraf: 2.6.3
 
-  thinking-orbs@0.3.1(react@19.2.8):
-    dependencies:
-      react: 19.2.8
-
   throttle-debounce@5.0.2: {}
 
   tiny-async-pool@1.3.0:
     dependencies:
       semver: 5.7.2
 
-  tinycolor2@1.6.0: {}
+  tinycolor2@1.6.0:
+    optional: true
 
   tinyexec@1.3.0: {}
 
@@ -16260,7 +16290,8 @@ snapshots:
 
   uc.micro@3.0.0: {}
 
-  uhyphen@0.2.0: {}
+  uhyphen@0.2.0:
+    optional: true
 
   unbox-primitive@1.1.0:
     dependencies:
@@ -16425,6 +16456,10 @@ snapshots:
       '@types/react': 19.2.18
 
   use-sync-external-store@1.6.0(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+
+  use-sync-external-store@1.7.0(react@19.2.8):
     dependencies:
       react: 19.2.8
 
@@ -16616,11 +16651,11 @@ snapshots:
       immer: 11.1.18
       react: 19.2.8
 
-  zustand@5.0.15(@types/react@19.2.18)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.6.0(react@19.2.8)):
+  zustand@5.0.15(@types/react@19.2.18)(immer@11.1.18)(react@19.2.8)(use-sync-external-store@1.7.0(react@19.2.8)):
     optionalDependencies:
       '@types/react': 19.2.18
       immer: 11.1.18
       react: 19.2.8
-      use-sync-external-store: 1.6.0(react@19.2.8)
+      use-sync-external-store: 1.7.0(react@19.2.8)
 
   zwitch@2.0.4: {}

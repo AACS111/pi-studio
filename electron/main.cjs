@@ -5,12 +5,15 @@
  *
  * 职责：
  *  1. 用本 exe 自带的 Node（ELECTRON_RUN_AS_NODE=1）启动内置的 Next.js 服务
- *     （next start，随机空闲端口，只监听 127.0.0.1）；
+ *     （next start，固定端口，只监听 127.0.0.1；端口稳定 = localStorage 的
+ *      origin 稳定 = UI 设置跨重启保留）；
  *  2. 解析服务就绪后的实际端口，打开 BrowserWindow 加载该地址；
  *  3. 退出时结束服务子进程（含其 worker 树）。
  *
  * 环境变量（均可选）：
- *  - PI_WEB_PORT       固定端口（默认 0 = 随机空闲端口，自动探测）
+ *  - PI_WEB_PORT       覆盖内置服务端口（默认：dev 10141 / 打包 10142）。
+ *                      端口必须固定：localStorage 按 origin（host+port）隔离，
+ *                      端口每次随机会导致样式/主题/语言等设置在重启后回默认。
  *  - PI_WEB_DIST_DIR   Next 构建目录（默认 .next-pkg，与 scripts/package.mjs 一致）
  *  - PI_WEB_UPLOADS_DIR         数据目录显式覆盖（最高优先级，可选）
  *  - PI_WEB_UPLOADS_DEFAULT_DIR 数据目录默认值（内部：userData/pi-web-uploads，可写；
@@ -41,6 +44,7 @@ const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, screen, shell, Web
 if (globalThis.__piElectronRestore) { globalThis.__piElectronRestore(); globalThis.__piElectronRestore = undefined; }
 const { spawn, spawnSync } = require("child_process");
 const http = require("http");
+const net = require("net");
 const path = require("path");
 const fs = require("fs");
 
@@ -109,7 +113,10 @@ const WINDOW_ICON = path.join(APP_ROOT, "build", "icon.ico");
 const DIST_DIR = process.env.PI_WEB_DIST_DIR || ".next-pkg";
 const SERVER_MODE = process.env.PI_WEB_SERVER_MODE === "dev" ? "dev" : "start";
 const HOST = "127.0.0.1";
-const PORT = process.env.PI_WEB_PORT || (SERVER_MODE === "dev" ? "10141" : "0");
+// 端口必须固定（dev 10141 / 打包 10142）：localStorage 按 origin（host+port）
+// 隔离，端口每次随机 = 每次重启换新 origin，样式/主题/语言等 UI 设置全部回
+// 默认（2026-09-17 修复「调整样式后重启即丢」）。PI_WEB_PORT 可强制覆盖。
+const PORT = process.env.PI_WEB_PORT || (SERVER_MODE === "dev" ? "10141" : "10142");
 
 let serverProc = null;
 let mainWindow = null;
@@ -291,6 +298,17 @@ function waitForServerUrl(child) {
         reject(new Error(`服务进程提前退出（code=${code}）`));
       }
     });
+  });
+}
+
+/** 启动前确认内置服务端口空闲：PORT 固定后，若被其他程序占用，next start 会以
+ * EADDRINUSE 静默退出、只剩一条通用报错；先探测一次，把真实原因说清楚。 */
+function ensurePortFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once("error", () => resolve(false));
+    probe.once("listening", () => probe.close(() => resolve(true)));
+    probe.listen(port, HOST);
   });
 }
 
@@ -1068,6 +1086,12 @@ if (!gotLock) {
         extraEnv.PI_WEB_BROWSER_BRIDGE_URL = bridgeBaseUrl;
       } catch (bridgeErr) {
         console.error("[pi-studio] 原生浏览器控制桥启动失败（右侧浏览器不可用）:", bridgeErr.message);
+      }
+      if (!(await ensurePortFree(Number(PORT)))) {
+        throw new Error(
+          `内置服务端口 ${PORT} 被其他程序占用，无法启动。\n` +
+            `请结束占用该端口的进程，或设置环境变量 PI_WEB_PORT 指定其他端口后重试。`,
+        );
       }
       serverProc = startServer(extraEnv);
       if (!serverProc) return;
